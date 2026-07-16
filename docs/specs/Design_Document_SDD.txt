@@ -1,0 +1,271 @@
+Rust Video Add-on Host (RVAH)
+Software Design Document (SDD)
+Architecture and component design for a Rust-first video add-on host.
+
+Field
+Value
+Document code
+RVAH-SDD-001
+Version
+Draft v0.1
+Status
+Draft for architecture and planning
+Date
+2026-07-16
+Primary implementation language
+Rust
+Primary product decision
+Custom add-on SDK inspired by Kodi patterns; not Kodi add-on compatible
+
+Scope decision: This project does not attempt to run Kodi Python add-ons. It defines a new Rust-hosted add-on platform focused only on video discovery, source resolution, and playback.
+
+
+1. Document Control
+Version
+Date
+Author/Role
+Summary
+0.1
+2026-07-16
+Product/Engineering
+Initial draft generated for Rust-based video add-on host.
+
+1.1 Intended audience
+Founder/product owner deciding MVP scope and funding priorities.
+Rust engineers implementing the application, runtime, player, and add-on SDK.
+QA engineers building automated and manual validation coverage.
+Security/release reviewers approving add-on permissions, signing, and distribution rules.
+2. Architecture Overview
+RVAH is designed as a modular Rust workspace. The core application owns domain models, state transitions, permission decisions, and playback orchestration. Add-ons run in a sandboxed component runtime and communicate with the host through a narrow typed interface. The player is abstracted behind a trait so the project can start with a pragmatic backend and change implementation without changing the add-on SDK.
++------------------+        +-----------------+        +------------------+| UI Shell         | <----> | App Core        | <----> | Data/Auth Stores || browse/search    |        | state/use cases |        | DB + keychain    |+--------+---------+        +--------+--------+        +------------------+         |                           |         v                           v+------------------+        +-----------------+        +------------------+| Player Adapter   | <----> | Add-on Host     | <----> | Sandboxed Add-ons|| mpv/gstreamer    |        | permissions/API |        | WASM components  |+------------------+        +-----------------+        +------------------+
+2.1 Design principles
+Host-owned security: add-ons never receive direct OS, network, or credential access unless the host mediates it.
+Small typed SDK: add-ons return normalized catalogs, media items, and playable sources rather than manipulating UI widgets directly.
+Playback separation: add-ons discover and resolve; the host validates and plays.
+Replaceable adapters: UI toolkit, player backend, keychain, and repository transport are adapter boundaries.
+Contract-first add-on API: SDK changes are versioned and verified with compatibility tests.
+No Kodi dependency: names, code, package format, and APIs are independent.
+3. Technology Decisions
+Decision area
+Recommended design
+Rationale
+Language/build
+Rust workspace with multiple crates managed under one Cargo.lock.
+Keeps core, adapters, SDK, and tools versioned together while retaining modular boundaries.
+Add-on runtime
+Sandboxed WebAssembly components via Wasmtime-compatible host interface.
+Provides isolation, quotas, typed imports/exports, and a path to multi-language add-ons without loading arbitrary native code.
+Player backend
+Abstract PlayerBackend trait; MVP backend may use mpv/libmpv or process IPC. GStreamer remains an adapter option.
+Video playback is complex; using a mature backend reduces codec, subtitle, and streaming risk.
+Storage
+SQLite for relational app state; OS keychain or encrypted vault for secrets; cache directory for artwork and transient data.
+Simple, portable, debuggable, and easy to migrate.
+Networking
+Host-owned async HTTP client with per-add-on egress allowlists and redaction-aware logging.
+Prevents unrestricted sockets and supports user-visible permissions.
+UI
+UI toolkit behind adapter; MVP can use a fast desktop toolkit and later add a TV/remote-first shell.
+Avoids locking the domain model to a single presentation framework.
+
+Player note: Directly writing a full video player is not recommended for MVP. The design assumes a mature backend and focuses project effort on add-on hosting, permissioning, UX, metadata, and source resolution.
+
+4. Cargo Workspace and Crate Boundaries
+Crate
+Responsibility
+rvah-app
+Application entrypoint, platform bootstrapping, config loading, crash reporting, and dependency wiring.
+rvah-core
+Domain models, command handlers, navigation state, permission decisions, and use-case orchestration.
+rvah-ui
+Presentation adapter, routes/screens, view models, focus/navigation abstractions, and player overlay controls.
+rvah-addon-sdk
+Guest-side SDK types, helper functions, schema, examples, and contract-test fixtures.
+rvah-addon-host
+Manifest parsing, package verification, runtime initialization, API bridging, quotas, and add-on invocation lifecycle.
+rvah-player
+PlayerBackend trait, playback state machine, source validation, subtitles, progress events, and error model.
+rvah-player-mpv
+mpv/libmpv or mpv IPC implementation behind the PlayerBackend trait.
+rvah-data
+SQLite schema, migrations, repositories, cache metadata, settings persistence, and watched/resume state.
+rvah-auth
+Device-code/OAuth/API-key flows, token refresh, keychain integration, and secret redaction.
+rvah-net
+HTTP client wrapper, allowlist enforcement, retry policy, user-agent/header policy, and mock transport.
+rvah-repo
+Repository metadata, package download, signatures, deprecation notices, and update checks.
+rvah-cli
+Developer commands: validate manifest, run add-on fixture, package, sign, inspect logs.
+rvah-testkit
+Fixture add-ons, mock player, mock HTTP server, contract tests, and golden data.
+
+5. Add-on Package and Manifest Design
+An RVAH add-on is a signed package containing a manifest, one or more runtime modules, assets, translations, and optional documentation. The manifest is the security boundary: it declares what the add-on can do, what domains it can contact, what settings it exposes, and which host SDK range it supports.
+provider.example.video/  rvah.toml  module.wasm  assets/icon.png  assets/fanart.jpg  i18n/en-US.ftl  README.md  LICENSE
+[addon]id = "provider.example.video"name = "Example Video Provider"version = "1.2.0"sdk = ">=0.1,<0.2"entry = "module.wasm"capabilities = ["catalog", "search", "resolve", "auth"][permissions]network = ["api.example.com", "cdn.example.com"]storage = "10MiB"secrets = ["provider_token"][settings]region = { type = "string", default = "us", enum = ["us", "gb", "ca"] }
+Manifest field
+Validation rule
+id
+Reverse-DNS style unique identifier; immutable after publication.
+version
+Semantic version; repository rejects duplicate package content for same version.
+sdk
+Host checks compatible SDK range before installing.
+entry
+Must refer to packaged runtime module with valid hash.
+capabilities
+Controls visible UI entry points and allowed host calls.
+permissions.network
+DNS/domain allowlist; wildcard rules restricted by repository policy.
+settings
+Typed schema rendered by host UI and stored per add-on.
+
+6. Add-on SDK Interface
+The host exposes a narrow API. Add-ons provide catalog/search/resolve functions and call host imports for HTTP, storage, auth, logging, and settings. All host imports are capability-checked at runtime.
+// Conceptual interface; exact syntax may be WIT or generated Rust traits.export list(path: Option<String>, cursor: Option<String>) -> Result<Page, AddonError>;export search(query: String, filters: Vec<Filter>, cursor: Option<String>) -> Result<Page, AddonError>;export resolve(item_id: String, source_id: Option<String>) -> Result<ResolveResult, AddonError>;export account_status() -> Result<AccountStatus, AddonError>;host http.fetch(request: HttpRequest) -> Result<HttpResponse, HostError>;host settings.get(key: String) -> Option<SettingValue>;host secrets.get(name: String) -> Result<Option<Secret>, HostError>;host storage.get/set/delete(key, value);host log(level, message, fields);
+Type
+Key fields
+Page
+items, cursor_next, total_hint, sort_hint, provider_status
+DirectoryItem
+id, title, subtitle, artwork, path, badges, context actions
+MediaItem
+id, content_type, title, year, season/episode, runtime, artwork, metadata, source_hints
+ResolveResult
+playables, auth_action, captcha_action, unavailable_reason
+PlayableSource
+url, protocol, headers, subtitles, quality, audio_lang, expires_at, drm_descriptor_optional
+AddonError
+code, message, retryable, user_visible, diagnostics_id
+
+7. Core Flows
+7.1 Browse flow
+User opens an enabled add-on from the UI.
+UI sends OpenProvider command to rvah-core.
+Core checks add-on status and permission grants, then calls rvah-addon-host list(None, None).
+Add-on host invokes sandboxed module with quotas and a cancellation token.
+Add-on returns Page containing normalized items.
+Core stores transient navigation state and emits a view model to the UI.
+UI renders items; selecting a directory repeats the call with a path or cursor.
+7.2 Resolve and playback flow
+User selects MediaItem  -> Core validates item and add-on state  -> Add-onHost.resolve(item_id, source_id)  -> Add-on returns PlayableSource(s)  -> Core validates URL/protocol/header policy  -> PlayerController.load(source, resume_position)  -> Player emits buffering/progress/error/completed events  -> Core persists resume/watched state
+7.3 Auth flow
+Add-on declares an auth capability and requests a host-managed auth action when account access is required.
+Host presents provider name, requested scopes/secrets, and user action steps.
+Host stores tokens/secrets outside the add-on sandbox; add-on receives opaque account status or host-provided secret only when permitted.
+Refresh, expiration, and revocation are handled centrally so the user can manage accounts in one place.
+8. Player Subsystem Design
+Component
+Design
+PlayerController
+State machine owned by core: Idle, Loading, Buffering, Playing, Paused, Seeking, Ended, Error.
+PlayerBackend trait
+load, play, pause, stop, seek, set_volume, set_track, set_subtitles, observe_events.
+mpv adapter
+MVP candidate using mpv/libmpv or IPC. Handles broad codecs, subtitles, streaming protocols, and hardware acceleration through backend configuration.
+GStreamer adapter
+Alternative for tighter pipeline control, platform integration, or future DRM-provider workflows.
+Source validator
+Rejects unsupported protocols, expired URLs, unsafe local paths, unapproved headers, or malformed subtitle descriptors.
+Progress persister
+Debounced progress updates to data store; marks watched according to configurable completion threshold.
+
+9. Security and Permission Design
+Risk
+Mitigation
+Malicious add-on exfiltrates secrets
+Secrets are stored in host vault; access requires manifest declaration, user grant, and redaction-aware host APIs.
+Add-on performs broad web scraping or contacts arbitrary hosts
+HTTP calls go through host client with DNS/domain allowlists, request quotas, and logging.
+Add-on hangs or allocates excessive memory
+Runtime memory limits, fuel/epoch interruption, wall-clock timeouts, cancellation tokens, and kill/quarantine policy.
+Package tampering
+Repository signing, package hashes, local signature verification, and immutable version records.
+Insecure update
+Update only from trusted repository metadata; permission expansion requires explicit re-approval.
+Log leakage
+Central logger redacts tokens, cookies, authorization headers, API keys, and configured secret names.
+License contamination
+No copied Kodi code/assets. Third-party dependencies tracked in SBOM and reviewed for license compatibility.
+
+10. Data Model
+Entity/table
+Purpose
+addons
+Installed add-on id, version, package hash, status, install source, SDK range, capabilities.
+addon_permissions
+Granted permissions, user approval timestamps, manifest permission hash.
+addon_settings
+Typed settings values keyed by add-on id.
+secrets
+Logical references only; actual secret material stored in OS keychain/encrypted vault.
+favorites
+User favorites with provider id, item id, title snapshot, artwork snapshot.
+watch_state
+Resume position, watched flag, last played timestamp, completion percentage.
+cache_index
+Artwork and response cache metadata, expiration, size, owning add-on.
+diagnostic_events
+Structured logs and recent errors with redaction applied.
+
+11. Error Model
+Class
+Examples
+User treatment
+User-actionable
+Auth expired, permission missing, account quota exceeded.
+Show clear action button: sign in, grant permission, retry later.
+Recoverable
+Provider timeout, temporary network failure, unavailable source.
+Offer retry and alternative source; retain navigation state.
+Developer/actionable
+Malformed add-on response, SDK mismatch, schema violation.
+Log diagnostics, show generic message, optionally disable add-on after repeated failures.
+Fatal host
+Database corruption, player backend missing, keychain unavailable.
+Show safe error screen and diagnostic export; avoid data loss.
+
+12. Excluded Kodi/Media-Center Features
+Feature
+Decision
+Kodi Python APIs
+Not implemented. A future migration tool could port simple provider logic to the RVAH SDK.
+Skins/theme engine
+Not implemented. Provide one host UI with limited theming.
+Music/photos/games/weather
+Not implemented for product focus and testability.
+PVR/DVR/EPG
+Not implemented; considered a separate product line.
+Full local library scraping
+Deferred. Metadata is provider-supplied or cached from add-on results.
+Network file servers
+Deferred unless required by a future local-file provider.
+Raw torrent engine
+Deferred due to legal, network, storage, and UX complexity.
+
+
+13. Implementation Roadmap
+Phase
+Deliverables
+Phase 0: Spike
+Player backend proof of concept, Wasmtime host-call prototype, manifest parser, fixture add-on.
+Phase 1: MVP Core
+Cargo workspace, data store, add-on install/run/disable, list/search/resolve SDK, mock UI, mock player tests.
+Phase 2: MVP UX
+Desktop UI, settings, permission prompts, auth flow, player controls, diagnostics export.
+Phase 3: Hardening
+Signing/repository, quotas, CI matrix, fuzz/property tests, security review, packaging.
+Phase 4: Ecosystem
+Developer CLI, docs, example add-ons, repository policy, update channels, telemetry opt-in if desired.
+
+References
+Rust Cargo Book: Workspaces - https://doc.rust-lang.org/cargo/reference/workspaces.html
+Wasmtime embedding API - https://docs.wasmtime.dev/lang.html
+Wasmtime Component Model API - https://docs.rs/wasmtime/latest/wasmtime/component/index.html
+mpv reference manual - https://mpv.io/manual/stable/
+mpv libmpv embedding examples - https://github.com/mpv-player/mpv-examples/blob/master/libmpv/README.md
+GStreamer Rust bindings - https://docs.rs/gstreamer/latest/gstreamer/
+Kodi xbmcplugin reference - https://xbmc.github.io/docs.kodi.tv/master/kodi-base/d1/d32/group__python__xbmcplugin.html
+Kodi add-on structure - https://kodi.wiki/view/Add-on_structure
+Kodi licensing overview - https://codedocs.xyz/xbmc/xbmc/md_LICENSES_README.html

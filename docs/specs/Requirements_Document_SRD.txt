@@ -1,0 +1,352 @@
+Rust Video Add-on Host (RVAH)
+Software Requirements Document (SRD)
+Functional and non-functional requirements for a Rust video add-on host.
+
+Field
+Value
+Document code
+RVAH-SRD-001
+Version
+Draft v0.1
+Status
+Draft for architecture and planning
+Date
+2026-07-16
+Primary implementation language
+Rust
+Primary product decision
+Custom add-on SDK inspired by Kodi patterns; not Kodi add-on compatible
+
+Scope decision: This project does not attempt to run Kodi Python add-ons. It defines a new Rust-hosted add-on platform focused only on video discovery, source resolution, and playback.
+
+
+1. Document Control
+Version
+Date
+Author/Role
+Summary
+0.1
+2026-07-16
+Product/Engineering
+Initial draft generated for Rust-based video add-on host.
+
+1.1 Intended audience
+Founder/product owner deciding MVP scope and funding priorities.
+Rust engineers implementing the application, runtime, player, and add-on SDK.
+QA engineers building automated and manual validation coverage.
+Security/release reviewers approving add-on permissions, signing, and distribution rules.
+2. Product Summary
+RVAH is a video-first application and add-on host written in Rust. It allows users to install provider add-ons that expose browsable catalogs, search results, playable source candidates, and resolver flows. The host owns the user interface, add-on sandbox, credential storage, network permissioning, and playback engine.
+The product is intentionally narrower than Kodi. It borrows the successful user interaction pattern of “browse directory-like lists, select an item, resolve to a playable source, and hand that source to a player,” but it does not implement Kodi compatibility, Kodi skins, Kodi Python APIs, PVR, music, photos, games, or a full local media-center library.
+In scope
+Out of scope for MVP
+Video add-on browsing, search, resolving, and playback.
+Kodi Python add-on compatibility or emulation.
+Custom add-on SDK with stable host APIs.
+Music, photo, game, weather, PVR/DVR, and live-TV guide subsystems.
+Sandboxed add-on runtime with permissions.
+Full theme/skin engine or arbitrary script UI windows.
+Debrid/service-style authenticated resolver workflows.
+Bundled content piracy sources, DRM circumvention, or illegal scraping features.
+Local app state: installed add-ons, settings, credentials, favorites, resume/watched state.
+Large local media library scraping and network file servers.
+
+2.1 Goals
+Deliver a minimal but extensible video add-on host that can install, run, permission, and update add-ons safely.
+Use Rust for the core application, runtime, data layer, network layer, and player orchestration.
+Make add-on development simpler than Kodi add-on development by defining a small, typed SDK rather than exposing a full media-center API.
+Keep the host neutral: add-ons describe catalogs and resolve media sources, while the host controls playback, credentials, UI, and security boundaries.
+Enable legal service integrations and user-provided account/API workflows without bundling unauthorized content sources.
+2.2 Success criteria
+Criterion
+Target
+MVP browsing
+A fixture add-on can return nested directories, media items, pagination, artwork, and metadata.
+MVP playback
+A fixture add-on can resolve at least direct MP4 and HLS URLs; the player can start, pause, seek, stop, and report progress.
+MVP security
+An add-on cannot access network, storage, credentials, or OS resources unless explicitly granted by manifest permissions and user approval.
+MVP distribution
+The host can install a signed add-on package, verify metadata, enable/disable it, and uninstall it cleanly.
+MVP maintainability
+Core crates have automated tests, contract tests for the SDK, and mock player/runtime tests in CI.
+
+3. Assumptions and Constraints
+ID
+Assumption or constraint
+A-01
+The first target is desktop-class devices: Windows, macOS, and Linux. TV/mobile ports are future work.
+A-02
+The add-on SDK is new and does not promise Kodi API compatibility.
+A-03
+The application will not include Kodi source code or assets unless the project explicitly accepts the related license obligations.
+A-04
+Raw torrent streaming is deferred. Debrid or account-backed resolver APIs may be supported as add-ons when legally configured by users.
+A-05
+The host must not bypass DRM, paywalls, geographic restrictions, or terms of service. Any DRM support must use lawful platform/provider mechanisms.
+A-06
+The host must be resilient to malicious, buggy, slow, or abandoned add-ons.
+
+4. User Roles and Primary Use Cases
+Role
+Needs
+Viewer
+Install trusted add-ons, authenticate services, browse/search videos, play streams, manage favorites, and resume playback.
+Add-on developer
+Use a typed SDK, test locally, declare permissions, package/sign releases, and debug host interactions.
+Repository maintainer
+Publish add-on metadata, review permissions, rotate signatures, and deprecate unsafe versions.
+Operator/reviewer
+Inspect logs, reproduce bugs, verify security boundaries, and approve release gates.
+
+4.1 MVP use cases
+Use case
+Summary
+UC-01 Install add-on
+User selects an add-on package or repository entry. Host verifies signature, shows permissions, installs, and enables it.
+UC-02 Browse catalog
+User opens an add-on and navigates directory-like pages supplied by the add-on.
+UC-03 Search
+User searches one add-on or all installed add-ons; host presents normalized media results.
+UC-04 Authenticate service
+User completes device-code/OAuth/API-key flow; host stores tokens in the secret vault.
+UC-05 Resolve source
+User selects a media item; add-on returns one or more playable sources or a resolver action.
+UC-06 Play video
+Host hands a playable source to the player, applying allowed headers, subtitles, and resume state.
+UC-07 Recover from failure
+Host surfaces clear errors for add-on failures, network errors, auth expiration, and unsupported media.
+
+5. Functional Requirements
+5.1 Add-on package and lifecycle
+ID
+Requirement
+Priority
+FR-001
+The host shall install add-ons from a local package file or trusted repository entry.
+MVP
+FR-002
+The host shall parse a manifest that declares add-on identity, version, entry module, capabilities, permissions, supported host SDK range, and assets.
+MVP
+FR-003
+The host shall reject add-ons with missing required manifest fields, invalid semantic versions, unsupported SDK ranges, or duplicate identifiers.
+MVP
+FR-004
+The host shall verify package integrity and signatures before enabling an add-on.
+MVP
+FR-005
+The host shall display requested permissions to the user before first enablement and after any permission expansion.
+MVP
+FR-006
+The host shall allow add-ons to be enabled, disabled, updated, rolled back, and uninstalled without corrupting other add-ons.
+MVP
+FR-007
+The host shall keep add-on data isolated by add-on identifier.
+MVP
+FR-008
+The host should support add-on repositories with metadata refresh, version checks, and deprecation notices.
+Post-MVP
+
+5.2 Add-on runtime and SDK
+ID
+Requirement
+Priority
+FR-020
+The host shall execute untrusted add-ons in a sandboxed runtime rather than as native in-process code.
+MVP
+FR-021
+The SDK shall expose typed operations for listing catalog pages, searching, resolving sources, reading settings, logging, and requesting host-managed auth flows.
+MVP
+FR-022
+The host shall enforce CPU, memory, wall-clock, network, and storage quotas per add-on invocation.
+MVP
+FR-023
+The host shall return structured errors from add-ons to the UI without crashing the process.
+MVP
+FR-024
+The host shall support pagination via cursor or page tokens.
+MVP
+FR-025
+The host shall support add-on-provided metadata: title, synopsis, year, runtime, rating, artwork, content type, and provider-specific IDs.
+MVP
+FR-026
+The host shall support provider capabilities so add-ons can declare whether they implement browsing, search, resolving, auth, or account status.
+MVP
+FR-027
+The SDK should include a local simulator and contract-test harness for add-on developers.
+MVP
+
+5.3 User interface and navigation
+ID
+Requirement
+Priority
+FR-040
+The UI shall show installed add-ons, favorites, recent items, settings, and diagnostics entry points.
+MVP
+FR-041
+The UI shall render directory items, media items, source choices, artwork, labels, and badges from normalized host models.
+MVP
+FR-042
+The UI shall maintain navigation history and allow back/forward behavior across add-on pages.
+MVP
+FR-043
+The UI shall provide loading, empty, partial, and error states for add-on calls.
+MVP
+FR-044
+The UI shall provide search across one add-on and may aggregate search across all enabled add-ons.
+MVP/Post-MVP
+FR-045
+The UI should support remote-friendly focus navigation suitable for future living-room use.
+Post-MVP
+FR-046
+The UI shall allow users to inspect and revoke add-on permissions.
+MVP
+
+5.4 Playback and media source handling
+ID
+Requirement
+Priority
+FR-060
+The host shall pass only resolved playable sources to the player backend.
+MVP
+FR-061
+The player shall support direct file/HTTP URLs and HLS for MVP; DASH may be added where the selected backend supports it.
+MVP/Post-MVP
+FR-062
+The player shall support play, pause, resume, stop, seek, volume, mute, fullscreen, and progress events.
+MVP
+FR-063
+The host shall support source-specific request headers such as user-agent and referer only when returned through approved resolver outputs.
+MVP
+FR-064
+The host shall support external subtitles and track selection where the backend exposes them.
+MVP/Post-MVP
+FR-065
+The host shall persist watched state and resume position per media item and provider.
+MVP
+FR-066
+The player shall report recoverable and fatal errors to the host using structured error codes.
+MVP
+FR-067
+The host shall not implement DRM circumvention. Any future DRM support must be provider-authorized and platform-compliant.
+MVP
+
+5.5 Auth, networking, and service access
+ID
+Requirement
+Priority
+FR-080
+The host shall provide add-ons with a permissioned HTTP client instead of unrestricted sockets.
+MVP
+FR-081
+The host shall enforce manifest-declared domain allowlists for outbound add-on HTTP calls.
+MVP
+FR-082
+The host shall support device-code, OAuth-style browser handoff, API-key, and manual-token flows through host UI abstractions.
+MVP/Post-MVP
+FR-083
+The host shall store credentials in an OS-backed secret store or encrypted local vault.
+MVP
+FR-084
+The host shall redact secrets from logs, crash reports, and diagnostic bundles.
+MVP
+FR-085
+The host shall expose account status and auth-expired states to users in a clear, non-fatal way.
+MVP
+
+5.6 Data, settings, diagnostics, and updates
+ID
+Requirement
+Priority
+FR-100
+The host shall persist installed add-on metadata, user settings, favorites, resume state, cache metadata, and diagnostics configuration.
+MVP
+FR-101
+The host shall provide per-add-on key-value storage with quota limits.
+MVP
+FR-102
+The host shall expose user-editable settings declared by the add-on manifest schema.
+MVP
+FR-103
+The host shall provide log levels and diagnostic export with secret redaction.
+MVP
+FR-104
+The host should support app update checks and add-on repository refresh in a user-controlled manner.
+Post-MVP
+FR-105
+The host shall maintain schema migrations for local databases and roll back failed migrations safely.
+MVP
+
+6. Non-Functional Requirements
+Category
+Requirement
+Performance
+Cold start target under 3 seconds on a modern desktop; cached page render under 500 ms; uncached provider page target under 2 seconds excluding external service latency.
+Playback responsiveness
+From resolved playable URL to first frame target under 5 seconds for normal broadband/HLS conditions.
+Reliability
+Add-on crash, timeout, or malformed response must not crash the host; host should recover by disabling or quarantining repeated offenders.
+Security
+All untrusted add-ons run under least privilege, with explicit permissions, domain allowlists, quotas, and isolated state.
+Privacy
+Secrets and personally identifiable data are stored locally where possible, redacted from logs, and removable by the user.
+Portability
+Core crates shall avoid OS-specific assumptions; platform adapters shall isolate windowing, keychain, and media-output differences.
+Maintainability
+Core APIs shall be versioned, documented, and covered by unit, integration, and contract tests.
+Accessibility
+UI shall support keyboard navigation, visible focus states, readable scaling, and basic screen-reader labels where the UI toolkit supports them.
+Legal/compliance
+The app shall not bundle unauthorized sources or mechanisms for bypassing access controls; add-on repository policy shall prohibit illegal content facilitation.
+
+7. MVP Release Definition
+Area
+Minimum releasable capability
+Application shell
+Home screen, add-on list, settings, diagnostics, and playback view.
+Add-on host
+Install, verify, run, permission, disable, and uninstall sandboxed add-ons.
+SDK
+Browse/search/resolve/auth/log/settings/storage APIs plus developer simulator.
+Player
+Direct URL and HLS playback with essential controls and progress events.
+Data
+Local app DB, encrypted secret storage, watched/resume state, and migrations.
+Security
+Signed packages, permission prompts, egress allowlists, quotas, and redacted logs.
+Testing
+Automated unit/integration/contract tests plus manual playback smoke tests on all target desktop OSes.
+
+8. Requirements Traceability Summary
+Epic
+Primary requirements
+Verification focus
+Add-on lifecycle
+FR-001 through FR-008
+Install/update/uninstall tests, signature rejection, manifest validation.
+Runtime/SDK
+FR-020 through FR-027
+Sandbox, quotas, contract tests, malformed response recovery.
+UI/navigation
+FR-040 through FR-046
+Fixture add-on navigation, loading/error states, permission management.
+Playback
+FR-060 through FR-067
+Direct URL/HLS playback, controls, errors, progress/resume.
+Auth/network
+FR-080 through FR-085
+Domain allowlists, token vault, auth expiration, log redaction.
+Data/diagnostics
+FR-100 through FR-105
+Migration tests, settings persistence, diagnostic bundle validation.
+
+References
+Rust Cargo Book: Workspaces - https://doc.rust-lang.org/cargo/reference/workspaces.html
+Wasmtime embedding API - https://docs.wasmtime.dev/lang.html
+Wasmtime Component Model API - https://docs.rs/wasmtime/latest/wasmtime/component/index.html
+mpv reference manual - https://mpv.io/manual/stable/
+mpv libmpv embedding examples - https://github.com/mpv-player/mpv-examples/blob/master/libmpv/README.md
+GStreamer Rust bindings - https://docs.rs/gstreamer/latest/gstreamer/
+Kodi xbmcplugin reference - https://xbmc.github.io/docs.kodi.tv/master/kodi-base/d1/d32/group__python__xbmcplugin.html
+Kodi add-on structure - https://kodi.wiki/view/Add-on_structure
+Kodi licensing overview - https://codedocs.xyz/xbmc/xbmc/md_LICENSES_README.html

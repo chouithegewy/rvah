@@ -1,0 +1,394 @@
+Rust Video Add-on Host (RVAH)
+Software Test Plan (STP)
+Verification strategy for the Rust video add-on host, add-on SDK, and playback pipeline.
+
+Field
+Value
+Document code
+RVAH-STP-001
+Version
+Draft v0.1
+Status
+Draft for architecture and planning
+Date
+2026-07-16
+Primary implementation language
+Rust
+Primary product decision
+Custom add-on SDK inspired by Kodi patterns; not Kodi add-on compatible
+
+Scope decision: This project does not attempt to run Kodi Python add-ons. It defines a new Rust-hosted add-on platform focused only on video discovery, source resolution, and playback.
+
+
+1. Document Control
+Version
+Date
+Author/Role
+Summary
+0.1
+2026-07-16
+Product/Engineering
+Initial draft generated for Rust-based video add-on host.
+
+1.1 Intended audience
+Founder/product owner deciding MVP scope and funding priorities.
+Rust engineers implementing the application, runtime, player, and add-on SDK.
+QA engineers building automated and manual validation coverage.
+Security/release reviewers approving add-on permissions, signing, and distribution rules.
+2. Test Objectives
+Verify that the application satisfies the SRD requirements for video add-on installation, browsing, search, resolution, playback, auth, data persistence, and diagnostics.
+Verify that untrusted add-ons cannot escape the sandbox, exceed quotas, access unauthorized domains, or read secrets without grants.
+Verify that the add-on SDK remains compatible across releases through contract tests and fixture add-ons.
+Verify that player integration is stable enough for MVP playback scenarios on target desktop platforms.
+Verify that release builds are reproducible enough to package, sign, and support with clear diagnostics.
+2.1 In scope and out of scope
+In scope
+Out of scope for this STP
+Rust core, add-on host, SDK, data/auth, player adapter, UI flows, repository/package validation.
+Testing illegal content sources or DRM bypass workflows.
+Direct URL and HLS playback smoke/regression tests.
+Full codec certification across every possible video/audio/subtitle format.
+Desktop targets: Linux, macOS, Windows.
+Mobile, smart-TV, console, and embedded-device certification.
+Fixture add-ons and mock services.
+Reliability of third-party services outside controlled integration environments.
+
+3. Test Strategy
+Level
+Purpose
+Primary tools/approach
+Unit tests
+Validate pure Rust domain logic, manifest parsing, permissions, player state, error mapping, and schema migrations.
+cargo test; property tests for parsers and state transitions.
+Component tests
+Validate crates with mocks: add-on host, network wrapper, data repositories, auth service, player backend trait.
+Mock HTTP server, mock player, temporary DB, test keychain abstraction.
+Contract tests
+Validate SDK ABI/types and fixture add-ons against host versions.
+rvah-testkit; golden JSON/WASM fixtures; compatibility matrix.
+Integration tests
+Validate end-to-end flows across UI/core/add-on/player with controlled services.
+Headless UI harness where possible; mock service; fake player or mpv smoke mode.
+Playback tests
+Validate source loading, controls, subtitles, progress, errors, and resume.
+Known-good media fixtures, local HTTP server, HLS test manifest.
+Security tests
+Validate sandbox isolation, permission enforcement, signature rejection, redaction, quota/timeouts.
+Malicious fixture add-ons, fuzz inputs, static scanning, dependency audit.
+Performance tests
+Validate startup, browse latency, search aggregation, runtime quotas, and player-start timing.
+Benchmarks, controlled network latency, synthetic large catalogs.
+Manual exploratory
+Validate living-room style navigation, visual polish, error comprehensibility, and real-world service flows.
+Scripted charters, diagnostics export, release candidate builds.
+
+4. Test Environments
+Environment
+Configuration
+CI Linux
+Stable Rust toolchain, cargo test, clippy, fmt, unit/component/contract tests, mock player, mock HTTP server.
+Desktop Linux QA
+Release build, real player backend, hardware/software decode sanity checks, local HTTP/HLS fixtures.
+macOS QA
+Release build, OS keychain abstraction, player backend smoke tests, packaging/signing checks.
+Windows QA
+Release build, credential storage abstraction, player backend smoke tests, installer/uninstaller checks.
+Network lab
+Mock services with success, latency, throttling, malformed JSON, auth expiration, and TLS failure scenarios.
+Security lab
+Malicious fixture add-ons, signed/unsigned packages, malformed manifests, resource exhaustion fixtures.
+
+5. Test Data and Fixtures
+Fixture
+Purpose
+catalog_echo
+Returns deterministic nested directories, media items, artwork references, pagination, and metadata.
+resolver_static
+Returns direct MP4, HLS, expired URL, unsupported protocol, bad header, and subtitle variants.
+auth_device_code
+Exercises successful auth, expired code, denied code, token refresh, and revocation.
+bad_permissions
+Attempts unauthorized domain access, secret access, storage overflow, and local file access.
+slow_addon
+Sleeps, loops, allocates memory, and delays network to validate quotas and cancellation.
+malformed_manifest
+Missing required fields, invalid versions, unsupported SDK range, duplicate ID, invalid permissions.
+large_catalog
+Generates 10,000 items with paging to validate performance, memory use, and UI virtualization.
+mock_media_server
+Serves MP4, HLS, subtitles, redirects, 404/500 responses, range requests, and throttled bandwidth.
+
+6. Entry and Exit Criteria
+Gate
+Criteria
+Test entry
+Build compiles; unit tests pass; manifest schema frozen for the test cycle; fixture add-ons generated; known blockers triaged.
+MVP exit
+All Priority 0 and Priority 1 tests pass; no open critical/high security defects; playback smoke passes on target OSes; diagnostics export verified.
+Release candidate exit
+Regression suite green; package signing verified; dependency/license/security scan reviewed; performance budgets met or exceptions approved.
+Add-on SDK exit
+Contract tests pass for all supported SDK versions; breaking changes documented; simulator and examples updated.
+
+7. Requirements Traceability
+SRD area
+Representative requirements
+Primary verification
+Add-on lifecycle
+FR-001 to FR-008
+TC-ADD-001 through TC-ADD-010
+Runtime/SDK
+FR-020 to FR-027
+TC-RUN-001 through TC-RUN-011
+UI/navigation
+FR-040 to FR-046
+TC-UI-001 through TC-UI-008
+Playback
+FR-060 to FR-067
+TC-PLY-001 through TC-PLY-012
+Auth/network
+FR-080 to FR-085
+TC-AUTH-001 through TC-AUTH-009 and TC-SEC-001 through TC-SEC-008
+Data/diagnostics
+FR-100 to FR-105
+TC-DATA-001 through TC-DATA-008
+Non-functional
+Performance/security/privacy/accessibility/reliability
+TC-NFR-001 through TC-NFR-014
+
+8. Test Cases
+8.1 Add-on lifecycle tests
+ID
+Scenario
+Expected result
+TC-ADD-001
+Install valid signed add-on package.
+Package installs, permissions are shown, add-on is disabled or enabled according to user choice.
+TC-ADD-002
+Install unsigned or tampered package.
+Host rejects package and records diagnostic without modifying installed state.
+TC-ADD-003
+Install add-on with unsupported SDK range.
+Host rejects with clear compatibility message.
+TC-ADD-004
+Update add-on with same permissions.
+Host updates package and preserves settings/secrets/state.
+TC-ADD-005
+Update add-on with expanded permissions.
+Host requires explicit re-approval before enabling new version.
+TC-ADD-006
+Disable and re-enable add-on.
+No data corruption; UI hides and restores provider entry.
+TC-ADD-007
+Uninstall add-on with data removal selected.
+Package, settings, cache, permissions, and secrets are removed.
+TC-ADD-008
+Uninstall add-on with data retention selected.
+Package removed; user data remains quarantined and restorable by same ID.
+
+8.2 Runtime and SDK tests
+ID
+Scenario
+Expected result
+TC-RUN-001
+Call list() on catalog_echo root.
+Host receives valid Page with directory and media items.
+TC-RUN-002
+Navigate paginated large_catalog.
+Cursor-based paging returns stable results without high memory use.
+TC-RUN-003
+Add-on returns malformed item.
+Host rejects response, surfaces provider error, and remains running.
+TC-RUN-004
+slow_addon exceeds wall-clock quota.
+Invocation is cancelled and add-on receives timeout/quarantine counter.
+TC-RUN-005
+slow_addon exceeds memory quota.
+Invocation fails safely and host stays responsive.
+TC-RUN-006
+bad_permissions requests unauthorized secret.
+Host denies call and logs redacted security event.
+TC-RUN-007
+bad_permissions requests unauthorized domain.
+HTTP request denied before network access.
+TC-RUN-008
+SDK contract fixture built with previous supported SDK.
+Host loads fixture or reports compatible deprecation path according to policy.
+
+8.3 UI and navigation tests
+ID
+Scenario
+Expected result
+TC-UI-001
+Open app with no add-ons installed.
+Shows empty state with install action and no errors.
+TC-UI-002
+Open installed catalog_echo provider.
+Shows root page with artwork, titles, badges, and loading state transition.
+TC-UI-003
+Navigate into directory and back.
+History restores previous page and scroll/focus where feasible.
+TC-UI-004
+Provider returns empty page.
+UI shows empty state scoped to provider/search.
+TC-UI-005
+Provider returns retryable error.
+UI shows retry action and diagnostics ID.
+TC-UI-006
+Search single add-on.
+Results show normalized media items and no duplicate stale results.
+TC-UI-007
+Open permission manager.
+User can inspect, revoke, and re-grant add-on permissions.
+TC-UI-008
+Keyboard-only navigation through browse and playback controls.
+Focus is visible and all MVP actions are reachable.
+
+8.4 Playback tests
+ID
+Scenario
+Expected result
+TC-PLY-001
+Resolve direct MP4 and play.
+Player loads, starts, reports progress, pauses, seeks, resumes, and stops.
+TC-PLY-002
+Resolve HLS source and play.
+Player starts stream and handles buffering/progress events.
+TC-PLY-003
+Resolve source with permitted headers.
+Headers are applied only to playback request and not logged in clear text.
+TC-PLY-004
+Resolve unsupported protocol.
+Source validator rejects before player load.
+TC-PLY-005
+Resolve expired source.
+Host shows source-expired error and offers retry resolution.
+TC-PLY-006
+Play with external subtitle.
+Subtitle loads when backend supports it; failure is non-fatal.
+TC-PLY-007
+Seek near end and complete.
+Watched state set at configured threshold.
+TC-PLY-008
+Stop mid-playback and restart.
+Resume prompt or automatic resume uses stored position.
+TC-PLY-009
+Player backend missing/unavailable.
+App shows actionable error and diagnostics rather than crashing.
+TC-PLY-010
+Network 404/500 during playback.
+Player error maps to recoverable user message.
+
+8.5 Auth, data, diagnostics, and security tests
+ID
+Scenario
+Expected result
+TC-AUTH-001
+Complete device-code auth success.
+Host stores token in vault; add-on account_status shows signed in.
+TC-AUTH-002
+Device-code expires.
+Host shows retry flow and stores no secret.
+TC-AUTH-003
+Token refresh succeeds.
+Existing session continues without user interruption.
+TC-AUTH-004
+Token refresh fails/revoked.
+Host marks account expired and prompts sign-in.
+TC-DATA-001
+Migrate database from previous schema.
+Migration succeeds with settings/favorites/watch state preserved.
+TC-DATA-002
+Crash during migration simulation.
+Host rolls back or recovers without corrupting DB.
+TC-DATA-003
+Export diagnostics after auth and playback.
+Bundle includes relevant events and excludes tokens/cookies/API keys.
+TC-SEC-001
+Tamper installed package after verification.
+Host detects mismatch before running.
+TC-SEC-002
+Add-on attempts local file read through HTTP/path tricks.
+Host denies unsupported scheme/path and logs event.
+TC-SEC-003
+Add-on logs secret-looking values.
+Logger redacts configured secret patterns.
+TC-SEC-004
+Repository metadata marks version deprecated.
+Host warns user and blocks/updates according to policy.
+
+8.6 Non-functional tests
+ID
+Scenario
+Target or expected result
+TC-NFR-001
+Cold start performance.
+Under 3 seconds on reference desktop hardware, or exception documented.
+TC-NFR-002
+Cached browse performance.
+Under 500 ms to render cached page.
+TC-NFR-003
+Large catalog memory use.
+No unbounded memory growth; UI remains responsive while paging.
+TC-NFR-004
+Resolved URL to first-frame timing.
+Under 5 seconds for local fixture media under normal conditions.
+TC-NFR-005
+Repeated provider failures.
+Host quarantines or disables add-on after configured threshold.
+TC-NFR-006
+Dependency/license scan.
+No unreviewed high-risk dependency or license blocker.
+TC-NFR-007
+Accessibility smoke.
+Keyboard navigation and visible focus pass MVP screens.
+TC-NFR-008
+Localization readiness.
+User-facing strings are externalized or tagged for extraction.
+
+9. Automation and CI Plan
+Pipeline stage
+Checks
+Commit/PR
+cargo fmt, clippy, unit tests, manifest schema tests, fast contract tests.
+Nightly
+Full integration tests, large catalog tests, malicious fixture tests, dependency audit, fuzz/property test subset.
+Release branch
+Cross-platform release builds, package signing, player smoke tests, migration tests, diagnostics redaction verification.
+Add-on SDK compatibility
+Matrix of host versions versus fixture add-ons compiled against supported SDK ranges.
+
+
+10. Defect Severity and Release Rules
+Severity
+Definition
+Release rule
+Critical
+Host crash, data loss, sandbox escape, secret leak, unsigned code execution, or repeatable playback corruption.
+Must be fixed before any release.
+High
+Major feature unusable, add-on lifecycle broken, auth broken, security boundary weakened, or player unusable on target OS.
+Must be fixed or formally waived for non-public builds only.
+Medium
+Workaround exists; affects limited providers or non-core flows.
+May ship with owner approval and documented known issue.
+Low
+Cosmetic, copy, minor diagnostics, or developer-tool issue.
+May ship if backlog item exists.
+
+11. Manual Exploratory Charters
+Provider discovery: install three fixture add-ons, compare browsing/search clarity, and verify provider errors are understandable.
+Living-room flow: complete browse-to-playback using keyboard/remote-like navigation only.
+Failure recovery: disconnect network during browse and playback, then reconnect and verify retry behavior.
+Credential hygiene: authenticate, export diagnostics, inspect logs, revoke account, and uninstall provider.
+Upgrade rehearsal: install old build, create data, upgrade to release candidate, verify migrations and add-on compatibility.
+References
+Rust Cargo Book: Workspaces - https://doc.rust-lang.org/cargo/reference/workspaces.html
+Wasmtime embedding API - https://docs.wasmtime.dev/lang.html
+Wasmtime Component Model API - https://docs.rs/wasmtime/latest/wasmtime/component/index.html
+mpv reference manual - https://mpv.io/manual/stable/
+mpv libmpv embedding examples - https://github.com/mpv-player/mpv-examples/blob/master/libmpv/README.md
+GStreamer Rust bindings - https://docs.rs/gstreamer/latest/gstreamer/
+Kodi xbmcplugin reference - https://xbmc.github.io/docs.kodi.tv/master/kodi-base/d1/d32/group__python__xbmcplugin.html
+Kodi add-on structure - https://kodi.wiki/view/Add-on_structure
+Kodi licensing overview - https://codedocs.xyz/xbmc/xbmc/md_LICENSES_README.html
