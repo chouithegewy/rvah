@@ -1,0 +1,12 @@
+[package]
+name = "rvah-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rvah-addon-host = { workspace = true }
+rvah-addon-sdk = { workspace = true }
+rvah-player = { workspace = true }
+ed25519-dalek = { workspace = true }

@@ -808,6 +808,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "rvah-core"
+version = "0.1.0"
+dependencies = [
+ "rvah-addon-host",
+ "rvah-addon-sdk",
+ "rvah-auth",
+ "rvah-data",
+ "rvah-net",
+ "rvah-player",
+ "rvah-testkit",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "rvah-data"
 version = "0.1.0"
 dependencies = [
@@ -835,6 +851,16 @@ dependencies = [
  "rvah-addon-sdk",
  "serde",
  "thiserror",
+]
+
+[[package]]
+name = "rvah-testkit"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "rvah-addon-host",
+ "rvah-addon-sdk",
+ "rvah-player",
 ]
 
 [[package]]

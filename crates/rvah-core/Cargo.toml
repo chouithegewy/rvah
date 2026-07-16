@@ -1,0 +1,20 @@
+[package]
+name = "rvah-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rvah-addon-host = { workspace = true }
+rvah-addon-sdk = { workspace = true }
+rvah-auth = { workspace = true }
+rvah-data = { workspace = true }
+rvah-net = { workspace = true }
+rvah-player = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+rvah-testkit = { workspace = true }
+tempfile = { workspace = true }
