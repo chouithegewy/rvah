@@ -218,9 +218,9 @@ All types `Serialize + Deserialize + Clone + Debug + PartialEq` (traits excepted
 
 ### Task 11: Workspace polish
 
-- [ ] `cargo fmt --all`, `cargo clippy --workspace -- -D warnings` clean, full `cargo test --workspace` green
-- [ ] Write `README.md`: what RVAH is, scope decision (not Kodi-compatible), crate map, CLI quickstart with fixture add-on, security model summary, what's deferred (real UI, mpv backend, repositories/FR-008, DASH)
-- [ ] Commit `docs: README and workspace polish`
+- [x] `cargo fmt --all`, `cargo clippy --workspace -- -D warnings` clean, full `cargo test --workspace` green
+- [x] Write `README.md`: what RVAH is, scope decision (not Kodi-compatible), crate map, CLI quickstart with fixture add-on, security model summary, what's deferred (real UI, mpv backend, repositories/FR-008, DASH)
+- [x] Commit `docs: README and workspace polish`
 
 ## Self-Review Notes
 
