@@ -1,0 +1,12 @@
+[package]
+name = "rvah-net"
+description = "Host-owned HTTP client with per-add-on egress allowlists for RVAH"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rvah-addon-sdk.workspace = true
+thiserror.workspace = true
+url.workspace = true
+ureq.workspace = true
