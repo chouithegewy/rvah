@@ -25,6 +25,7 @@ flate2 = "1"
 ureq = "2"
 hex = "0.4"
 tempfile = "3"
+wasmtime = "24"
 
 rvah-addon-sdk = { path = "crates/rvah-addon-sdk" }
 rvah-addon-host = { path = "crates/rvah-addon-host" }

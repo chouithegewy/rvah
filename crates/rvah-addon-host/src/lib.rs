@@ -7,6 +7,8 @@ pub mod install;
 pub mod manifest;
 pub mod package;
 pub mod runtime;
+#[cfg(feature = "wasm")]
+pub mod wasm_runtime;
 
 pub use host_api::BridgedHostApi;
 pub use install::{AddonManager, InstallDecision, InstallError, InstalledAddon};
@@ -19,3 +21,5 @@ pub use package::{
     verify_package, PackageError,
 };
 pub use runtime::{AddonOp, AddonResponse, AddonRuntime, InProcessRuntime, InvocationCtx};
+#[cfg(feature = "wasm")]
+pub use wasm_runtime::{WasmLimits, WasmRuntime};

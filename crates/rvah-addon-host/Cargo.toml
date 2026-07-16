@@ -21,6 +21,10 @@ rand.workspace = true
 tar.workspace = true
 flate2.workspace = true
 hex.workspace = true
+wasmtime = { workspace = true, optional = true }
+
+[features]
+wasm = ["dep:wasmtime"]
 
 [dev-dependencies]
 tempfile.workspace = true
