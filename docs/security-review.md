@@ -30,8 +30,21 @@ the mitigation as built, the tests that pin it, and known gaps.
   allowlist checks and consuming quota on every hop (303 downgrades to a
   body-less GET). Tests: `follows_redirect_within_allowlist`,
   `redirect_to_disallowed_host_denied`, `redirect_loop_hits_hop_limit`.
-- **Gap:** allowlisting is by host name; no DNS pinning (a permitted name
-  re-resolving to a different address between checks is not detected).
+- **DNS pinning (Phase 7):** with a resolver installed
+  (`PermissionedClient::with_resolver`, production uses `SystemResolver`),
+  every hop's host is resolved once, the addresses are rejected if any is
+  non-global (loopback, RFC-1918, link-local, CGNAT, ULA, IPv4-mapped
+  disguises — DNS rebinding), and the transport connects only to the checked
+  addresses (`execute_pinned`; `UreqTransport` installs a pinning
+  `ureq::Resolver`). An IP literal that passes the allowlist by exact match
+  is treated as an explicit user grant. Tests:
+  `resolver_pins_checked_addresses_through_transport`,
+  `name_resolving_to_non_global_address_denied`,
+  `redirect_hop_re_resolves_and_denies_private_target`,
+  `allowlisted_ip_literal_is_an_explicit_grant`.
+- **Gap:** pinning covers one `fetch`; a later `fetch` re-resolves (by
+  design — records would go stale), so a slow-flux name can still move
+  between calls, within the allowlist and non-global policy.
 
 ### Add-on hangs or allocates excessive memory
 - **Built:** `InProcessRuntime` enforces a wall-clock timeout per invoke;
@@ -62,15 +75,15 @@ the mitigation as built, the tests that pin it, and known gaps.
 
 ### Log leakage
 - **Built:** `Redactor` masks registered secret values plus pattern matches
-  (`Authorization:`, `Bearer`, `api_key=`, `access_token=`) at write time in
-  the host bridge, and again at display/export time (CLI diagnostics, UI
-  diagnostics export).
+  (`Authorization:`, `Cookie:`/`Set-Cookie:`, `Bearer`, `api_key=`,
+  `access_token=`, `cookie=`) at write time in the host bridge, and again at
+  display/export time (CLI diagnostics, UI diagnostics export).
 - **Tests:** `redactor_masks_registered_and_patterns`,
+  `cookie_headers_and_pairs_are_masked`,
   `diagnostics_output_contains_no_secret` (CLI end-to-end),
   `bearer_tokens_pattern_masked` (property).
-- **Gap:** pattern list is fixed; cookies are not in the pattern set (add-ons
-  cannot set cookies through the bridge today, but the pattern should grow
-  with the API).
+- **Gap:** pattern list is fixed; it should keep growing with the bridge API
+  surface.
 
 ### License contamination
 - **Built:** no Kodi code or assets; the workspace is original code. All

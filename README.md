@@ -77,9 +77,11 @@ real add-on code execution is the job of the Wasm runtime (below).
   signature over its sha256; installs verify before parsing, updates that
   change the permission set require re-approval, and installed packages can be
   re-verified against the recorded hash.
-- **Mediated services.** HTTP goes through an allowlist + request quota;
-  storage is size-quota'd per add-on; secrets live in an encrypted vault and
-  are only readable if declared; every log line is redacted before persistence.
+- **Mediated services.** HTTP goes through an allowlist + request quota, with
+  redirects re-checked per hop and DNS resolved once, vetted against a
+  non-global address policy, and pinned for the connection; storage is
+  size-quota'd per add-on; secrets live in an encrypted vault and are only
+  readable if declared; every log line is redacted before persistence.
 - **Contained failures.** Provider calls run under a wall-clock timeout; an
   add-on failure never crashes the host, and three consecutive failures
   quarantine the add-on. The optional Wasmtime runtime (`cargo test -p
@@ -91,7 +93,9 @@ real add-on code execution is the job of the Wasm runtime (below).
 settings/diagnostics/auth screens over the same core the CLI uses. Playback
 uses system `mpv` over JSON IPC when present (video in mpv's own window),
 falling back to the mock player with an on-screen note. Diagnostics can be
-exported as a redacted JSON bundle.
+exported as a redacted JSON bundle. Remote-friendly keys: arrows + Enter move
+a D-pad focus over the list screens, Escape goes home, Backspace goes back,
+Alt+arrows walk browse history, Space toggles play/pause, S stops.
 
 ## Repositories
 
@@ -105,9 +109,7 @@ Consume: `rvah repo-check` / `rvah repo-install … --approve` with `--index`
 
 - DRM is out of scope entirely (DASH and resolver-provided subtitle tracks
   play on capable backends such as mpv)
-- Full spatial (D-pad) focus movement — Escape/Backspace/Alt-arrows/Space
-  shortcuts shipped as the FR-045 first step
-- Windows mpv transport (named pipes); DNS pinning for add-on HTTP
+- Windows mpv transport (named pipes)
 - Telemetry: deliberately none (see docs/developer-guide.md)
 
 ## Development

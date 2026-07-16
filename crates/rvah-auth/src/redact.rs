@@ -1,9 +1,10 @@
 /// Scrubs secret material from text bound for logs or diagnostics (FR-084).
 ///
 /// Two layers: exact matches of registered secret values, and pattern-based
-/// masking of common credential shapes (`Authorization:` headers, `Bearer`
-/// tokens, `api_key=`/`access_token=` query pairs) so unregistered secrets
-/// still never leak verbatim (TC-SEC-003).
+/// masking of common credential shapes (`Authorization:`/`Cookie:`/
+/// `Set-Cookie:` headers, `Bearer` tokens, `api_key=`/`access_token=`/
+/// `cookie=` query pairs) so unregistered secrets still never leak verbatim
+/// (TC-SEC-003).
 #[derive(Default)]
 pub struct Redactor {
     secrets: Vec<String>,
@@ -33,6 +34,9 @@ impl Redactor {
         out = mask_after_prefix(&out, "bearer ", MaskSpan::Token);
         out = mask_after_prefix(&out, "api_key=", MaskSpan::Token);
         out = mask_after_prefix(&out, "access_token=", MaskSpan::Token);
+        // Matches both `Cookie:` and `Set-Cookie:` headers.
+        out = mask_after_prefix(&out, "cookie:", MaskSpan::RestOfLine);
+        out = mask_after_prefix(&out, "cookie=", MaskSpan::Token);
         out
     }
 }
@@ -99,6 +103,23 @@ mod tests {
         assert!(!out.contains("abc123"));
         assert!(!out.contains("zzz9"));
         assert!(out.contains("&page=2&"));
+    }
+
+    #[test]
+    fn cookie_headers_and_pairs_are_masked() {
+        let r = Redactor::new();
+
+        // Header value through end of line; `Set-Cookie:` shares the suffix.
+        let out = r.redact("Cookie: session=abc123; theme=dark\nok line");
+        assert!(!out.contains("abc123"));
+        assert!(out.contains("ok line"));
+        let out = r.redact("Set-Cookie: sid=zzz9; HttpOnly");
+        assert!(!out.contains("zzz9"));
+
+        // Query-style pair stops at `&`.
+        let out = r.redact("GET /v1?cookie=tok55&page=2");
+        assert!(!out.contains("tok55"));
+        assert!(out.contains("&page=2"));
     }
 
     #[test]

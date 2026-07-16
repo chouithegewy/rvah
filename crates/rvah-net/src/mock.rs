@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
 use rvah_addon_sdk::{HttpRequest, HttpResponse};
 
-use crate::{NetError, Transport};
+use crate::{NetError, Resolve, Transport};
 
 #[derive(Clone)]
 struct Route {
@@ -13,12 +15,16 @@ struct Route {
     body: Vec<u8>,
 }
 
+/// `(url, addrs)` of one pinned execution.
+type PinnedRequest = (String, Vec<SocketAddr>);
+
 /// In-memory transport for tests: canned responses per method + URL prefix,
 /// records every request it actually receives.
 #[derive(Clone, Default)]
 pub struct MockTransport {
     routes: Arc<Mutex<Vec<Route>>>,
     requests: Arc<Mutex<Vec<HttpRequest>>>,
+    pinned: Arc<Mutex<Vec<PinnedRequest>>>,
 }
 
 impl MockTransport {
@@ -50,6 +56,11 @@ impl MockTransport {
     pub fn requests(&self) -> Vec<HttpRequest> {
         self.requests.lock().unwrap().clone()
     }
+
+    /// `(url, addrs)` per pinned execution, in order.
+    pub fn pinned(&self) -> Vec<PinnedRequest> {
+        self.pinned.lock().unwrap().clone()
+    }
 }
 
 impl Transport for MockTransport {
@@ -70,5 +81,49 @@ impl Transport for MockTransport {
                 req.url
             ))),
         }
+    }
+
+    fn execute_pinned(
+        &self,
+        req: &HttpRequest,
+        addrs: &[SocketAddr],
+    ) -> Result<HttpResponse, NetError> {
+        self.pinned
+            .lock()
+            .unwrap()
+            .push((req.url.clone(), addrs.to_vec()));
+        self.execute(req)
+    }
+}
+
+/// Scripted resolver for tests; unknown hosts fail with `ResolveFailed`.
+#[derive(Clone, Default)]
+pub struct MockResolver {
+    hosts: Arc<Mutex<HashMap<String, Vec<IpAddr>>>>,
+    queries: Arc<Mutex<Vec<String>>>,
+}
+
+impl MockResolver {
+    pub fn host(&self, name: &str, addrs: impl IntoIterator<Item = IpAddr>) {
+        self.hosts
+            .lock()
+            .unwrap()
+            .insert(name.to_string(), addrs.into_iter().collect());
+    }
+
+    pub fn queries(&self) -> Vec<String> {
+        self.queries.lock().unwrap().clone()
+    }
+}
+
+impl Resolve for MockResolver {
+    fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, NetError> {
+        self.queries.lock().unwrap().push(host.to_string());
+        self.hosts
+            .lock()
+            .unwrap()
+            .get(host)
+            .cloned()
+            .ok_or_else(|| NetError::ResolveFailed(host.to_string()))
     }
 }

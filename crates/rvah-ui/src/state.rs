@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use rvah_addon_sdk::Page;
+use rvah_addon_sdk::{Page, PageItem};
 use rvah_core::ErrorClass;
 use rvah_data::{AddonRecord, DiagnosticEvent, FavoriteRecord, WatchState};
 use rvah_player::PlayerState;
@@ -107,6 +107,8 @@ pub struct UiState {
     pub install: Load<InstallPreviewView>,
     pub install_done: Option<String>,
     pub banner: Option<ErrorView>,
+    /// Index into [`focus_targets`] for D-pad navigation (FR-045).
+    pub focus: Option<usize>,
 }
 
 impl Default for UiState {
@@ -137,6 +139,7 @@ impl Default for UiState {
             install: Load::Idle,
             install_done: None,
             banner: None,
+            focus: None,
         }
     }
 }
@@ -206,6 +209,11 @@ pub enum UiIntent {
     ConfirmInstall,
     CancelInstall,
     DismissBanner,
+    /// D-pad focus movement over [`focus_targets`] (FR-045).
+    FocusNext,
+    FocusPrev,
+    /// Dispatch the focused target's intent.
+    Activate,
 }
 
 /// Apply a user action; returns the request to send to the core, if any.
@@ -214,6 +222,7 @@ pub fn intent(state: &mut UiState, intent: UiIntent) -> Option<CoreRequest> {
         UiIntent::OpenHome => {
             state.screen = Screen::Home;
             state.home = Load::Loading;
+            state.focus = None;
             Some(CoreRequest::LoadHome)
         }
         UiIntent::OpenBrowse { addon_id, path } => {
@@ -240,6 +249,7 @@ pub fn intent(state: &mut UiState, intent: UiIntent) -> Option<CoreRequest> {
         UiIntent::OpenSearch { addon_id } => {
             state.screen = Screen::Search;
             state.search_addon = addon_id;
+            state.focus = None;
             None
         }
         UiIntent::SetSearchQuery(q) => {
@@ -371,7 +381,123 @@ pub fn intent(state: &mut UiState, intent: UiIntent) -> Option<CoreRequest> {
             state.banner = None;
             None
         }
+        UiIntent::FocusNext => {
+            let len = focus_targets(state).len();
+            if len > 0 {
+                state.focus = Some(state.focus.map_or(0, |i| (i + 1).min(len - 1)));
+            }
+            None
+        }
+        UiIntent::FocusPrev => {
+            let len = focus_targets(state).len();
+            if len > 0 {
+                state.focus = Some(state.focus.map_or(0, |i| i.saturating_sub(1)));
+            }
+            None
+        }
+        UiIntent::Activate => {
+            let target = focus_targets(state).into_iter().nth(state.focus?)?;
+            crate::state::intent(state, target.intent)
+        }
     }
+}
+
+/// One row the D-pad can land on (FR-045). Order matches the view's render
+/// order, so index `n` is the screen's `n`-th actionable row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FocusEntry {
+    pub label: String,
+    pub intent: UiIntent,
+}
+
+/// The focusable rows of the current screen, in render order.
+pub fn focus_targets(state: &UiState) -> Vec<FocusEntry> {
+    let mut out = Vec::new();
+    match state.screen {
+        Screen::Home => {
+            if let Load::Loaded(home) = &state.home {
+                for addon in &home.addons {
+                    if matches!(addon.status, rvah_data::AddonStatus::Enabled) {
+                        out.push(FocusEntry {
+                            label: format!("Open {}", addon.id),
+                            intent: UiIntent::OpenBrowse {
+                                addon_id: addon.id.clone(),
+                                path: None,
+                            },
+                        });
+                    }
+                }
+                for fav in &home.favorites {
+                    out.push(FocusEntry {
+                        label: fav.title.clone(),
+                        intent: UiIntent::PlayItem {
+                            addon_id: fav.addon_id.clone(),
+                            item_id: fav.item_id.clone(),
+                        },
+                    });
+                }
+                for recent in home.recents.iter().filter(|r| !r.watched) {
+                    out.push(FocusEntry {
+                        label: format!("{}:{}", recent.addon_id, recent.item_id),
+                        intent: UiIntent::PlayItem {
+                            addon_id: recent.addon_id.clone(),
+                            item_id: recent.item_id.clone(),
+                        },
+                    });
+                }
+            }
+        }
+        Screen::Browse => {
+            if let (Some(loc), Load::Loaded(page)) = (&state.browse_loc, &state.browse) {
+                for item in &page.items {
+                    out.push(match item {
+                        PageItem::Directory(d) => FocusEntry {
+                            label: d.title.clone(),
+                            intent: UiIntent::OpenBrowse {
+                                addon_id: loc.addon_id.clone(),
+                                path: Some(d.path.clone()),
+                            },
+                        },
+                        PageItem::Media(m) => FocusEntry {
+                            label: m.title.clone(),
+                            intent: UiIntent::PlayItem {
+                                addon_id: loc.addon_id.clone(),
+                                item_id: m.id.clone(),
+                            },
+                        },
+                    });
+                }
+            }
+        }
+        Screen::Search => {
+            if let Load::Loaded(results) = &state.search {
+                for (addon_id, result) in results {
+                    let Ok(page) = result else { continue };
+                    for item in &page.items {
+                        if let PageItem::Media(m) = item {
+                            out.push(FocusEntry {
+                                label: m.title.clone(),
+                                intent: UiIntent::PlayItem {
+                                    addon_id: addon_id.clone(),
+                                    item_id: m.id.clone(),
+                                },
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// The intent of the currently focused row, for views to highlight it.
+pub fn focused_intent(state: &UiState) -> Option<UiIntent> {
+    focus_targets(state)
+        .into_iter()
+        .nth(state.focus?)
+        .map(|e| e.intent)
 }
 
 /// Remote-friendly key input (FR-045 direction), decoupled from any toolkit.
@@ -382,6 +508,9 @@ pub enum NavKey {
     Forward,
     PlayPause,
     Stop,
+    Up,
+    Down,
+    Select,
 }
 
 /// Map a navigation key to an intent for the current screen. `None` means
@@ -408,12 +537,16 @@ pub fn key_intent(state: &UiState, key: NavKey) -> Option<UiIntent> {
         NavKey::Stop => {
             (state.screen == Screen::Player).then_some(UiIntent::Player(PlayerCommand::Stop))
         }
+        NavKey::Up => (!focus_targets(state).is_empty()).then_some(UiIntent::FocusPrev),
+        NavKey::Down => (!focus_targets(state).is_empty()).then_some(UiIntent::FocusNext),
+        NavKey::Select => state.focus.map(|_| UiIntent::Activate),
     }
 }
 
 fn open_browse(state: &mut UiState, loc: BrowseLoc) -> Option<CoreRequest> {
     state.screen = Screen::Browse;
     state.browse = Load::Loading;
+    state.focus = None;
     state.browse_loc = Some(loc.clone());
     Some(CoreRequest::Browse {
         addon_id: loc.addon_id,
@@ -435,6 +568,7 @@ pub fn reduce(state: &mut UiState, event: CoreEvent) {
                 favorites,
                 recents,
             });
+            state.focus = None;
         }
         CoreEvent::Page { addon_id, path, .. }
             if state.browse_loc.as_ref().map(|l| (&l.addon_id, &l.path))
@@ -444,9 +578,11 @@ pub fn reduce(state: &mut UiState, event: CoreEvent) {
         }
         CoreEvent::Page { page, .. } => {
             state.browse = Load::Loaded(page);
+            state.focus = None;
         }
         CoreEvent::SearchResults { results } => {
             state.search = Load::Loaded(results);
+            state.focus = None;
         }
         CoreEvent::PlaybackStarted { url, subtitles, .. } => {
             state.screen = Screen::Player;
@@ -547,6 +683,191 @@ mod tests {
     use super::*;
     use rvah_core::CoreError;
     use rvah_player::SourceRejection;
+
+    fn media(id: &str, title: &str) -> rvah_addon_sdk::PageItem {
+        rvah_addon_sdk::PageItem::Media(rvah_addon_sdk::MediaItem {
+            id: id.into(),
+            content_type: rvah_addon_sdk::ContentType::Movie,
+            title: title.into(),
+            year: None,
+            season: None,
+            episode: None,
+            runtime_secs: None,
+            synopsis: None,
+            rating: None,
+            artwork: Default::default(),
+            provider_ids: Default::default(),
+        })
+    }
+
+    fn dir(id: &str, title: &str, path: &str) -> rvah_addon_sdk::PageItem {
+        rvah_addon_sdk::PageItem::Directory(rvah_addon_sdk::DirectoryItem {
+            id: id.into(),
+            title: title.into(),
+            subtitle: None,
+            artwork: Default::default(),
+            path: path.into(),
+            badges: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn focus_moves_clamped_and_activates_on_browse() {
+        let mut state = UiState::default();
+        browse_intent(&mut state, "a", None);
+        reduce(
+            &mut state,
+            CoreEvent::Page {
+                addon_id: "a".into(),
+                path: None,
+                page: Page {
+                    items: vec![
+                        dir("d1", "Movies", "/movies"),
+                        media("m1", "Big Buck Bunny"),
+                    ],
+                    ..Default::default()
+                },
+            },
+        );
+        assert_eq!(state.focus, None, "fresh data starts unfocused");
+
+        let targets = focus_targets(&state);
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].label, "Movies");
+
+        assert_eq!(intent(&mut state, UiIntent::FocusNext), None);
+        assert_eq!(state.focus, Some(0));
+        intent(&mut state, UiIntent::FocusNext);
+        intent(&mut state, UiIntent::FocusNext);
+        assert_eq!(state.focus, Some(1), "clamped at the last target");
+
+        // Activating the focused media item plays it.
+        let req = intent(&mut state, UiIntent::Activate);
+        assert!(
+            matches!(req, Some(CoreRequest::Play { ref item_id, .. }) if item_id == "m1"),
+            "{req:?}"
+        );
+
+        // Prev clamps at the top; activating a directory browses into it.
+        let mut state = UiState::default();
+        browse_intent(&mut state, "a", None);
+        reduce(
+            &mut state,
+            CoreEvent::Page {
+                addon_id: "a".into(),
+                path: None,
+                page: Page {
+                    items: vec![dir("d1", "Movies", "/movies")],
+                    ..Default::default()
+                },
+            },
+        );
+        intent(&mut state, UiIntent::FocusPrev);
+        intent(&mut state, UiIntent::FocusPrev);
+        assert_eq!(state.focus, Some(0));
+        let req = intent(&mut state, UiIntent::Activate);
+        assert!(
+            matches!(req, Some(CoreRequest::Browse { ref path, .. }) if path.as_deref() == Some("/movies"))
+        );
+    }
+
+    #[test]
+    fn home_focus_targets_cover_enabled_addons_favorites_and_recents() {
+        let mut state = UiState::default();
+        intent(&mut state, UiIntent::OpenHome);
+        reduce(
+            &mut state,
+            CoreEvent::Home {
+                addons: vec![
+                    rvah_data::AddonRecord {
+                        id: "com.example.on".into(),
+                        version: "1.0.0".into(),
+                        package_hash: String::new(),
+                        status: rvah_data::AddonStatus::Enabled,
+                        install_source: String::new(),
+                        sdk_range: String::new(),
+                        capabilities: vec![],
+                    },
+                    rvah_data::AddonRecord {
+                        id: "com.example.off".into(),
+                        version: "1.0.0".into(),
+                        package_hash: String::new(),
+                        status: rvah_data::AddonStatus::Disabled,
+                        install_source: String::new(),
+                        sdk_range: String::new(),
+                        capabilities: vec![],
+                    },
+                ],
+                favorites: vec![rvah_data::FavoriteRecord {
+                    addon_id: "com.example.on".into(),
+                    item_id: "f1".into(),
+                    title: "Fave".into(),
+                    artwork_json: String::new(),
+                }],
+                recents: vec![rvah_data::WatchState {
+                    addon_id: "com.example.on".into(),
+                    item_id: "r1".into(),
+                    position_secs: 10.0,
+                    duration_secs: 100.0,
+                    watched: false,
+                    last_played_at: 0,
+                }],
+            },
+        );
+        let targets = focus_targets(&state);
+        // Disabled add-on is not focusable; favorite and recent are.
+        assert_eq!(targets.len(), 3);
+        assert!(matches!(
+            &targets[0].intent,
+            UiIntent::OpenBrowse { addon_id, .. } if addon_id == "com.example.on"
+        ));
+        assert!(matches!(
+            &targets[1].intent,
+            UiIntent::PlayItem { item_id, .. } if item_id == "f1"
+        ));
+        assert!(matches!(
+            &targets[2].intent,
+            UiIntent::PlayItem { item_id, .. } if item_id == "r1"
+        ));
+    }
+
+    #[test]
+    fn nav_keys_map_to_focus_intents_only_with_targets() {
+        let mut state = UiState::default();
+        // Nothing loaded: no focus keys.
+        assert_eq!(key_intent(&state, NavKey::Down), None);
+        assert_eq!(key_intent(&state, NavKey::Select), None);
+
+        browse_intent(&mut state, "a", None);
+        reduce(
+            &mut state,
+            CoreEvent::Page {
+                addon_id: "a".into(),
+                path: None,
+                page: Page {
+                    items: vec![media("m1", "Item")],
+                    ..Default::default()
+                },
+            },
+        );
+        assert_eq!(key_intent(&state, NavKey::Down), Some(UiIntent::FocusNext));
+        assert_eq!(key_intent(&state, NavKey::Up), Some(UiIntent::FocusPrev));
+        // Select only acts once something is focused.
+        assert_eq!(key_intent(&state, NavKey::Select), None);
+        intent(&mut state, UiIntent::FocusNext);
+        assert_eq!(key_intent(&state, NavKey::Select), Some(UiIntent::Activate));
+
+        // New page data invalidates the focus.
+        reduce(
+            &mut state,
+            CoreEvent::Page {
+                addon_id: "a".into(),
+                path: None,
+                page: Page::default(),
+            },
+        );
+        assert_eq!(state.focus, None);
+    }
 
     fn browse_intent(state: &mut UiState, addon: &str, path: Option<&str>) -> CoreRequest {
         intent(
