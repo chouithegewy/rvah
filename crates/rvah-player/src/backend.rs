@@ -58,6 +58,11 @@ pub trait PlayerBackend {
     fn supports_dash(&self) -> bool {
         false
     }
+    /// Select a subtitle track by index into the source's `subtitles`
+    /// (`None` = off). Backends without subtitle support may ignore it.
+    fn select_subtitle(&mut self, _index: Option<usize>) -> Result<(), PlayerError> {
+        Ok(())
+    }
 }
 
 /// Scriptable backend for tests and the developer simulator (STP mock player).
@@ -137,5 +142,12 @@ impl PlayerBackend for MockPlayer {
 
     fn supports_dash(&self) -> bool {
         self.dash
+    }
+
+    fn select_subtitle(&mut self, index: Option<usize>) -> Result<(), PlayerError> {
+        match index {
+            Some(i) => self.command(&format!("subtitle:{i}")),
+            None => self.command("subtitle:off"),
+        }
     }
 }

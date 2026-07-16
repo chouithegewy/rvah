@@ -128,6 +128,14 @@ impl<B: PlayerBackend> PlayerController<B> {
         self.backend.set_volume(volume.clamp(0.0, 1.0))
     }
 
+    /// Select a subtitle track for the active session (FR-064 direction).
+    pub fn select_subtitle(&mut self, index: Option<usize>) -> Result<(), PlayerError> {
+        match self.state {
+            PlayerState::Idle => Err(self.illegal("select_subtitle")),
+            _ => self.backend.select_subtitle(index),
+        }
+    }
+
     /// Drain backend events and advance the state machine; returns the events
     /// so callers (progress tracking, UI) can observe them (FR-062).
     pub fn handle_events(&mut self) -> Vec<PlayerEvent> {
@@ -224,6 +232,23 @@ mod tests {
             c.backend_mut().commands,
             vec!["load", "play", "pause", "seek:300", "play", "stop"]
         );
+    }
+
+    #[test]
+    fn subtitle_selection_passes_through_when_active() {
+        let mut c = PlayerController::new(MockPlayer::new());
+        // No session yet: refused, backend untouched.
+        assert!(c.select_subtitle(Some(0)).is_err());
+        assert!(c.backend_mut().commands.is_empty());
+
+        c.load_source(&source(), 0.0).unwrap();
+        c.select_subtitle(Some(0)).unwrap();
+        c.select_subtitle(None).unwrap();
+        assert!(c.backend_mut().commands.contains(&"subtitle:0".to_string()));
+        assert!(c
+            .backend_mut()
+            .commands
+            .contains(&"subtitle:off".to_string()));
     }
 
     #[test]

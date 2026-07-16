@@ -15,6 +15,8 @@ pub enum PlayerCommand {
     Stop,
     Seek(f64),
     Volume(f32),
+    /// Select a subtitle track by index (`None` = off).
+    Subtitle(Option<usize>),
 }
 
 /// Everything the UI can ask of the domain core.
@@ -123,6 +125,8 @@ pub enum CoreEvent {
         addon_id: String,
         item_id: String,
         url: String,
+        /// Labels of the source's subtitle tracks, for the UI selector.
+        subtitles: Vec<String>,
     },
     Playback(PlaybackSnapshot),
     Permissions {
@@ -282,10 +286,17 @@ impl<B: PlayerBackend + Send + 'static> CoreService<B> {
             CoreRequest::Play { addon_id, item_id } => {
                 match self.core.resolve_and_play(&addon_id, &item_id) {
                     Ok(session) => {
+                        let subtitles = session
+                            .source
+                            .subtitles
+                            .iter()
+                            .map(|t| t.label.clone().unwrap_or_else(|| t.lang.clone()))
+                            .collect();
                         self.send(CoreEvent::PlaybackStarted {
                             addon_id: session.addon_id,
                             item_id: session.item_id,
                             url: session.source.url,
+                            subtitles,
                         });
                         self.send(CoreEvent::Playback(self.snapshot()));
                     }
@@ -304,6 +315,7 @@ impl<B: PlayerBackend + Send + 'static> CoreService<B> {
                     }
                     PlayerCommand::Seek(secs) => self.core.player.seek(secs),
                     PlayerCommand::Volume(v) => self.core.player.set_volume(v),
+                    PlayerCommand::Subtitle(index) => self.core.player.select_subtitle(index),
                 };
                 if let Err(e) = result {
                     self.fail("player", CoreError::Player(e));

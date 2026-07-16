@@ -9,6 +9,7 @@ struct Route {
     method: String,
     url_prefix: String,
     status: u16,
+    headers: Vec<(String, String)>,
     body: Vec<u8>,
 }
 
@@ -26,7 +27,19 @@ impl MockTransport {
             method: method.to_string(),
             url_prefix: url_prefix.to_string(),
             status,
+            headers: Vec::new(),
             body,
+        });
+    }
+
+    /// A canned redirect: `status` (e.g. 302) with a `Location` header.
+    pub fn route_redirect(&self, method: &str, url_prefix: &str, status: u16, location: &str) {
+        self.routes.lock().unwrap().push(Route {
+            method: method.to_string(),
+            url_prefix: url_prefix.to_string(),
+            status,
+            headers: vec![("Location".into(), location.to_string())],
+            body: Vec::new(),
         });
     }
 
@@ -49,7 +62,7 @@ impl Transport for MockTransport {
         match hit {
             Some(r) => Ok(HttpResponse {
                 status: r.status,
-                headers: Default::default(),
+                headers: r.headers.iter().cloned().collect(),
                 body: r.body.clone(),
             }),
             None => Err(NetError::Transport(format!(

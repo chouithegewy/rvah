@@ -9,7 +9,9 @@ use rvah_core::ErrorClass;
 use rvah_player::PlayerState;
 
 use crate::service::{CoreHandle, CoreRequest, PlayerCommand};
-use crate::state::{intent, reduce, ErrorView, Load, Screen, UiIntent, UiState};
+use crate::state::{
+    intent, key_intent, reduce, ErrorView, Load, NavKey, Screen, UiIntent, UiState,
+};
 
 /// The eframe application shell.
 pub struct RvahApp {
@@ -74,6 +76,36 @@ impl eframe::App for RvahApp {
         }
 
         let mut intents = Vec::new();
+
+        // Remote-friendly keys (FR-045 direction): mapping lives in
+        // `state::key_intent`; this block only translates egui key events.
+        let typing = ctx.memory(|m| m.focused().is_some());
+        let mut keys = Vec::new();
+        ctx.input(|i| {
+            if i.key_pressed(egui::Key::Escape) {
+                keys.push(NavKey::Home);
+            }
+            if !typing && i.key_pressed(egui::Key::Backspace) {
+                keys.push(NavKey::Back);
+            }
+            if i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft) {
+                keys.push(NavKey::Back);
+            }
+            if i.modifiers.alt && i.key_pressed(egui::Key::ArrowRight) {
+                keys.push(NavKey::Forward);
+            }
+            if !typing && i.key_pressed(egui::Key::Space) {
+                keys.push(NavKey::PlayPause);
+            }
+            if !typing && i.key_pressed(egui::Key::S) {
+                keys.push(NavKey::Stop);
+            }
+        });
+        for key in keys {
+            if let Some(mapped) = key_intent(&self.state, key) {
+                intents.push(mapped);
+            }
+        }
 
         egui::TopBottomPanel::top("nav").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -393,6 +425,21 @@ fn player_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) 
             intents.push(UiIntent::Player(PlayerCommand::Volume(volume)));
         }
     });
+    if !state.player.subtitles.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label("Subtitles:");
+            let off = state.player.subtitle_selected.is_none();
+            if ui.selectable_label(off, "off").clicked() && !off {
+                intents.push(UiIntent::Player(PlayerCommand::Subtitle(None)));
+            }
+            for (index, label) in state.player.subtitles.iter().enumerate() {
+                let selected = state.player.subtitle_selected == Some(index);
+                if ui.selectable_label(selected, label).clicked() && !selected {
+                    intents.push(UiIntent::Player(PlayerCommand::Subtitle(Some(index))));
+                }
+            }
+        });
+    }
 }
 
 fn permissions_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) {
