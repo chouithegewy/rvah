@@ -45,9 +45,13 @@ impl BridgedHostApi {
 
 fn net_to_addon_error(err: NetError) -> AddonError {
     let code = match &err {
-        NetError::DomainDenied(_) | NetError::SchemeDenied(_) => AddonErrorCode::PermissionDenied,
+        NetError::DomainDenied(_) | NetError::SchemeDenied(_) | NetError::AddressDenied { .. } => {
+            AddonErrorCode::PermissionDenied
+        }
         NetError::QuotaExceeded => AddonErrorCode::Quota,
-        NetError::Transport(_) | NetError::TooManyRedirects => AddonErrorCode::Network,
+        NetError::Transport(_) | NetError::TooManyRedirects | NetError::ResolveFailed(_) => {
+            AddonErrorCode::Network
+        }
         NetError::InvalidUrl(_) => AddonErrorCode::Malformed,
     };
     AddonError::new(code, err.to_string())

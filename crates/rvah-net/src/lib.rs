@@ -8,7 +8,9 @@
 mod allowlist;
 mod client;
 mod mock;
+mod resolve;
 
 pub use allowlist::Allowlist;
 pub use client::{NetError, PermissionedClient, Transport, UreqTransport};
-pub use mock::MockTransport;
+pub use mock::{MockResolver, MockTransport};
+pub use resolve::{Resolve, SystemResolver};

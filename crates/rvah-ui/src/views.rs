@@ -10,7 +10,7 @@ use rvah_player::PlayerState;
 
 use crate::service::{CoreHandle, CoreRequest, PlayerCommand};
 use crate::state::{
-    intent, key_intent, reduce, ErrorView, Load, NavKey, Screen, UiIntent, UiState,
+    focused_intent, intent, key_intent, reduce, ErrorView, Load, NavKey, Screen, UiIntent, UiState,
 };
 
 /// The eframe application shell.
@@ -100,6 +100,15 @@ impl eframe::App for RvahApp {
             if !typing && i.key_pressed(egui::Key::S) {
                 keys.push(NavKey::Stop);
             }
+            if !typing && i.key_pressed(egui::Key::ArrowUp) {
+                keys.push(NavKey::Up);
+            }
+            if !typing && i.key_pressed(egui::Key::ArrowDown) {
+                keys.push(NavKey::Down);
+            }
+            if !typing && i.key_pressed(egui::Key::Enter) {
+                keys.push(NavKey::Select);
+            }
         });
         for key in keys {
             if let Some(mapped) = key_intent(&self.state, key) {
@@ -187,7 +196,24 @@ fn loaded<'a, T>(ui: &mut egui::Ui, load: &'a Load<T>, what: &str) -> Option<&'a
     }
 }
 
+/// Button that renders highlighted and kept in view when it is the D-pad
+/// focused row (FR-045).
+fn nav_button(
+    ui: &mut egui::Ui,
+    text: impl Into<egui::WidgetText>,
+    focused: &Option<UiIntent>,
+    this: &UiIntent,
+) -> bool {
+    let mut resp = ui.button(text);
+    if focused.as_ref() == Some(this) {
+        resp = resp.highlight();
+        resp.scroll_to_me(Some(egui::Align::Center));
+    }
+    resp.clicked()
+}
+
 fn home_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) {
+    let focused = focused_intent(state);
     ui.heading("RVAH");
     if let Some(done) = &state.install_done {
         ui.colored_label(egui::Color32::GREEN, done);
@@ -208,11 +234,12 @@ fn home_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) {
             ));
             let enabled = matches!(addon.status, rvah_data::AddonStatus::Enabled);
             if enabled {
-                if ui.button("Open").clicked() {
-                    intents.push(UiIntent::OpenBrowse {
-                        addon_id: addon.id.clone(),
-                        path: None,
-                    });
+                let open = UiIntent::OpenBrowse {
+                    addon_id: addon.id.clone(),
+                    path: None,
+                };
+                if nav_button(ui, "Open", &focused, &open) {
+                    intents.push(open);
                 }
                 if ui.button("Disable").clicked() {
                     intents.push(UiIntent::SetEnabled {
@@ -250,11 +277,12 @@ fn home_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) {
     }
     for fav in &home.favorites {
         ui.horizontal(|ui| {
-            if ui.button(&fav.title).clicked() {
-                intents.push(UiIntent::PlayItem {
-                    addon_id: fav.addon_id.clone(),
-                    item_id: fav.item_id.clone(),
-                });
+            let play = UiIntent::PlayItem {
+                addon_id: fav.addon_id.clone(),
+                item_id: fav.item_id.clone(),
+            };
+            if nav_button(ui, &fav.title, &focused, &play) {
+                intents.push(play);
             }
             if ui.small_button("✕").clicked() {
                 intents.push(UiIntent::RemoveFavorite {
@@ -267,17 +295,16 @@ fn home_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) {
     ui.separator();
     ui.heading("Continue watching");
     for recent in home.recents.iter().filter(|r| !r.watched) {
-        if ui
-            .button(format!(
-                "{}:{} — {:.0}s of {:.0}s",
-                recent.addon_id, recent.item_id, recent.position_secs, recent.duration_secs
-            ))
-            .clicked()
-        {
-            intents.push(UiIntent::PlayItem {
-                addon_id: recent.addon_id.clone(),
-                item_id: recent.item_id.clone(),
-            });
+        let play = UiIntent::PlayItem {
+            addon_id: recent.addon_id.clone(),
+            item_id: recent.item_id.clone(),
+        };
+        let label = format!(
+            "{}:{} — {:.0}s of {:.0}s",
+            recent.addon_id, recent.item_id, recent.position_secs, recent.duration_secs
+        );
+        if nav_button(ui, label, &focused, &play) {
+            intents.push(play);
         }
     }
 }
@@ -299,24 +326,27 @@ fn browse_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) 
         ui.label("This page is empty.");
         return;
     }
+    let focused = focused_intent(state);
     egui::ScrollArea::vertical().show(ui, |ui| {
         for item in &page.items {
             match item {
                 PageItem::Directory(dir) => {
-                    if ui.button(format!("📁 {}", dir.title)).clicked() {
-                        intents.push(UiIntent::OpenBrowse {
-                            addon_id: loc.addon_id.clone(),
-                            path: Some(dir.path.clone()),
-                        });
+                    let open = UiIntent::OpenBrowse {
+                        addon_id: loc.addon_id.clone(),
+                        path: Some(dir.path.clone()),
+                    };
+                    if nav_button(ui, format!("📁 {}", dir.title), &focused, &open) {
+                        intents.push(open);
                     }
                 }
                 PageItem::Media(media) => {
                     ui.horizontal(|ui| {
-                        if ui.button(format!("▶ {}", media.title)).clicked() {
-                            intents.push(UiIntent::PlayItem {
-                                addon_id: loc.addon_id.clone(),
-                                item_id: media.id.clone(),
-                            });
+                        let play = UiIntent::PlayItem {
+                            addon_id: loc.addon_id.clone(),
+                            item_id: media.id.clone(),
+                        };
+                        if nav_button(ui, format!("▶ {}", media.title), &focused, &play) {
+                            intents.push(play);
                         }
                         if let Some(year) = media.year {
                             ui.weak(year.to_string());
@@ -353,6 +383,7 @@ fn search_view(ui: &mut egui::Ui, state: &mut UiState, intents: &mut Vec<UiInten
     if matches!(state.search, Load::Idle) {
         return;
     }
+    let focused = focused_intent(state);
     let Some(results) = loaded(ui, &state.search, "results") else {
         return;
     };
@@ -369,11 +400,12 @@ fn search_view(ui: &mut egui::Ui, state: &mut UiState, intents: &mut Vec<UiInten
             Ok(page) => {
                 for item in &page.items {
                     if let PageItem::Media(media) = item {
-                        if ui.button(format!("▶ {}", media.title)).clicked() {
-                            intents.push(UiIntent::PlayItem {
-                                addon_id: addon_id.clone(),
-                                item_id: media.id.clone(),
-                            });
+                        let play = UiIntent::PlayItem {
+                            addon_id: addon_id.clone(),
+                            item_id: media.id.clone(),
+                        };
+                        if nav_button(ui, format!("▶ {}", media.title), &focused, &play) {
+                            intents.push(play);
                         }
                     }
                 }
