@@ -826,6 +826,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rvah-player"
+version = "0.1.0"
+dependencies = [
+ "rvah-addon-sdk",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
