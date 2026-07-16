@@ -13,3 +13,32 @@ pub use backend::{MockPlayer, PlayerBackend, PlayerError, PlayerErrorCode, Playe
 pub use controller::{PlayerController, PlayerState};
 pub use progress::{ProgressTracker, ProgressUpdate};
 pub use validate::{validate_source, SourceRejection};
+
+/// Allow runtime-chosen backends (`AppCore<Box<dyn PlayerBackend + Send>>`).
+impl PlayerBackend for Box<dyn PlayerBackend + Send> {
+    fn load(
+        &mut self,
+        source: &rvah_addon_sdk::PlayableSource,
+        start_at: f64,
+    ) -> Result<(), PlayerError> {
+        (**self).load(source, start_at)
+    }
+    fn play(&mut self) -> Result<(), PlayerError> {
+        (**self).play()
+    }
+    fn pause(&mut self) -> Result<(), PlayerError> {
+        (**self).pause()
+    }
+    fn stop(&mut self) -> Result<(), PlayerError> {
+        (**self).stop()
+    }
+    fn seek(&mut self, secs: f64) -> Result<(), PlayerError> {
+        (**self).seek(secs)
+    }
+    fn set_volume(&mut self, volume: f32) -> Result<(), PlayerError> {
+        (**self).set_volume(volume)
+    }
+    fn poll_events(&mut self) -> Vec<PlayerEvent> {
+        (**self).poll_events()
+    }
+}

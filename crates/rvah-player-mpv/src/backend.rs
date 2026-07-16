@@ -348,8 +348,12 @@ mod tests {
         assert_eq!(
             events,
             vec![
-                PlayerEvent::Loaded { duration_secs: 100.5 },
-                PlayerEvent::Progress { position_secs: 7.25 },
+                PlayerEvent::Loaded {
+                    duration_secs: 100.5
+                },
+                PlayerEvent::Progress {
+                    position_secs: 7.25
+                },
                 // duplicate duration suppressed
                 PlayerEvent::Ended,
             ]

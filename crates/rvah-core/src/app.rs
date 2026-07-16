@@ -42,7 +42,6 @@ struct RegisteredAddon {
 pub struct AppCore<B: PlayerBackend> {
     pub manager: AddonManager,
     db: Arc<Database>,
-    #[allow(dead_code)] // held for UC-04 flows driven by the CLI in Task 9
     vault: Arc<dyn SecretVault>,
     addons: HashMap<String, RegisteredAddon>,
     pub player: PlayerController<B>,
@@ -380,6 +379,10 @@ impl<B: PlayerBackend> AppCore<B> {
 
     pub fn db(&self) -> &Arc<Database> {
         &self.db
+    }
+
+    pub fn vault(&self) -> &Arc<dyn SecretVault> {
+        &self.vault
     }
 }
 

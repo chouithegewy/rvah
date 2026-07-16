@@ -202,6 +202,19 @@ impl Database {
         Ok(())
     }
 
+    /// The granted permission set as recorded at install/approval time.
+    pub fn get_permissions_json(&self, addon_id: &str) -> Result<Option<String>, DataError> {
+        let conn = self.conn.lock().unwrap();
+        let json = conn
+            .query_row(
+                "SELECT permissions_json FROM addon_permissions WHERE addon_id = ?1",
+                [addon_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(json)
+    }
+
     pub fn get_permission_hash(&self, addon_id: &str) -> Result<Option<String>, DataError> {
         let conn = self.conn.lock().unwrap();
         let h = conn
@@ -401,6 +414,26 @@ impl Database {
             )
             .optional()?;
         Ok(ws)
+    }
+
+    /// Most recently played items, newest first (Home screen "recent", FR-040).
+    pub fn recent_watch_states(&self, limit: u32) -> Result<Vec<WatchState>, DataError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT addon_id, item_id, position_secs, duration_secs, watched, last_played_at
+             FROM watch_state ORDER BY last_played_at DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit], |r| {
+            Ok(WatchState {
+                addon_id: r.get(0)?,
+                item_id: r.get(1)?,
+                position_secs: r.get(2)?,
+                duration_secs: r.get(3)?,
+                watched: r.get::<_, i64>(4)? != 0,
+                last_played_at: r.get::<_, i64>(5)? as u64,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     // ---- diagnostics (FR-103) ----

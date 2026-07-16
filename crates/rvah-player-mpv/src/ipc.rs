@@ -1,7 +1,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::mpsc::{channel, Receiver, TryRecvError};
+use std::sync::mpsc::{channel, Receiver};
 use std::sync::Mutex;
 
 use serde_json::{json, Value};
@@ -63,11 +63,8 @@ impl MpvIpc {
     /// Non-blocking drain of everything mpv has sent since the last call.
     pub fn drain(&self) -> Vec<Value> {
         let mut out = Vec::new();
-        loop {
-            match self.incoming.try_recv() {
-                Ok(v) => out.push(v),
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
-            }
+        while let Ok(v) = self.incoming.try_recv() {
+            out.push(v);
         }
         out
     }
