@@ -22,7 +22,11 @@ manifest as the security boundary.
 | `rvah-player` | Player state machine, source validation, watch-progress tracking, mock backend |
 | `rvah-core` | Use-case orchestration: browse/search/resolve→play, quarantine, navigation, resume |
 | `rvah-testkit` | Fixture providers and package builders for tests and the simulator |
-| `rvah-cli` | `rvah` binary: developer tooling and the Phase 1 mock UI |
+| `rvah-cli` | `rvah` binary: developer tooling, simulator, and repository publish/consume commands |
+| `rvah-player-mpv` | mpv `PlayerBackend` over JSON IPC (Unix; no libmpv linkage) |
+| `rvah-ui` | egui presentation adapter: core-service thread, pure view-model reducers, thin views |
+| `rvah-app` | `rvah-app` binary: desktop application bootstrap and backend selection |
+| `rvah-repo` | Signed repository indexes, update checks with channels, deprecation notices (FR-008) |
 
 ## Quickstart (fixture add-on)
 
@@ -81,14 +85,30 @@ real add-on code execution is the job of the Wasm runtime (below).
   quarantine the add-on. The optional Wasmtime runtime (`cargo test -p
   rvah-addon-host --features wasm`) adds memory caps and fuel/epoch CPU limits.
 
+## Desktop app
+
+`rvah-app` (Phase 2 MVP UX) provides home/browse/search/player/permissions/
+settings/diagnostics/auth screens over the same core the CLI uses. Playback
+uses system `mpv` over JSON IPC when present (video in mpv's own window),
+falling back to the mock player with an on-screen note. Diagnostics can be
+exported as a redacted JSON bundle.
+
+## Repositories
+
+Publish: `rvah repo-index <packages-dir> -o index.json --key signing.key`.
+Consume: `rvah repo-check` / `rvah repo-install … --approve` with `--index`
+(HTTP(S) URL or local path) and the repo's pinned `--pubkey`. Channels via
+`--channel`; deprecation notices surface in `repo-check`. See
+`docs/repository-policy.md` and `docs/developer-guide.md`.
+
 ## Deferred (post-MVP)
 
-- Real GUI (Phase 2) — the CLI is the Phase 1 mock UI
-- mpv-backed player (`rvah-player-mpv`); MockPlayer covers Phase 1 testing
-- Add-on repositories / remote installation (FR-008)
 - DASH protocol and subtitle rendering backend; DRM is out of scope entirely
 - Wasm ABI v0 host-call dispatch beyond `log` (http/storage/secrets bridge
   exists in-process; wiring it through the wasm boundary is next)
+- FR-045 remote-friendly focus navigation; GUI install-permission prompt
+  (install stays in the CLI); Windows mpv transport; SBOM tooling in CI
+- Telemetry: deliberately none (see docs/developer-guide.md)
 
 ## Development
 

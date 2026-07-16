@@ -1,0 +1,21 @@
+[addon]
+id = "com.example.needs-auth"
+name = "Needs Auth"
+version = "0.2.0"
+sdk = ">=0.1, <0.2"
+entry = "module.wasm"
+capabilities = ["catalog", "resolve", "auth", "account_status"]
+
+[permissions]
+network = ["api.example.com", "*.cdn.example.com"]
+storage = "5MiB"
+secrets = ["oauth_token"]
+
+[settings.quality]
+type = "string"
+default = "1080p"
+enum = ["720p", "1080p", "2160p"]
+
+[settings.prefer_hls]
+type = "bool"
+default = true

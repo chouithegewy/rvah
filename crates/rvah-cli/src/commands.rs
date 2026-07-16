@@ -28,6 +28,9 @@ USAGE:
   rvah resolve <id> <item-id> --data-dir <DIR>
   rvah play <id> <item-id> --data-dir <DIR>
   rvah diagnostics --data-dir <DIR>
+  rvah repo-index <packages-dir> -o <index.json> --key <signing.key> [--base-url URL] [--channel <id>=<channel>]
+  rvah repo-check --index <url-or-path> --pubkey <verify.pub> --data-dir <DIR> [--channel stable]
+  rvah repo-install <addon-id> --index <url-or-path> --pubkey <verify.pub> --data-dir <DIR> [--channel stable] [--approve]
 ";
 
 pub fn run(args: &[String]) -> i32 {
@@ -70,6 +73,9 @@ fn dispatch(args: &[String]) -> Result<(), CliError> {
         "resolve" => cmd_resolve(rest),
         "play" => cmd_play(rest),
         "diagnostics" => cmd_diagnostics(rest),
+        "repo-index" => cmd_repo_index(rest),
+        "repo-check" => cmd_repo_check(rest),
+        "repo-install" => cmd_repo_install(rest),
         other => Err(CliError::Usage(format!("unknown command: {other}"))),
     }
 }
@@ -479,5 +485,162 @@ fn cmd_diagnostics(args: &[String]) -> Result<(), CliError> {
             redactor.redact(&e.message)
         );
     }
+    Ok(())
+}
+
+// ---- repository workflow (FR-008, Phase 4) ----
+
+/// All values of a repeatable flag, e.g. `--channel a=beta --channel b=beta`.
+fn flag_values(args: &[String], name: &str) -> Vec<String> {
+    args.iter()
+        .enumerate()
+        .filter(|(_, a)| *a == name)
+        .filter_map(|(i, _)| args.get(i + 1).cloned())
+        .collect()
+}
+
+/// Publisher side: scan packaged add-ons and emit a signed index.
+fn cmd_repo_index(args: &[String]) -> Result<(), CliError> {
+    let pos = positional(args);
+    let [packages_dir] = pos.as_slice() else {
+        return Err(CliError::Usage(
+            "repo-index takes one packages directory".into(),
+        ));
+    };
+    let out =
+        flag_value(args, "-o").ok_or_else(|| CliError::Usage("repo-index needs -o".into()))?;
+    let key_path = flag_value(args, "--key")
+        .ok_or_else(|| CliError::Usage("repo-index needs --key".into()))?;
+    let base_url = flag_value(args, "--base-url");
+    let key = read_signing_key(Path::new(&key_path))?;
+
+    let mut channel_overrides = std::collections::BTreeMap::new();
+    for spec in flag_values(args, "--channel") {
+        let (id, channel) = spec
+            .split_once('=')
+            .ok_or_else(|| CliError::Usage(format!("--channel expects <id>=<channel>: {spec}")))?;
+        channel_overrides.insert(id.to_string(), channel.to_string());
+    }
+
+    let mut entries = Vec::new();
+    let dir = std::fs::read_dir(packages_dir).map_err(fail)?;
+    for item in dir {
+        let path = item.map_err(fail)?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rvah") {
+            continue;
+        }
+        let manifest_bytes = read_package_file(&path, "manifest.toml").map_err(fail)?;
+        let manifest = Manifest::parse(&String::from_utf8(manifest_bytes).map_err(fail)?)
+            .map_err(|e| fail(format!("{}: {e}", path.display())))?;
+        let hash = rvah_addon_host::sha256_file(&path).map_err(fail)?;
+        let sig = read_signature(Path::new(&format!("{}.sig", path.display())))?;
+        let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+        let url = match &base_url {
+            Some(base) => format!("{}/{}", base.trim_end_matches('/'), file_name),
+            None => path
+                .canonicalize()
+                .map_err(fail)?
+                .to_string_lossy()
+                .to_string(),
+        };
+        entries.push(rvah_repo::RepoEntry {
+            channel: channel_overrides
+                .get(&manifest.addon.id)
+                .cloned()
+                .unwrap_or_else(|| "stable".into()),
+            id: manifest.addon.id,
+            version: manifest.addon.version,
+            url,
+            sha256: hex::encode(hash),
+            sig: hex::encode(sig),
+            deprecated: None,
+        });
+    }
+    if entries.is_empty() {
+        return Err(fail(format!("no .rvah packages found in {packages_dir}")));
+    }
+    let count = entries.len();
+    let (index_bytes, index_sig) = rvah_repo::build_index("rvah-repo", entries, &key);
+    std::fs::write(&out, index_bytes).map_err(fail)?;
+    std::fs::write(format!("{out}.sig"), index_sig).map_err(fail)?;
+    println!("indexed {count} package(s) -> {out} (+ .sig)");
+    Ok(())
+}
+
+fn open_repository(
+    args: &[String],
+) -> Result<(rvah_repo::Repository, Box<dyn rvah_net::Transport>), CliError> {
+    let index_url =
+        flag_value(args, "--index").ok_or_else(|| CliError::Usage("missing --index".into()))?;
+    let pubkey_path =
+        flag_value(args, "--pubkey").ok_or_else(|| CliError::Usage("missing --pubkey".into()))?;
+    let pubkey = read_verifying_key(Path::new(&pubkey_path))?;
+    let transport = rvah_repo::transport_for(&index_url);
+    Ok((rvah_repo::Repository::new(index_url, pubkey), transport))
+}
+
+/// Consumer side: report available updates and deprecation notices.
+fn cmd_repo_check(args: &[String]) -> Result<(), CliError> {
+    let data_dir = require_data_dir(args)?;
+    let channel = flag_value(args, "--channel").unwrap_or_else(|| "stable".into());
+    let (repo, transport) = open_repository(args)?;
+    let db = open_db(&data_dir)?;
+    let index = repo.fetch_index(transport.as_ref()).map_err(fail)?;
+    let updates = rvah_repo::Repository::check_updates(&index, &db, &channel).map_err(fail)?;
+    if updates.is_empty() {
+        println!("up-to-date ({channel})");
+    }
+    for update in updates {
+        if let Some(notice) = &update.deprecated {
+            println!("deprecated\t{}\t{notice}", update.id);
+        }
+        if update.available.to_string() != update.installed {
+            println!(
+                "update\t{}\t{} -> {}",
+                update.id, update.installed, update.available
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Consumer side: install or update one add-on from the repository.
+fn cmd_repo_install(args: &[String]) -> Result<(), CliError> {
+    let pos = positional(args);
+    let [addon_id] = pos.as_slice() else {
+        return Err(CliError::Usage("repo-install takes one add-on id".into()));
+    };
+    let data_dir = require_data_dir(args)?;
+    let channel = flag_value(args, "--channel").unwrap_or_else(|| "stable".into());
+    if !has_flag(args, "--approve") {
+        return Err(fail("permissions not approved; re-run with --approve"));
+    }
+    let (repo, transport) = open_repository(args)?;
+    let (_db, manager) = open_manager(&data_dir)?;
+    let index = repo.fetch_index(transport.as_ref()).map_err(fail)?;
+    let entry = index
+        .addons
+        .iter()
+        .filter(|e| e.id == **addon_id && e.channel == channel)
+        .max_by(|a, b| a.version.cmp(&b.version))
+        .ok_or_else(|| fail(format!("{addon_id} not found in channel {channel}")))?;
+    if let Some(notice) = &entry.deprecated {
+        eprintln!("warning: {addon_id} is deprecated: {notice}");
+    }
+    let work = data_dir.join("downloads");
+    std::fs::create_dir_all(&work).map_err(fail)?;
+    let installed = repo
+        .install_entry(
+            transport.as_ref(),
+            entry,
+            &manager,
+            &work,
+            InstallDecision::Approve,
+        )
+        .map_err(fail)?;
+    println!(
+        "installed {} v{} from repo",
+        installed.id, installed.version
+    );
     Ok(())
 }

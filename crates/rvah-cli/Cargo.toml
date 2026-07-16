@@ -15,7 +15,9 @@ rvah-addon-sdk = { workspace = true }
 rvah-auth = { workspace = true }
 rvah-core = { workspace = true }
 rvah-data = { workspace = true }
+rvah-net = { workspace = true }
 rvah-player = { workspace = true }
+rvah-repo = { workspace = true }
 rvah-testkit = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }

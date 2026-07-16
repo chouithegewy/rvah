@@ -149,6 +149,198 @@ fn install_rejects_tampered_package() {
 }
 
 #[test]
+fn repo_index_check_install_flow() {
+    let tmp = tempfile::tempdir().unwrap();
+    let packages = tmp.path().join("packages");
+    std::fs::create_dir_all(&packages).unwrap();
+    let data = tmp.path().join("data");
+    let data = data.to_str().unwrap();
+    let keys = tmp.path().join("keys");
+    let out = rvah(&["keygen", "-o", keys.to_str().unwrap()]);
+    assert!(out.status.success());
+    let key = keys.join("signing.key");
+    let pubkey = keys.join("verify.pub").to_str().unwrap().to_string();
+
+    // Package v1.0.0 into the repo dir and index it.
+    let src = tmp.path().join("addon-src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("manifest.toml"),
+        fixture_manifest("com.example.repoflow", &["catalog"], &[], &[]),
+    )
+    .unwrap();
+    std::fs::write(src.join("main"), "entry").unwrap();
+    let pkg_v1 = packages.join("repoflow-1.0.0.rvah");
+    let out = rvah(&[
+        "package",
+        src.to_str().unwrap(),
+        "-o",
+        pkg_v1.to_str().unwrap(),
+        "--key",
+        key.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "package: {}", stderr(&out));
+    let index = tmp.path().join("index.json");
+    let index_str = index.to_str().unwrap().to_string();
+    let out = rvah(&[
+        "repo-index",
+        packages.to_str().unwrap(),
+        "-o",
+        &index_str,
+        "--key",
+        key.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "repo-index: {}", stderr(&out));
+
+    // Install v1.0.0 from the repo, then everything is up to date.
+    let out = rvah(&[
+        "repo-install",
+        "com.example.repoflow",
+        "--index",
+        &index_str,
+        "--pubkey",
+        &pubkey,
+        "--data-dir",
+        data,
+        "--approve",
+    ]);
+    assert!(out.status.success(), "repo-install: {}", stderr(&out));
+    assert!(stdout(&out).contains("installed com.example.repoflow v1.0.0"));
+    let out = rvah(&[
+        "repo-check",
+        "--index",
+        &index_str,
+        "--pubkey",
+        &pubkey,
+        "--data-dir",
+        data,
+    ]);
+    assert!(stdout(&out).contains("up-to-date"));
+
+    // Publish v1.1.0; check reports it; install upgrades.
+    std::fs::write(
+        src.join("manifest.toml"),
+        fixture_manifest("com.example.repoflow", &["catalog"], &[], &[])
+            .replace("version = \"1.0.0\"", "version = \"1.1.0\""),
+    )
+    .unwrap();
+    let pkg_v2 = packages.join("repoflow-1.1.0.rvah");
+    std::fs::remove_file(&pkg_v1).unwrap();
+    std::fs::remove_file(format!("{}.sig", pkg_v1.display())).unwrap();
+    let out = rvah(&[
+        "package",
+        src.to_str().unwrap(),
+        "-o",
+        pkg_v2.to_str().unwrap(),
+        "--key",
+        key.to_str().unwrap(),
+    ]);
+    assert!(out.status.success());
+    let out = rvah(&[
+        "repo-index",
+        packages.to_str().unwrap(),
+        "-o",
+        &index_str,
+        "--key",
+        key.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "re-index: {}", stderr(&out));
+
+    let out = rvah(&[
+        "repo-check",
+        "--index",
+        &index_str,
+        "--pubkey",
+        &pubkey,
+        "--data-dir",
+        data,
+    ]);
+    assert!(
+        stdout(&out).contains("update\tcom.example.repoflow\t1.0.0 -> 1.1.0"),
+        "repo-check: {}",
+        stdout(&out)
+    );
+    let out = rvah(&[
+        "repo-install",
+        "com.example.repoflow",
+        "--index",
+        &index_str,
+        "--pubkey",
+        &pubkey,
+        "--data-dir",
+        data,
+        "--approve",
+    ]);
+    assert!(out.status.success(), "upgrade: {}", stderr(&out));
+    assert!(stdout(&out).contains("v1.1.0"));
+}
+
+#[test]
+fn repo_install_rejects_wrong_pubkey() {
+    let tmp = tempfile::tempdir().unwrap();
+    let packages = tmp.path().join("packages");
+    std::fs::create_dir_all(&packages).unwrap();
+    let keys = tmp.path().join("keys");
+    let other_keys = tmp.path().join("other-keys");
+    assert!(rvah(&["keygen", "-o", keys.to_str().unwrap()])
+        .status
+        .success());
+    assert!(rvah(&["keygen", "-o", other_keys.to_str().unwrap()])
+        .status
+        .success());
+
+    let src = tmp.path().join("addon-src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("manifest.toml"),
+        fixture_manifest("com.example.wrongkey", &["catalog"], &[], &[]),
+    )
+    .unwrap();
+    std::fs::write(src.join("main"), "entry").unwrap();
+    let pkg = packages.join("wrongkey.rvah");
+    assert!(rvah(&[
+        "package",
+        src.to_str().unwrap(),
+        "-o",
+        pkg.to_str().unwrap(),
+        "--key",
+        keys.join("signing.key").to_str().unwrap(),
+    ])
+    .status
+    .success());
+    let index = tmp.path().join("index.json");
+    assert!(rvah(&[
+        "repo-index",
+        packages.to_str().unwrap(),
+        "-o",
+        index.to_str().unwrap(),
+        "--key",
+        keys.join("signing.key").to_str().unwrap(),
+    ])
+    .status
+    .success());
+
+    // Trusting the wrong key must fail before anything is parsed/installed.
+    let out = rvah(&[
+        "repo-install",
+        "com.example.wrongkey",
+        "--index",
+        index.to_str().unwrap(),
+        "--pubkey",
+        other_keys.join("verify.pub").to_str().unwrap(),
+        "--data-dir",
+        tmp.path().join("data").to_str().unwrap(),
+        "--approve",
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("signature"),
+        "stderr: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn diagnostics_output_contains_no_secret() {
     let tmp = tempfile::tempdir().unwrap();
     let data = tmp.path().join("data");

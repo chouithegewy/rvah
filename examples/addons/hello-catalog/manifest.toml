@@ -1,0 +1,17 @@
+[addon]
+id = "com.example.hello-catalog"
+name = "Hello Catalog"
+version = "1.0.0"
+sdk = ">=0.1, <0.2"
+entry = "module.wasm"
+capabilities = ["catalog", "search", "resolve"]
+
+[permissions]
+network = ["api.example.com"]
+storage = "1MiB"
+secrets = []
+
+[settings.region]
+type = "string"
+default = "us"
+enum = ["us", "eu", "jp"]
