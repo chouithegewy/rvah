@@ -216,7 +216,10 @@ impl Database {
 
     pub fn revoke_permissions(&self, addon_id: &str) -> Result<(), DataError> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM addon_permissions WHERE addon_id = ?1", [addon_id])?;
+        conn.execute(
+            "DELETE FROM addon_permissions WHERE addon_id = ?1",
+            [addon_id],
+        )?;
         Ok(())
     }
 
@@ -459,12 +462,10 @@ mod tests {
     #[test]
     fn failed_migration_rolls_back() {
         let db = db();
-        let bad = [
-            Migration {
-                version: 2,
-                sql: "CREATE TABLE half_done (id INTEGER); THIS IS NOT SQL;",
-            },
-        ];
+        let bad = [Migration {
+            version: 2,
+            sql: "CREATE TABLE half_done (id INTEGER); THIS IS NOT SQL;",
+        }];
         let err = db.migrate_with(&bad).unwrap_err();
         assert!(matches!(err, DataError::Migration { version: 2, .. }));
         // Version unchanged and partial table absent.
@@ -480,7 +481,10 @@ mod tests {
         assert_eq!(exists, 0, "partial migration must be rolled back");
         drop(conn);
         // A subsequent good migration still applies.
-        let good = [Migration { version: 2, sql: "CREATE TABLE ok_table (id INTEGER);" }];
+        let good = [Migration {
+            version: 2,
+            sql: "CREATE TABLE ok_table (id INTEGER);",
+        }];
         db.migrate_with(&good).unwrap();
         assert_eq!(db.schema_version().unwrap(), 2);
         let _ = MIGRATIONS; // silence unused in cfg(test) path
@@ -492,8 +496,12 @@ mod tests {
         db.upsert_addon(&addon("a.b")).unwrap();
         let got = db.get_addon("a.b").unwrap().unwrap();
         assert_eq!(got.capabilities, vec!["catalog", "resolve"]);
-        db.set_addon_status("a.b", AddonStatus::Quarantined).unwrap();
-        assert_eq!(db.get_addon("a.b").unwrap().unwrap().status, AddonStatus::Quarantined);
+        db.set_addon_status("a.b", AddonStatus::Quarantined)
+            .unwrap();
+        assert_eq!(
+            db.get_addon("a.b").unwrap().unwrap().status,
+            AddonStatus::Quarantined
+        );
         assert_eq!(db.list_addons().unwrap().len(), 1);
         db.remove_addon("a.b", true).unwrap();
         assert!(db.get_addon("a.b").unwrap().is_none());
@@ -528,7 +536,11 @@ mod tests {
         };
         db.set_watch_state(&ws).unwrap();
         assert_eq!(db.get_watch_state("a.b", "m1").unwrap().unwrap(), ws);
-        let done = WatchState { watched: true, position_secs: 3590.0, ..ws };
+        let done = WatchState {
+            watched: true,
+            position_secs: 3590.0,
+            ..ws
+        };
         db.set_watch_state(&done).unwrap();
         assert!(db.get_watch_state("a.b", "m1").unwrap().unwrap().watched);
     }
@@ -544,7 +556,10 @@ mod tests {
         }
         db.remove_addon("keep.data", false).unwrap();
         assert!(db.get_addon("keep.data").unwrap().is_none());
-        assert_eq!(db.get_setting("keep.data", "region").unwrap().unwrap(), "us");
+        assert_eq!(
+            db.get_setting("keep.data", "region").unwrap().unwrap(),
+            "us"
+        );
 
         db.remove_addon("purge.data", true).unwrap();
         assert!(db.get_setting("purge.data", "region").unwrap().is_none());

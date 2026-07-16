@@ -176,8 +176,8 @@ fn read_signature(path: &Path) -> Result<[u8; 64], CliError> {
 }
 
 fn read_hex_file(path: &Path, expect_len: usize) -> Result<Vec<u8>, CliError> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| fail(format!("read {}: {e}", path.display())))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|e| fail(format!("read {}: {e}", path.display())))?;
     let bytes = hex::decode(text.trim()).map_err(|e| fail(format!("{}: {e}", path.display())))?;
     if bytes.len() != expect_len {
         return Err(fail(format!(
@@ -257,7 +257,10 @@ fn cmd_install(args: &[String]) -> Result<(), CliError> {
     let manifest_bytes = read_package_file(&pkg, "manifest.toml").map_err(fail)?;
     let manifest = Manifest::parse(&String::from_utf8(manifest_bytes).map_err(fail)?)
         .map_err(|e| fail(format!("invalid manifest: {e}")))?;
-    println!("{} v{} requests:", manifest.addon.id, manifest.addon.version);
+    println!(
+        "{} v{} requests:",
+        manifest.addon.id, manifest.addon.version
+    );
     println!("  network: {:?}", manifest.permissions.network);
     println!("  storage: {} bytes", manifest.permissions.storage_bytes);
     println!("  secrets: {:?}", manifest.permissions.secrets);
@@ -281,7 +284,13 @@ fn cmd_addons(args: &[String]) -> Result<(), CliError> {
         println!("no add-ons installed");
     }
     for a in addons {
-        println!("{}\t{}\t{:?}\t[{}]", a.id, a.version, a.status, a.capabilities.join(","));
+        println!(
+            "{}\t{}\t{:?}\t[{}]",
+            a.id,
+            a.version,
+            a.status,
+            a.capabilities.join(",")
+        );
     }
     Ok(())
 }
@@ -311,7 +320,10 @@ fn cmd_uninstall(args: &[String]) -> Result<(), CliError> {
     let purge = has_flag(args, "--purge");
     let (_db, manager) = open_manager(&data_dir)?;
     manager.uninstall(id, purge).map_err(fail)?;
-    println!("uninstalled {id}{}", if purge { " (data purged)" } else { "" });
+    println!(
+        "uninstalled {id}{}",
+        if purge { " (data purged)" } else { "" }
+    );
     Ok(())
 }
 
@@ -320,7 +332,11 @@ fn cmd_browse(args: &[String]) -> Result<(), CliError> {
     let (id, path) = match pos.as_slice() {
         [id] => (id, None),
         [id, path] => (id, Some(path.to_string())),
-        _ => return Err(CliError::Usage("browse takes an id and optional path".into())),
+        _ => {
+            return Err(CliError::Usage(
+                "browse takes an id and optional path".into(),
+            ))
+        }
     };
     let data_dir = require_data_dir(args)?;
     let mut core = open_core(&data_dir)?;
@@ -363,7 +379,10 @@ fn cmd_resolve(args: &[String]) -> Result<(), CliError> {
     use rvah_addon_host::{AddonOp, AddonResponse, AddonRuntime};
     let resp = runtime
         .invoke(
-            AddonOp::Resolve { item_id: item_id.to_string(), source_id: None },
+            AddonOp::Resolve {
+                item_id: item_id.to_string(),
+                source_id: None,
+            },
             &ctx,
         )
         .map_err(|e| fail(format!("resolve failed: {e}")))?;
@@ -407,15 +426,23 @@ fn cmd_play(args: &[String]) -> Result<(), CliError> {
     println!("playing\t{}", session.source.url);
 
     // Mock playback: script a deterministic session through the mock backend.
-    core.player.backend_mut().script_events([
-        PlayerEvent::Loaded { duration_secs: 100.0 },
-    ]);
+    core.player
+        .backend_mut()
+        .script_events([PlayerEvent::Loaded {
+            duration_secs: 100.0,
+        }]);
     core.tick_playback().map_err(fail)?;
     core.player.play().map_err(|e| fail(e.message))?;
     core.player.backend_mut().script_events([
-        PlayerEvent::Progress { position_secs: 25.0 },
-        PlayerEvent::Progress { position_secs: 50.0 },
-        PlayerEvent::Progress { position_secs: 95.0 },
+        PlayerEvent::Progress {
+            position_secs: 25.0,
+        },
+        PlayerEvent::Progress {
+            position_secs: 50.0,
+        },
+        PlayerEvent::Progress {
+            position_secs: 95.0,
+        },
         PlayerEvent::Ended,
     ]);
     for event in core.tick_playback().map_err(fail)? {

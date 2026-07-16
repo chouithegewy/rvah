@@ -257,7 +257,10 @@ mod tests {
             Protocol::from_url("https://a.example/man.mpd"),
             Some(Protocol::Dash)
         );
-        assert_eq!(Protocol::from_url("file:///tmp/x.mp4"), Some(Protocol::File));
+        assert_eq!(
+            Protocol::from_url("file:///tmp/x.mp4"),
+            Some(Protocol::File)
+        );
         assert_eq!(Protocol::from_url("rtmp://a.example/live"), None);
         assert_eq!(Protocol::from_url("not-a-url"), None);
     }

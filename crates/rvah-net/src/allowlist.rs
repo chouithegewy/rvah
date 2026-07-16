@@ -11,7 +11,10 @@ pub struct Allowlist {
 impl Allowlist {
     pub fn new(rules: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Allowlist {
-            rules: rules.into_iter().map(|r| r.into().to_ascii_lowercase()).collect(),
+            rules: rules
+                .into_iter()
+                .map(|r| r.into().to_ascii_lowercase())
+                .collect(),
         }
     }
 
@@ -56,14 +59,20 @@ mod tests {
         let al = Allowlist::new(["*.example.com"]);
         assert!(al.permits("a.example.com"));
         assert!(al.permits("deep.a.example.com"));
-        assert!(!al.permits("example.com"), "bare apex not covered by wildcard");
-        assert!(!al.permits("evilexample.com"), "suffix trick must not match");
+        assert!(
+            !al.permits("example.com"),
+            "bare apex not covered by wildcard"
+        );
+        assert!(
+            !al.permits("evilexample.com"),
+            "suffix trick must not match"
+        );
         assert!(!al.permits("example.com.evil.org"));
     }
 
     #[test]
     fn wildcard_never_permits_ip_literals() {
-        let al = Allowlist::new(["*.1"], );
+        let al = Allowlist::new(["*.1"]);
         assert!(!al.permits("127.0.0.1"));
         let al = Allowlist::new(["*.0.1"]);
         assert!(!al.permits("127.0.0.1"));

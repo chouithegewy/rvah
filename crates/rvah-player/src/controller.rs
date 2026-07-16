@@ -189,16 +189,18 @@ mod tests {
 
         c.load_source(&source(), 0.0).unwrap();
         assert_eq!(c.state(), PlayerState::Loading);
-        c.backend_mut()
-            .script_events([PlayerEvent::Loaded { duration_secs: 3600.0 }]);
+        c.backend_mut().script_events([PlayerEvent::Loaded {
+            duration_secs: 3600.0,
+        }]);
         c.handle_events();
         assert_eq!(c.state(), PlayerState::Paused);
         assert_eq!(c.duration_secs(), Some(3600.0));
 
         c.play().unwrap();
         assert_eq!(c.state(), PlayerState::Playing);
-        c.backend_mut()
-            .script_events([PlayerEvent::Progress { position_secs: 10.0 }]);
+        c.backend_mut().script_events([PlayerEvent::Progress {
+            position_secs: 10.0,
+        }]);
         c.handle_events();
         assert_eq!(c.position_secs(), 10.0);
 
@@ -236,11 +238,12 @@ mod tests {
         // TC-PLY-010: fatal backend error ends the session in Error state.
         let mut c = PlayerController::new(MockPlayer::new());
         c.load_source(&source(), 0.0).unwrap();
-        c.backend_mut().script_events([PlayerEvent::Error(PlayerError {
-            code: PlayerErrorCode::Network,
-            message: "connection reset".into(),
-            fatal: true,
-        })]);
+        c.backend_mut()
+            .script_events([PlayerEvent::Error(PlayerError {
+                code: PlayerErrorCode::Network,
+                message: "connection reset".into(),
+                fatal: true,
+            })]);
         c.handle_events();
         assert_eq!(c.state(), PlayerState::Error);
         assert_eq!(c.last_error().unwrap().code, PlayerErrorCode::Network);
@@ -251,7 +254,9 @@ mod tests {
         let mut c = PlayerController::new(MockPlayer::new());
         c.load_source(&source(), 0.0).unwrap();
         c.backend_mut().script_events([
-            PlayerEvent::Loaded { duration_secs: 100.0 },
+            PlayerEvent::Loaded {
+                duration_secs: 100.0,
+            },
             PlayerEvent::Error(PlayerError {
                 code: PlayerErrorCode::Network,
                 message: "transient".into(),

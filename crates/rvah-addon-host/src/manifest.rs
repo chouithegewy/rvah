@@ -107,11 +107,7 @@ impl Manifest {
             let msg = e.to_string();
             // Surface missing required fields distinctly from other syntax errors.
             if msg.contains("missing field") {
-                let field = msg
-                    .split('`')
-                    .nth(1)
-                    .unwrap_or("unknown")
-                    .to_string();
+                let field = msg.split('`').nth(1).unwrap_or("unknown").to_string();
                 ManifestError::MissingField(field)
             } else if msg.contains("expected string") && msg.contains("version") {
                 ManifestError::InvalidVersion(msg)
@@ -186,7 +182,8 @@ fn validate_id(id: &str) -> Result<(), ManifestError> {
     let labels: Vec<&str> = id.split('.').collect();
     let label_ok = |l: &&str| {
         !l.is_empty()
-            && l.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            && l.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
             && !l.starts_with('-')
             && !l.ends_with('-')
     };
@@ -214,11 +211,7 @@ fn validate_domain_rule(rule: &str) -> Result<(), ManifestError> {
         return Err(err());
     }
     for l in &labels {
-        if l.is_empty()
-            || !l
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-')
-        {
+        if l.is_empty() || !l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
             return Err(err());
         }
     }
@@ -277,7 +270,10 @@ region = { type = "string", default = "us", enum = ["us", "gb", "ca"] }
         assert!(m.is_sdk_compatible());
         assert!(m.has_capability(Capability::Resolve));
         assert!(!m.has_capability(Capability::AccountStatus));
-        assert_eq!(m.permissions.network, vec!["api.example.com", "cdn.example.com"]);
+        assert_eq!(
+            m.permissions.network,
+            vec!["api.example.com", "cdn.example.com"]
+        );
         assert_eq!(m.permissions.storage_bytes, 10 * 1024 * 1024);
         assert_eq!(m.permissions.secrets, vec!["provider_token"]);
         assert_eq!(m.settings["region"].r#type, "string");
@@ -330,7 +326,10 @@ region = { type = "string", default = "us", enum = ["us", "gb", "ca"] }
         ] {
             let toml = FULL.replace("\"api.example.com\"", &format!("\"{bad}\""));
             assert!(
-                matches!(Manifest::parse(&toml), Err(ManifestError::InvalidPermission(_))),
+                matches!(
+                    Manifest::parse(&toml),
+                    Err(ManifestError::InvalidPermission(_))
+                ),
                 "expected InvalidPermission for {bad}"
             );
         }
@@ -357,6 +356,9 @@ region = { type = "string", default = "us", enum = ["us", "gb", "ca"] }
         );
         let m2 = Manifest::parse(&expanded).unwrap();
         assert_ne!(m1.permission_hash(), m2.permission_hash());
-        assert_eq!(m1.permission_hash(), Manifest::parse(FULL).unwrap().permission_hash());
+        assert_eq!(
+            m1.permission_hash(),
+            Manifest::parse(FULL).unwrap().permission_hash()
+        );
     }
 }

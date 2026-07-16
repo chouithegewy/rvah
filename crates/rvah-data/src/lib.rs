@@ -12,9 +12,7 @@ use std::sync::Mutex;
 use rusqlite::Connection;
 
 pub use migrations::{Migration, MIGRATIONS};
-pub use repos::{
-    AddonRecord, AddonStatus, DataError, DiagnosticEvent, FavoriteRecord, WatchState,
-};
+pub use repos::{AddonRecord, AddonStatus, DataError, DiagnosticEvent, FavoriteRecord, WatchState};
 
 /// Handle to the app database. All repository methods live on this type.
 pub struct Database {
@@ -34,7 +32,9 @@ impl Database {
 
     fn init(conn: Connection) -> Result<Database, DataError> {
         conn.pragma_update(None, "foreign_keys", true)?;
-        let db = Database { conn: Mutex::new(conn) };
+        let db = Database {
+            conn: Mutex::new(conn),
+        };
         db.migrate_with(MIGRATIONS)?;
         Ok(db)
     }
@@ -65,7 +65,10 @@ impl Database {
             let tx = conn.transaction()?;
             let apply = || -> Result<(), rusqlite::Error> {
                 tx.execute_batch(m.sql)?;
-                tx.execute("INSERT INTO schema_version (version) VALUES (?1)", [m.version])?;
+                tx.execute(
+                    "INSERT INTO schema_version (version) VALUES (?1)",
+                    [m.version],
+                )?;
                 Ok(())
             };
             match apply() {

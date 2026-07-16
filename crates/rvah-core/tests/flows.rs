@@ -88,7 +88,10 @@ fn pagination_over_large_catalog() {
     w.add_addon(
         "com.rvah.fixtures.large",
         &["catalog"],
-        Arc::new(LargeCatalogProvider { total: 25, page_size: 10 }),
+        Arc::new(LargeCatalogProvider {
+            total: 25,
+            page_size: 10,
+        }),
         vec![Capability::Catalog],
     );
 
@@ -120,11 +123,16 @@ fn malformed_provider_response_surfaces_error_host_survives() {
     w.add_addon(
         "com.rvah.fixtures.bad",
         &["catalog"],
-        Arc::new(FailingProvider { code: AddonErrorCode::Malformed }),
+        Arc::new(FailingProvider {
+            code: AddonErrorCode::Malformed,
+        }),
         vec![Capability::Catalog],
     );
 
-    let err = w.core.browse("com.rvah.fixtures.bad", None, None).unwrap_err();
+    let err = w
+        .core
+        .browse("com.rvah.fixtures.bad", None, None)
+        .unwrap_err();
     assert!(matches!(&err, CoreError::Provider(e) if e.code == AddonErrorCode::Malformed));
     assert_eq!(err.class(), ErrorClass::Developer);
 
@@ -140,7 +148,9 @@ fn repeated_failures_quarantine_addon() {
     w.add_addon(
         id,
         &["catalog"],
-        Arc::new(FailingProvider { code: AddonErrorCode::Internal }),
+        Arc::new(FailingProvider {
+            code: AddonErrorCode::Internal,
+        }),
         vec![Capability::Catalog],
     );
 
@@ -175,7 +185,9 @@ fn resolve_direct_mp4_and_full_playback_with_resume() {
     w.core
         .player
         .backend_mut()
-        .script_events([PlayerEvent::Loaded { duration_secs: 100.0 }]);
+        .script_events([PlayerEvent::Loaded {
+            duration_secs: 100.0,
+        }]);
     w.core.tick_playback().unwrap();
     assert_eq!(w.core.player.state(), PlayerState::Paused);
     w.core.player.play().unwrap();
@@ -183,7 +195,9 @@ fn resolve_direct_mp4_and_full_playback_with_resume() {
     w.core
         .player
         .backend_mut()
-        .script_events([PlayerEvent::Progress { position_secs: 50.0 }]);
+        .script_events([PlayerEvent::Progress {
+            position_secs: 50.0,
+        }]);
     w.core.tick_playback().unwrap();
     let ws = w
         .core
@@ -201,8 +215,12 @@ fn resolve_direct_mp4_and_full_playback_with_resume() {
     assert_eq!(w.core.player.backend_mut().last_start_at, Some(50.0));
 
     w.core.player.backend_mut().script_events([
-        PlayerEvent::Loaded { duration_secs: 100.0 },
-        PlayerEvent::Progress { position_secs: 95.0 },
+        PlayerEvent::Loaded {
+            duration_secs: 100.0,
+        },
+        PlayerEvent::Progress {
+            position_secs: 95.0,
+        },
         PlayerEvent::Ended,
     ]);
     w.core.tick_playback().unwrap();
@@ -229,7 +247,9 @@ fn expired_source_rejected_with_retryable_error() {
     w.add_addon(
         "com.rvah.fixtures.resolver",
         &["resolve"],
-        Arc::new(ResolverStaticProvider { sources: vec![expired] }),
+        Arc::new(ResolverStaticProvider {
+            sources: vec![expired],
+        }),
         vec![Capability::Resolve],
     );
 
@@ -278,7 +298,9 @@ fn nav_history_back_forward() {
 #[test]
 fn favorites_roundtrip() {
     let mut w = World::new();
-    w.core.favorites_add(ECHO_FIXTURE_ID, "m1", "First Movie").unwrap();
+    w.core
+        .favorites_add(ECHO_FIXTURE_ID, "m1", "First Movie")
+        .unwrap();
     let favs = w.core.favorites_list().unwrap();
     assert_eq!(favs.len(), 1);
     assert_eq!(favs[0].title, "First Movie");

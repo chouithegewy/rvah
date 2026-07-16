@@ -11,8 +11,7 @@ use rvah_addon_sdk::{
 use rvah_auth::SecretVault;
 use rvah_data::{AddonStatus, Database, DiagnosticEvent, FavoriteRecord, WatchState};
 use rvah_player::{
-    validate_source, PlayerBackend, PlayerController, PlayerEvent, ProgressTracker,
-    SourceRejection,
+    validate_source, PlayerBackend, PlayerController, PlayerEvent, ProgressTracker, SourceRejection,
 };
 
 use crate::errors::CoreError;
@@ -164,7 +163,13 @@ impl<B: PlayerBackend> AppCore<B> {
         path: Option<String>,
         cursor: Option<String>,
     ) -> Result<Page, CoreError> {
-        let page = Self::expect_page(self.invoke(addon_id, AddonOp::List { path: path.clone(), cursor })?)?;
+        let page = Self::expect_page(self.invoke(
+            addon_id,
+            AddonOp::List {
+                path: path.clone(),
+                cursor,
+            },
+        )?)?;
         self.nav
             .push(format!("{addon_id}:{}", path.as_deref().unwrap_or("/")));
         Ok(page)
@@ -185,8 +190,7 @@ impl<B: PlayerBackend> AppCore<B> {
             Ok(addons) => addons
                 .into_iter()
                 .filter(|a| {
-                    a.status == AddonStatus::Enabled
-                        && a.capabilities.iter().any(|c| c == "search")
+                    a.status == AddonStatus::Enabled && a.capabilities.iter().any(|c| c == "search")
                 })
                 .map(|a| a.id)
                 .collect(),
@@ -240,15 +244,13 @@ impl<B: PlayerBackend> AppCore<B> {
 
         let now = unix_now();
         let mut last_rejection: Option<SourceRejection> = None;
-        let source = sources
-            .into_iter()
-            .find(|s| match validate_source(s, now) {
-                Ok(()) => true,
-                Err(r) => {
-                    last_rejection = Some(r);
-                    false
-                }
-            });
+        let source = sources.into_iter().find(|s| match validate_source(s, now) {
+            Ok(()) => true,
+            Err(r) => {
+                last_rejection = Some(r);
+                false
+            }
+        });
         let source = match source {
             Some(s) => s,
             None => {
@@ -292,7 +294,8 @@ impl<B: PlayerBackend> AppCore<B> {
             match event {
                 PlayerEvent::Progress { position_secs } => {
                     if let Some(update) =
-                        self.progress.on_progress(*position_secs, duration, *position_secs)
+                        self.progress
+                            .on_progress(*position_secs, duration, *position_secs)
                     {
                         self.db.set_watch_state(&WatchState {
                             addon_id: session.addon_id.clone(),

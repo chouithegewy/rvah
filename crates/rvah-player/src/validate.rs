@@ -22,7 +22,12 @@ const ALLOWED_HEADERS: [&str; 2] = ["user-agent", "referer"];
 /// `Referer` may accompany a source (FR-063).
 pub fn validate_source(source: &PlayableSource, now_unix: u64) -> Result<(), SourceRejection> {
     // Distrust the declared protocol: classify from the URL as well.
-    if source.url.trim_start().to_ascii_lowercase().starts_with("file:") {
+    if source
+        .url
+        .trim_start()
+        .to_ascii_lowercase()
+        .starts_with("file:")
+    {
         return Err(SourceRejection::LocalPathDenied(source.url.clone()));
     }
     match source.protocol {

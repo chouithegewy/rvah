@@ -166,14 +166,15 @@ mod tests {
             _cursor: Option<&str>,
         ) -> Result<Page, AddonError> {
             let mut page = Page::default();
-            page.items.push(PageItem::Directory(rvah_addon_sdk::DirectoryItem {
-                id: "d1".into(),
-                title: format!("echo:{}", path.unwrap_or("/")),
-                subtitle: None,
-                artwork: Default::default(),
-                path: "/d1".into(),
-                badges: vec![],
-            }));
+            page.items
+                .push(PageItem::Directory(rvah_addon_sdk::DirectoryItem {
+                    id: "d1".into(),
+                    title: format!("echo:{}", path.unwrap_or("/")),
+                    subtitle: None,
+                    artwork: Default::default(),
+                    path: "/d1".into(),
+                    badges: vec![],
+                }));
             Ok(page)
         }
     }
@@ -220,7 +221,13 @@ mod tests {
         // TC-RUN-004: the host regains control; the error is retryable.
         let rt = InProcessRuntime::new(Arc::new(SlowProvider), vec![Capability::Catalog]);
         let err = rt
-            .invoke(AddonOp::List { path: None, cursor: None }, &ctx(50))
+            .invoke(
+                AddonOp::List {
+                    path: None,
+                    cursor: None,
+                },
+                &ctx(50),
+            )
             .unwrap_err();
         assert_eq!(err.code, AddonErrorCode::Timeout);
         assert!(err.retryable);
@@ -231,7 +238,13 @@ mod tests {
         // Provider implements list, but the manifest never declared catalog.
         let rt = InProcessRuntime::new(Arc::new(EchoProvider), vec![Capability::Resolve]);
         let err = rt
-            .invoke(AddonOp::List { path: None, cursor: None }, &ctx(1_000))
+            .invoke(
+                AddonOp::List {
+                    path: None,
+                    cursor: None,
+                },
+                &ctx(1_000),
+            )
             .unwrap_err();
         assert_eq!(err.code, AddonErrorCode::PermissionDenied);
     }

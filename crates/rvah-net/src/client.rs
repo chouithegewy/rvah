@@ -68,7 +68,11 @@ impl Transport for UreqTransport {
             .take(32 * 1024 * 1024)
             .read_to_end(&mut body)
             .map_err(|e| NetError::Transport(e.to_string()))?;
-        Ok(HttpResponse { status, headers, body })
+        Ok(HttpResponse {
+            status,
+            headers,
+            body,
+        })
     }
 }
 
@@ -130,7 +134,9 @@ mod tests {
     #[test]
     fn allows_listed_domain_and_returns_response() {
         let (c, _mock) = client(&["api.example.com"], 10);
-        let resp = c.fetch(&HttpRequest::get("https://api.example.com/v1")).unwrap();
+        let resp = c
+            .fetch(&HttpRequest::get("https://api.example.com/v1"))
+            .unwrap();
         assert_eq!(resp.status, 200);
         assert_eq!(resp.body, b"ok");
     }
@@ -142,13 +148,19 @@ mod tests {
             .fetch(&HttpRequest::get("https://evil.example.org/steal"))
             .unwrap_err();
         assert_eq!(err, NetError::DomainDenied("evil.example.org".into()));
-        assert_eq!(mock.request_count(), 0, "transport must never see denied calls");
+        assert_eq!(
+            mock.request_count(),
+            0,
+            "transport must never see denied calls"
+        );
     }
 
     #[test]
     fn denies_file_scheme() {
         let (c, mock) = client(&["api.example.com"], 10);
-        let err = c.fetch(&HttpRequest::get("file:///etc/passwd")).unwrap_err();
+        let err = c
+            .fetch(&HttpRequest::get("file:///etc/passwd"))
+            .unwrap_err();
         assert!(matches!(err, NetError::SchemeDenied(_)));
         assert_eq!(mock.request_count(), 0);
     }

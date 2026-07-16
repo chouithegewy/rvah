@@ -58,7 +58,11 @@ fn validate_accepts_good_rejects_bad_manifest() {
     let tmp = tempfile::tempdir().unwrap();
 
     let good = tmp.path().join("good.toml");
-    std::fs::write(&good, fixture_manifest("com.example.good", &["catalog"], &[], &[])).unwrap();
+    std::fs::write(
+        &good,
+        fixture_manifest("com.example.good", &["catalog"], &[], &[]),
+    )
+    .unwrap();
     let out = rvah(&["validate", good.to_str().unwrap()]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     assert!(stdout(&out).contains("OK: com.example.good"));
@@ -82,7 +86,15 @@ fn package_install_browse_flow() {
     assert_eq!(out.status.code(), Some(1));
     assert!(stdout(&out).contains("network"));
 
-    let out = rvah(&["install", &pkg, "--pubkey", &pubkey, "--data-dir", data, "--approve"]);
+    let out = rvah(&[
+        "install",
+        &pkg,
+        "--pubkey",
+        &pubkey,
+        "--data-dir",
+        data,
+        "--approve",
+    ]);
     assert!(out.status.success(), "install failed: {}", stderr(&out));
     assert!(stdout(&out).contains("installed com.example.flow v1.0.0"));
 
@@ -129,7 +141,11 @@ fn install_rejects_tampered_package() {
         "--approve",
     ]);
     assert_eq!(out.status.code(), Some(1));
-    assert!(stderr(&out).contains("signature"), "stderr: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains("signature"),
+        "stderr: {}",
+        stderr(&out)
+    );
 }
 
 #[test]

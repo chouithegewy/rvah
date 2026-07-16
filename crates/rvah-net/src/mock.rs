@@ -52,7 +52,10 @@ impl Transport for MockTransport {
                 headers: Default::default(),
                 body: r.body.clone(),
             }),
-            None => Err(NetError::Transport(format!("no mock route for {}", req.url))),
+            None => Err(NetError::Transport(format!(
+                "no mock route for {}",
+                req.url
+            ))),
         }
     }
 }

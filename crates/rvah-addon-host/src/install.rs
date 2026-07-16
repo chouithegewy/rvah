@@ -266,7 +266,14 @@ storage = "1MiB"
             let manager = AddonManager::new(Arc::clone(&db), tmp.path().join("addons"));
             let (signing, verifying) = keygen();
             let work = tmp.path().to_path_buf();
-            Fixture { _tmp: tmp, manager, db, signing, verifying, work }
+            Fixture {
+                _tmp: tmp,
+                manager,
+                db,
+                signing,
+                verifying,
+                work,
+            }
         }
 
         fn build_package(&self, name: &str, manifest: &str) -> (PathBuf, [u8; 64]) {
@@ -296,17 +303,22 @@ storage = "1MiB"
         assert!(f.manager.verify_installed("com.example.demo").unwrap());
 
         // Deny leaves nothing behind for a fresh id.
-        let (pkg2, sig2) = f.build_package("demo2", &manifest_toml("1.0.0", ">=0.1, <0.2", &[])
-            .replace("com.example.demo", "com.example.other"));
+        let (pkg2, sig2) = f.build_package(
+            "demo2",
+            &manifest_toml("1.0.0", ">=0.1, <0.2", &[])
+                .replace("com.example.demo", "com.example.other"),
+        );
         assert!(matches!(
-            f.manager.install(&pkg2, &sig2, &f.verifying, InstallDecision::Deny),
+            f.manager
+                .install(&pkg2, &sig2, &f.verifying, InstallDecision::Deny),
             Err(InstallError::PermissionsDenied)
         ));
         assert!(f.db.get_addon("com.example.other").unwrap().is_none());
 
         // Duplicate install is refused.
         assert!(matches!(
-            f.manager.install(&pkg, &sig, &f.verifying, InstallDecision::Approve),
+            f.manager
+                .install(&pkg, &sig, &f.verifying, InstallDecision::Approve),
             Err(InstallError::AlreadyInstalled(_))
         ));
     }
@@ -317,7 +329,8 @@ storage = "1MiB"
         let f = Fixture::new();
         let (pkg, sig) = f.build_package("demo", &manifest_toml("1.0.0", ">=9.0", &[]));
         assert!(matches!(
-            f.manager.install(&pkg, &sig, &f.verifying, InstallDecision::Approve),
+            f.manager
+                .install(&pkg, &sig, &f.verifying, InstallDecision::Approve),
             Err(InstallError::SdkIncompatible { .. })
         ));
     }
@@ -329,7 +342,8 @@ storage = "1MiB"
         f.manager
             .install(&pkg, &sig, &f.verifying, InstallDecision::Approve)
             .unwrap();
-        f.db.set_setting("com.example.demo", "region", "eu").unwrap();
+        f.db.set_setting("com.example.demo", "region", "eu")
+            .unwrap();
 
         // Same permissions: update sails through without re-approval.
         let (pkg2, sig2) = f.build_package("v2", &manifest_toml("1.0.1", ">=0.1, <0.2", &[]));
@@ -343,7 +357,8 @@ storage = "1MiB"
             &manifest_toml("1.0.2", ">=0.1, <0.2", &["api.example.com"]),
         );
         assert!(matches!(
-            f.manager.update(&pkg3, &sig3, &f.verifying, InstallDecision::Deny),
+            f.manager
+                .update(&pkg3, &sig3, &f.verifying, InstallDecision::Deny),
             Err(InstallError::PermissionExpansionNeedsApproval)
         ));
         let updated = f
@@ -354,7 +369,9 @@ storage = "1MiB"
 
         // Settings survived the updates (TC-ADD-004).
         assert_eq!(
-            f.db.get_setting("com.example.demo", "region").unwrap().as_deref(),
+            f.db.get_setting("com.example.demo", "region")
+                .unwrap()
+                .as_deref(),
             Some("eu")
         );
     }
@@ -368,12 +385,15 @@ storage = "1MiB"
         f.manager
             .install(&pkg, &sig, &f.verifying, InstallDecision::Approve)
             .unwrap();
-        f.db.storage_set("com.example.demo", "k", b"v", 1024).unwrap();
+        f.db.storage_set("com.example.demo", "k", b"v", 1024)
+            .unwrap();
         f.manager.uninstall("com.example.demo", false).unwrap();
         assert!(f.db.get_addon("com.example.demo").unwrap().is_none());
         assert!(!f.manager.install_dir("com.example.demo", "1.0.0").exists());
         assert_eq!(
-            f.db.storage_get("com.example.demo", "k").unwrap().as_deref(),
+            f.db.storage_get("com.example.demo", "k")
+                .unwrap()
+                .as_deref(),
             Some(b"v".as_slice())
         );
 

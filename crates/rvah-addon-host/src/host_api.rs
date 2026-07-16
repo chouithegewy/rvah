@@ -1,8 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use rvah_addon_sdk::{
-    AddonError, AddonErrorCode, HostApi, HttpRequest, HttpResponse, LogLevel,
-};
+use rvah_addon_sdk::{AddonError, AddonErrorCode, HostApi, HttpRequest, HttpResponse, LogLevel};
 use rvah_auth::{Redactor, SecretVault};
 use rvah_data::{Database, DiagnosticEvent};
 use rvah_net::{Allowlist, NetError, PermissionedClient, Transport};
@@ -141,7 +139,12 @@ type = "string"
 default = "us"
 "#;
 
-    fn bridge() -> (BridgedHostApi, Arc<Database>, Arc<MemoryVault>, MockTransport) {
+    fn bridge() -> (
+        BridgedHostApi,
+        Arc<Database>,
+        Arc<MemoryVault>,
+        MockTransport,
+    ) {
         let manifest = Manifest::parse(MANIFEST).unwrap();
         let db = Arc::new(Database::open_in_memory().unwrap());
         let vault = Arc::new(MemoryVault::new());
@@ -167,24 +170,35 @@ default = "us"
         // Denied before the transport ever saw it (FR-081).
         assert_eq!(mock.request_count(), 0);
 
-        assert!(api.http_fetch(HttpRequest::get("https://api.example.com/v1")).is_ok());
+        assert!(api
+            .http_fetch(HttpRequest::get("https://api.example.com/v1"))
+            .is_ok());
     }
 
     #[test]
     fn bridged_api_denies_undeclared_secret() {
         let (api, _db, vault, _mock) = bridge();
-        vault.set("com.example.bridge", "other_secret", "x").unwrap();
+        vault
+            .set("com.example.bridge", "other_secret", "x")
+            .unwrap();
         let err = api.secret_get("other_secret").unwrap_err();
         assert_eq!(err.code, AddonErrorCode::PermissionDenied);
 
-        vault.set("com.example.bridge", "api_token", "tok-123456").unwrap();
-        assert_eq!(api.secret_get("api_token").unwrap().as_deref(), Some("tok-123456"));
+        vault
+            .set("com.example.bridge", "api_token", "tok-123456")
+            .unwrap();
+        assert_eq!(
+            api.secret_get("api_token").unwrap().as_deref(),
+            Some("tok-123456")
+        );
     }
 
     #[test]
     fn log_redacts_fetched_secrets() {
         let (api, db, vault, _mock) = bridge();
-        vault.set("com.example.bridge", "api_token", "tok-123456").unwrap();
+        vault
+            .set("com.example.bridge", "api_token", "tok-123456")
+            .unwrap();
         api.secret_get("api_token").unwrap();
         api.log(LogLevel::Info, "request with tok-123456 failed");
         let events = db.recent_events(10).unwrap();
@@ -197,7 +211,8 @@ default = "us"
     fn settings_fall_back_to_manifest_default() {
         let (api, db, _vault, _mock) = bridge();
         assert_eq!(api.setting_get("region").as_deref(), Some("us"));
-        db.set_setting("com.example.bridge", "region", "eu").unwrap();
+        db.set_setting("com.example.bridge", "region", "eu")
+            .unwrap();
         assert_eq!(api.setting_get("region").as_deref(), Some("eu"));
         assert_eq!(api.setting_get("missing"), None);
     }

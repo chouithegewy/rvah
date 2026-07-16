@@ -36,7 +36,7 @@ pub fn package_dir(dir: &Path, out: &Path) -> Result<[u8; 32], PackageError> {
     let mut tar = tar::Builder::new(enc);
     tar.append_dir_all(".", dir)?;
     tar.into_inner()?.finish()?.flush()?;
-    Ok(sha256_file(out)?)
+    sha256_file(out)
 }
 
 pub fn sha256_file(path: &Path) -> Result<[u8; 32], PackageError> {
@@ -71,7 +71,9 @@ pub fn extract_package(pkg_path: &Path, dest: &Path) -> Result<(), PackageError>
     std::fs::create_dir_all(dest)?;
     for entry in archive.entries()? {
         let mut entry = entry?;
-        let path = entry.path().map_err(|e| PackageError::Malformed(e.to_string()))?;
+        let path = entry
+            .path()
+            .map_err(|e| PackageError::Malformed(e.to_string()))?;
         let ok = path.components().all(|c| {
             matches!(
                 c,
@@ -96,7 +98,9 @@ pub fn read_package_file(pkg_path: &Path, name: &str) -> Result<Vec<u8>, Package
     let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
     for entry in archive.entries()? {
         let mut entry = entry?;
-        let path = entry.path().map_err(|e| PackageError::Malformed(e.to_string()))?;
+        let path = entry
+            .path()
+            .map_err(|e| PackageError::Malformed(e.to_string()))?;
         let normalized = path
             .components()
             .filter(|c| matches!(c, std::path::Component::Normal(_)))
@@ -107,7 +111,9 @@ pub fn read_package_file(pkg_path: &Path, name: &str) -> Result<Vec<u8>, Package
             return Ok(buf);
         }
     }
-    Err(PackageError::Malformed(format!("{name} not found in package")))
+    Err(PackageError::Malformed(format!(
+        "{name} not found in package"
+    )))
 }
 
 #[cfg(test)]
@@ -142,7 +148,10 @@ mod tests {
             "entry point"
         );
         // Manifest readable without extraction.
-        assert_eq!(read_package_file(&pkg, "manifest.toml").unwrap(), b"id = \"x\"");
+        assert_eq!(
+            read_package_file(&pkg, "manifest.toml").unwrap(),
+            b"id = \"x\""
+        );
     }
 
     #[test]

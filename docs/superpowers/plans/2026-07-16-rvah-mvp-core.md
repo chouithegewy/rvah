@@ -51,10 +51,10 @@
 
 All types `Serialize + Deserialize + Clone + Debug + PartialEq` (traits excepted).
 
-- [ ] Write failing serde round-trip tests: `page_roundtrips_through_json`, `resolve_result_roundtrips`, `protocol_from_url` (https/hls `.m3u8`/file/unknown-scheme cases)
-- [ ] Run `cargo test -p rvah-addon-sdk` — expect compile failure
-- [ ] Implement types/error/provider modules
-- [ ] `cargo test -p rvah-addon-sdk` — PASS; commit `feat(sdk): typed add-on SDK data model and provider trait`
+- [x] Write failing serde round-trip tests: `page_roundtrips_through_json`, `resolve_result_roundtrips`, `protocol_from_url` (https/hls `.m3u8`/file/unknown-scheme cases)
+- [x] Run `cargo test -p rvah-addon-sdk` — expect compile failure
+- [x] Implement types/error/provider modules
+- [x] `cargo test -p rvah-addon-sdk` — PASS; commit `feat(sdk): typed add-on SDK data model and provider trait`
 
 ### Task 2: rvah-addon-host manifest parsing and validation
 
@@ -73,8 +73,8 @@ All types `Serialize + Deserialize + Clone + Debug + PartialEq` (traits excepted
 - Validation: id must be reverse-DNS (`[a-z0-9-]+(\.[a-z0-9-]+)+`), version valid semver, sdk valid range, entry non-empty, network entries are bare domains (no scheme/path; `*.` prefix wildcard allowed)
 - `HOST_SDK_VERSION: semver::Version = 0.1.0`; `Manifest::is_sdk_compatible(&self) -> bool`
 
-- [ ] Failing tests: `parses_full_manifest` (SDD §5 example), `rejects_missing_id`, `rejects_bad_semver`, `rejects_unsupported_sdk_range`, `rejects_url_in_network_permission`, `parses_storage_quota_mib`
-- [ ] Implement; PASS; commit `feat(host): manifest parsing and validation (FR-002, FR-003)`
+- [x] Failing tests: `parses_full_manifest` (SDD §5 example), `rejects_missing_id`, `rejects_bad_semver`, `rejects_unsupported_sdk_range`, `rejects_url_in_network_permission`, `parses_storage_quota_mib`
+- [x] Implement; PASS; commit `feat(host): manifest parsing and validation (FR-002, FR-003)`
 
 ### Task 3: rvah-net allowlisted HTTP client
 
@@ -89,8 +89,8 @@ All types `Serialize + Deserialize + Clone + Debug + PartialEq` (traits excepted
 - `struct PermissionedClient { transport, allowlist, max_requests: u32, counter }` — `fn fetch(&self, req) -> Result<HttpResponse, NetError>`; denies non-http(s) schemes, disallowed hosts (`NetError::DomainDenied`), and over-quota calls (`NetError::QuotaExceeded`)
 - `enum NetError { DomainDenied(String), SchemeDenied(String), QuotaExceeded, Transport(String), InvalidUrl(String) }`
 
-- [ ] Failing tests: `allows_exact_domain`, `wildcard_matches_subdomain_not_bare_or_suffix` (`*.ex.com` matches `a.ex.com`, not `ex.com`, not `evilex.com`), `denies_unlisted_domain_before_transport` (MockTransport records zero calls), `denies_file_scheme` (TC-SEC-002), `request_quota_enforced`
-- [ ] Implement; PASS; commit `feat(net): permissioned HTTP client with domain allowlists (FR-080, FR-081)`
+- [x] Failing tests: `allows_exact_domain`, `wildcard_matches_subdomain_not_bare_or_suffix` (`*.ex.com` matches `a.ex.com`, not `ex.com`, not `evilex.com`), `denies_unlisted_domain_before_transport` (MockTransport records zero calls), `denies_file_scheme` (TC-SEC-002), `request_quota_enforced`
+- [x] Implement; PASS; commit `feat(net): permissioned HTTP client with domain allowlists (FR-080, FR-081)`
 
 ### Task 4: rvah-data SQLite store, migrations, repositories
 
@@ -104,8 +104,8 @@ All types `Serialize + Deserialize + Clone + Debug + PartialEq` (traits excepted
 - Repos (methods on `Database`): `upsert_addon(AddonRecord)`, `get_addon(id) -> Option<AddonRecord>`, `list_addons()`, `set_addon_status(id, AddonStatus)`, `remove_addon(id, purge_data: bool)`, `record_permissions(addon_id, permissions_json, hash)`, `get_permission_hash(addon_id)`, `set_setting/get_setting`, `storage_get/storage_set (with per-addon quota check: total bytes ≤ manifest quota → Err(DataError::StorageQuotaExceeded))/storage_delete/storage_used(addon_id)`, `add_favorite/list_favorites/remove_favorite`, `set_watch_state(WatchState)/get_watch_state(addon_id,item_id)`, `log_event(DiagnosticEvent)/recent_events(limit)`
 - `struct AddonRecord { id, version, package_hash, status: AddonStatus, install_source, sdk_range, capabilities: Vec<String> }`, `enum AddonStatus { Enabled, Disabled, Quarantined }`, `struct WatchState { addon_id, item_id, position_secs: f64, duration_secs: f64, watched: bool, last_played_at: u64 }`
 
-- [ ] Failing tests: `migrations_apply_fresh`, `failed_migration_rolls_back` , `addon_crud_roundtrip`, `storage_quota_enforced` (FR-101), `watch_state_roundtrip`, `remove_addon_purges_or_retains_data` (TC-ADD-007/008)
-- [ ] Implement; PASS; commit `feat(data): SQLite store, transactional migrations, repositories (FR-100, FR-101, FR-105)`
+- [x] Failing tests: `migrations_apply_fresh`, `failed_migration_rolls_back` , `addon_crud_roundtrip`, `storage_quota_enforced` (FR-101), `watch_state_roundtrip`, `remove_addon_purges_or_retains_data` (TC-ADD-007/008)
+- [x] Implement; PASS; commit `feat(data): SQLite store, transactional migrations, repositories (FR-100, FR-101, FR-105)`
 
 ### Task 5: rvah-auth secret vault and redaction
 
@@ -118,8 +118,8 @@ All types `Serialize + Deserialize + Clone + Debug + PartialEq` (traits excepted
 - `struct Redactor` — `register_secret(value)`, `redact(&self, text) -> String` replaces registered values and pattern matches (`Authorization: ...`, `Bearer <tok>`, `api_key=...`, `access_token=...`) with `[REDACTED]`
 - `struct DeviceCodeFlow` state machine: `Pending { user_code, verification_url, expires_at } → poll() → Authorized { token } | Expired | Denied` driven by injected poller fn (mock in tests) — stores token via vault on success (UC-04, TC-AUTH-001/002)
 
-- [ ] Failing tests: `vault_roundtrip_and_isolation_by_addon`, `encrypted_vault_persists_across_open`, `encrypted_vault_wrong_key_fails`, `redactor_masks_registered_and_patterns` (TC-SEC-003), `device_code_success_stores_token`, `device_code_expiry_stores_nothing` (TC-AUTH-002)
-- [ ] Implement; PASS; commit `feat(auth): encrypted secret vault, redaction, device-code flow (FR-083, FR-084)`
+- [x] Failing tests: `vault_roundtrip_and_isolation_by_addon`, `encrypted_vault_persists_across_open`, `encrypted_vault_wrong_key_fails`, `redactor_masks_registered_and_patterns` (TC-SEC-003), `device_code_success_stores_token`, `device_code_expiry_stores_nothing` (TC-AUTH-002)
+- [x] Implement; PASS; commit `feat(auth): encrypted secret vault, redaction, device-code flow (FR-083, FR-084)`
 
 ### Task 6: rvah-player state machine, source validator, progress
 
@@ -137,8 +137,8 @@ All types `Serialize + Deserialize + Clone + Debug + PartialEq` (traits excepted
 - `struct ProgressTracker::new(watched_threshold: f32 /*0.9*/, debounce_secs: f64)` — `fn on_progress(&mut self, position, duration, now) -> Option<ProgressUpdate { position_secs, duration_secs, watched }>` emits at most once per debounce window, watched=true at ≥ threshold (FR-065, TC-PLY-007)
 - `struct MockPlayer` implementing PlayerBackend with scripted event queues (lives here so rvah-core tests can use it; re-exported by testkit)
 
-- [ ] Failing tests: `controller_full_lifecycle` (load→play→pause→seek→resume→stop per TC-PLY-001 using MockPlayer), `illegal_transition_is_nonfatal_error`, `validator_rejects_unsupported_protocol`, `validator_rejects_expired`, `validator_rejects_forbidden_header_allows_ua_referer`, `progress_debounced_and_watched_at_threshold`, `backend_fatal_error_moves_to_error_state` (TC-PLY-010)
-- [ ] Implement; PASS; commit `feat(player): controller state machine, source validation, progress (FR-060..066)`
+- [x] Failing tests: `controller_full_lifecycle` (load→play→pause→seek→resume→stop per TC-PLY-001 using MockPlayer), `illegal_transition_is_nonfatal_error`, `validator_rejects_unsupported_protocol`, `validator_rejects_expired`, `validator_rejects_forbidden_header_allows_ua_referer`, `progress_debounced_and_watched_at_threshold`, `backend_fatal_error_moves_to_error_state` (TC-PLY-010)
+- [x] Implement; PASS; commit `feat(player): controller state machine, source validation, progress (FR-060..066)`
 
 ### Task 7: rvah-addon-host runtime, host API bridge, packaging/signing, lifecycle
 
@@ -158,8 +158,8 @@ All types `Serialize + Deserialize + Clone + Debug + PartialEq` (traits excepted
   - Packaging (`package.rs`): `.rvah` file = tar.gz of add-on dir; detached signature file = ed25519 over sha256(archive bytes). `fn keygen() -> (SigningKey, VerifyingKey)`, `fn package_dir(dir, out) -> Result<[u8;32] /*sha256*/>`, `fn sign_package(pkg_path, key) -> [u8;64]`, `fn verify_package(pkg_path, sig, pubkey) -> Result<(), PackageError>` (FR-004, TC-ADD-002, TC-SEC-001)
   - Lifecycle (`install.rs`): `struct AddonManager { db, install_root }` — `install(pkg_path, sig, pubkey, InstallDecision) -> Result<InstalledAddon, InstallError>` (verify sig → extract to `install_root/<id>/<version>` → parse+validate manifest → SDK-range check (TC-ADD-003) → duplicate-id check → compute permission hash (sha256 of canonical permissions JSON) → record); `enum InstallDecision { Approve, Deny }` for permission grant; `update(pkg…)` — if permission hash differs from recorded grant, returns `InstallError::PermissionExpansionNeedsApproval` unless `Approve` (TC-ADD-005), preserves settings/storage/secrets (TC-ADD-004); `enable/disable(id)`; `uninstall(id, purge: bool)` (TC-ADD-007/008); `verify_installed(id)` re-hashes package vs stored hash (TC-SEC-001)
 
-- [ ] Failing tests: `in_process_runtime_lists_pages`, `runtime_times_out_slow_provider`, `capability_gate_denies_undeclared_op`, `bridged_api_denies_undeclared_secret`, `bridged_api_denies_unlisted_domain`, `package_sign_verify_roundtrip`, `tampered_package_rejected`, `install_rejects_bad_sdk_range`, `update_with_expanded_permissions_requires_reapproval`, `uninstall_purges_or_retains`
-- [ ] Implement; PASS; commit `feat(host): runtime with quotas, host API bridge, signed packaging, lifecycle (FR-001..007, FR-020..026, FR-004)`
+- [x] Failing tests: `in_process_runtime_lists_pages`, `runtime_times_out_slow_provider`, `capability_gate_denies_undeclared_op`, `bridged_api_denies_undeclared_secret`, `bridged_api_denies_unlisted_domain`, `package_sign_verify_roundtrip`, `tampered_package_rejected`, `install_rejects_bad_sdk_range`, `update_with_expanded_permissions_requires_reapproval`, `uninstall_purges_or_retains`
+- [x] Implement; PASS; commit `feat(host): runtime with quotas, host API bridge, signed packaging, lifecycle (FR-001..007, FR-020..026, FR-004)`
 
 ### Task 8: rvah-testkit fixtures + rvah-core orchestration
 
@@ -179,8 +179,8 @@ All types `Serialize + Deserialize + Clone + Debug + PartialEq` (traits excepted
   - `enum CoreError { AddonDisabled, AddonNotFound, Provider(AddonError), SourceRejected(SourceRejection), Player(PlayerError), Data(String) }` with `fn class(&self) -> ErrorClass`; `enum ErrorClass { UserActionable, Recoverable, Developer, FatalHost }` (SDD §11)
   - `struct NavHistory` — `push(page_ref)/back()/forward()` (FR-042)
 
-- [ ] Failing tests: `browse_catalog_echo_root_and_nested`, `pagination_over_large_catalog`, `malformed_provider_response_surfaces_error_host_survives` (TC-RUN-003 — a fixture returning invalid data mapped to Developer class), `repeated_failures_quarantine_addon`, `resolve_direct_mp4_and_full_playback_with_resume` (TC-PLY-001/008), `expired_source_rejected_with_retryable_error` (TC-PLY-005), `search_single_addon`, `nav_history_back_forward`, `favorites_roundtrip`
-- [ ] Implement; PASS; commit `feat(core): use-case orchestration, quarantine, navigation, playback persistence`
+- [x] Failing tests: `browse_catalog_echo_root_and_nested`, `pagination_over_large_catalog`, `malformed_provider_response_surfaces_error_host_survives` (TC-RUN-003 — a fixture returning invalid data mapped to Developer class), `repeated_failures_quarantine_addon`, `resolve_direct_mp4_and_full_playback_with_resume` (TC-PLY-001/008), `expired_source_rejected_with_retryable_error` (TC-PLY-005), `search_single_addon`, `nav_history_back_forward`, `favorites_roundtrip`
+- [x] Implement; PASS; commit `feat(core): use-case orchestration, quarantine, navigation, playback persistence`
 
 ### Task 9: rvah-cli developer CLI (mock UI)
 
@@ -201,8 +201,8 @@ All types `Serialize + Deserialize + Clone + Debug + PartialEq` (traits excepted
   - `rvah play <id> <item-id> --data-dir DIR` — mock-player session, prints progress events and stores resume state
   - `rvah diagnostics --data-dir DIR` — prints recent redacted events (FR-103)
 
-- [ ] Failing CLI tests: `validate_accepts_good_rejects_bad_manifest`, `package_install_browse_flow` (end-to-end with fixture add-on dir written by testkit), `install_rejects_tampered_package`, `diagnostics_output_contains_no_secret`
-- [ ] Implement; PASS; commit `feat(cli): developer CLI and simulator (mock UI)`
+- [x] Failing CLI tests: `validate_accepts_good_rejects_bad_manifest`, `package_install_browse_flow` (end-to-end with fixture add-on dir written by testkit), `install_rejects_tampered_package`, `diagnostics_output_contains_no_secret`
+- [x] Implement; PASS; commit `feat(cli): developer CLI and simulator (mock UI)`
 
 ### Task 10 (best-effort): Wasmtime sandbox runtime
 
@@ -213,8 +213,8 @@ All types `Serialize + Deserialize + Clone + Debug + PartialEq` (traits excepted
 - `WasmRuntime::load(module_bytes, limits: WasmLimits { max_memory_bytes, fuel, timeout }) -> Result<Self>` implementing `AddonRuntime`
 - ABI v0: guest exports `rvah_alloc(len: i32) -> i32` and `rvah_invoke(ptr: i32, len: i32) -> i64` (packed ptr<<32|len of JSON `Result<AddonResponse, AddonError>`); host passes JSON-serialized `AddonOp`; host imports `rvah_host_call(ptr,len)->i64` (JSON HostApi dispatch: `{"fn":"http_fetch",...}`) capability-checked via BridgedHostApi
 - Enforcement: `StoreLimits` memory cap (TC-RUN-005), fuel metering + epoch deadline for CPU/wall-clock (TC-RUN-004)
-- [ ] Tests: `wasm_echo_lists_page`, `wasm_infinite_loop_trapped_by_fuel`, `wasm_memory_hog_capped`
-- [ ] If wasmtime build proves impractical in-session, document status in README and keep `AddonRuntime` boundary; commit whatever compiles green.
+- [x] Tests: `wasm_echo_lists_page`, `wasm_infinite_loop_trapped_by_fuel`, `wasm_memory_hog_capped`
+- [x] If wasmtime build proves impractical in-session, document status in README and keep `AddonRuntime` boundary; commit whatever compiles green. (Built fine; guest fixtures embedded as WAT instead of a wasm32 cdylib crate — no extra toolchain target needed.)
 
 ### Task 11: Workspace polish
 

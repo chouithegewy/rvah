@@ -69,7 +69,11 @@ impl WasmRuntime {
         let engine = Engine::new(&config).map_err(internal)?;
         let module = Module::new(&engine, module_bytes)
             .map_err(|e| AddonError::new(AddonErrorCode::Malformed, format!("bad module: {e}")))?;
-        Ok(Self { engine, module, limits })
+        Ok(Self {
+            engine,
+            module,
+            limits,
+        })
     }
 }
 
@@ -251,7 +255,13 @@ mod tests {
         )
         .unwrap();
         let resp = rt
-            .invoke(AddonOp::List { path: None, cursor: None }, &ctx())
+            .invoke(
+                AddonOp::List {
+                    path: None,
+                    cursor: None,
+                },
+                &ctx(),
+            )
             .unwrap();
         let AddonResponse::Page(page) = resp else {
             panic!("expected page, got {resp:?}");
@@ -282,7 +292,13 @@ mod tests {
         )
         .unwrap();
         let err = rt
-            .invoke(AddonOp::List { path: None, cursor: None }, &ctx())
+            .invoke(
+                AddonOp::List {
+                    path: None,
+                    cursor: None,
+                },
+                &ctx(),
+            )
             .unwrap_err();
         assert_eq!(err.code, AddonErrorCode::Timeout);
         assert!(err.message.contains("fuel"));
@@ -319,7 +335,13 @@ mod tests {
         )
         .unwrap();
         let err = rt
-            .invoke(AddonOp::List { path: None, cursor: None }, &ctx())
+            .invoke(
+                AddonOp::List {
+                    path: None,
+                    cursor: None,
+                },
+                &ctx(),
+            )
             .unwrap_err();
         assert_eq!(err.code, AddonErrorCode::Quota);
     }

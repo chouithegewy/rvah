@@ -105,8 +105,7 @@ impl EncryptedFileVault {
     }
 
     fn persist(&self, data: &SecretMap) -> Result<(), VaultError> {
-        let plaintext =
-            serde_json::to_vec(data).map_err(|e| VaultError::Crypto(e.to_string()))?;
+        let plaintext = serde_json::to_vec(data).map_err(|e| VaultError::Crypto(e.to_string()))?;
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let ciphertext = self
             .cipher
@@ -120,7 +119,8 @@ impl EncryptedFileVault {
 
 fn load_or_create_key(key_path: &Path) -> Result<[u8; 32], VaultError> {
     if key_path.exists() {
-        let hex_str = std::fs::read_to_string(key_path).map_err(|e| VaultError::Io(e.to_string()))?;
+        let hex_str =
+            std::fs::read_to_string(key_path).map_err(|e| VaultError::Io(e.to_string()))?;
         let bytes = hex::decode(hex_str.trim()).map_err(|e| VaultError::Crypto(e.to_string()))?;
         bytes
             .try_into()
@@ -324,8 +324,20 @@ mod tests {
     #[test]
     fn device_code_success_stores_token() {
         let vault = MemoryVault::new();
-        let mut flow = DeviceCodeFlow::new("ABCD-1234", "https://ex.com/activate", 1_000, "com.example.a", "oauth_token");
-        let mut outcomes = vec![PollOutcome::Pending, PollOutcome::Authorized { token: "tok-99".into() }].into_iter();
+        let mut flow = DeviceCodeFlow::new(
+            "ABCD-1234",
+            "https://ex.com/activate",
+            1_000,
+            "com.example.a",
+            "oauth_token",
+        );
+        let mut outcomes = vec![
+            PollOutcome::Pending,
+            PollOutcome::Authorized {
+                token: "tok-99".into(),
+            },
+        ]
+        .into_iter();
         let mut poller = move || outcomes.next().unwrap();
 
         assert!(matches!(
@@ -337,7 +349,10 @@ mod tests {
             &DeviceCodeState::Authorized
         );
         assert_eq!(
-            vault.get("com.example.a", "oauth_token").unwrap().as_deref(),
+            vault
+                .get("com.example.a", "oauth_token")
+                .unwrap()
+                .as_deref(),
             Some("tok-99")
         );
     }
@@ -345,9 +360,17 @@ mod tests {
     #[test]
     fn device_code_expiry_stores_nothing() {
         let vault = MemoryVault::new();
-        let mut flow = DeviceCodeFlow::new("ABCD-1234", "https://ex.com/activate", 1_000, "com.example.a", "oauth_token");
+        let mut flow = DeviceCodeFlow::new(
+            "ABCD-1234",
+            "https://ex.com/activate",
+            1_000,
+            "com.example.a",
+            "oauth_token",
+        );
         // Poller would authorize, but the code is already expired.
-        let mut poller = || PollOutcome::Authorized { token: "late".into() };
+        let mut poller = || PollOutcome::Authorized {
+            token: "late".into(),
+        };
         assert_eq!(
             flow.poll(1_000, &mut poller, &vault).unwrap(),
             &DeviceCodeState::Expired
