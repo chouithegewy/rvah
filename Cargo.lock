@@ -808,6 +808,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "rvah-cli"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "hex",
+ "rvah-addon-host",
+ "rvah-addon-sdk",
+ "rvah-auth",
+ "rvah-core",
+ "rvah-data",
+ "rvah-player",
+ "rvah-testkit",
+ "tempfile",
+]
+
+[[package]]
 name = "rvah-core"
 version = "0.1.0"
 dependencies = [

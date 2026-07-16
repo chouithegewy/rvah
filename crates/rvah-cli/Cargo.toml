@@ -1,0 +1,24 @@
+[package]
+name = "rvah-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "rvah"
+path = "src/main.rs"
+
+[dependencies]
+rvah-addon-host = { workspace = true }
+rvah-addon-sdk = { workspace = true }
+rvah-auth = { workspace = true }
+rvah-core = { workspace = true }
+rvah-data = { workspace = true }
+rvah-player = { workspace = true }
+rvah-testkit = { workspace = true }
+ed25519-dalek = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
