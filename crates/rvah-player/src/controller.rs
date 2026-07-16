@@ -53,6 +53,10 @@ impl<B: PlayerBackend> PlayerController<B> {
         self.last_error.as_ref()
     }
 
+    pub fn backend(&self) -> &B {
+        &self.backend
+    }
+
     pub fn backend_mut(&mut self) -> &mut B {
         &mut self.backend
     }

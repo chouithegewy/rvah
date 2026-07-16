@@ -1,0 +1,46 @@
+# cargo-deny configuration (SDD §9: dependency/license tracking).
+
+[graph]
+all-features = true
+
+[advisories]
+yanked = "deny"
+ignore = [
+    { id = "RUSTSEC-2025-0057", reason = "fxhash unmaintained; transitive via egui, no vulnerability" },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; transitive via wasmtime/egui, no vulnerability" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; egui font stack, local font data only" },
+    # quick-xml DoS advisories: both copies are pinned inside egui's Linux
+    # windowing stack (wayland-scanner runs at build time on vendored protocol
+    # files; atspi parses the local accessibility bus). No add-on-controlled
+    # XML reaches either. Revisit on the next eframe upgrade.
+    { id = "RUSTSEC-2026-0194", reason = "transitive via winit/accesskit; parses trusted local data only" },
+    { id = "RUSTSEC-2026-0195", reason = "transitive via winit/accesskit; parses trusted local data only" },
+]
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "OFL-1.1",
+    # egui's bundled fallback fonts (epaint_default_fonts).
+    "LicenseRef-UFL-1.0",
+    # webpki-roots CA bundle data.
+    "CDLA-Permissive-2.0",
+]
+
+[bans]
+multiple-versions = "allow"
+# Internal path/workspace dependencies carry no version and would trip the
+# wildcard lint; external crates are all pinned via Cargo.lock.
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -21,6 +21,10 @@ struct World {
 
 impl World {
     fn new() -> Self {
+        Self::with_player(MockPlayer::new())
+    }
+
+    fn with_player(player: MockPlayer) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open_in_memory().unwrap());
         let manager = AddonManager::new(Arc::clone(&db), tmp.path().join("addons"));
@@ -30,7 +34,7 @@ impl World {
             .install(&pkg, &sig, &pubkey, InstallDecision::Approve)
             .unwrap();
 
-        let mut core = AppCore::new(manager, db, Arc::new(MemoryVault::new()), MockPlayer::new());
+        let mut core = AppCore::new(manager, db, Arc::new(MemoryVault::new()), player);
         core.register_runtime(
             ECHO_FIXTURE_ID,
             Box::new(InProcessRuntime::new(
@@ -264,6 +268,47 @@ fn expired_source_rejected_with_retryable_error() {
     assert!(err.retryable());
     assert_eq!(err.class(), ErrorClass::Recoverable);
     assert_eq!(w.core.player.state(), PlayerState::Idle);
+}
+
+#[test]
+fn dash_source_gated_by_backend_capability() {
+    let mut dash = rvah_testkit::mp4_source("https://cdn.example.com/show.mpd");
+    dash.protocol = rvah_addon_sdk::Protocol::Dash;
+
+    // Default backend has no DASH support: rejected as unsupported.
+    let mut w = World::new();
+    w.add_addon(
+        "com.rvah.fixtures.dash",
+        &["resolve"],
+        Arc::new(ResolverStaticProvider {
+            sources: vec![dash.clone()],
+        }),
+        vec![Capability::Resolve],
+    );
+    let err = w
+        .core
+        .resolve_and_play("com.rvah.fixtures.dash", "x")
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        CoreError::SourceRejected(rvah_player::SourceRejection::UnsupportedProtocol(_))
+    ));
+
+    // DASH-capable backend: the same source plays.
+    let mut w = World::with_player(MockPlayer::with_dash());
+    w.add_addon(
+        "com.rvah.fixtures.dash",
+        &["resolve"],
+        Arc::new(ResolverStaticProvider {
+            sources: vec![dash],
+        }),
+        vec![Capability::Resolve],
+    );
+    let session = w
+        .core
+        .resolve_and_play("com.rvah.fixtures.dash", "x")
+        .unwrap();
+    assert!(session.source.url.ends_with(".mpd"));
 }
 
 #[test]

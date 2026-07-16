@@ -103,11 +103,10 @@ Consume: `rvah repo-check` / `rvah repo-install … --approve` with `--index`
 
 ## Deferred (post-MVP)
 
-- DASH protocol and subtitle rendering backend; DRM is out of scope entirely
-- Wasm ABI v0 host-call dispatch beyond `log` (http/storage/secrets bridge
-  exists in-process; wiring it through the wasm boundary is next)
-- FR-045 remote-friendly focus navigation; GUI install-permission prompt
-  (install stays in the CLI); Windows mpv transport; SBOM tooling in CI
+- Subtitle rendering backend; DRM is out of scope entirely (DASH plays on
+  DASH-capable backends such as mpv)
+- FR-045 remote-friendly focus navigation; Windows mpv transport;
+  DNS pinning / redirect policy for add-on HTTP
 - Telemetry: deliberately none (see docs/developer-guide.md)
 
 ## Development

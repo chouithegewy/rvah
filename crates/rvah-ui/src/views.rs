@@ -92,6 +92,9 @@ impl eframe::App for RvahApp {
                 if ui.button("🛠 Diagnostics").clicked() {
                     intents.push(UiIntent::OpenDiagnostics);
                 }
+                if ui.button("📦 Install").clicked() {
+                    intents.push(UiIntent::OpenInstall);
+                }
                 if let Some(note) = &self.backend_note {
                     ui.separator();
                     ui.colored_label(egui::Color32::YELLOW, note);
@@ -119,6 +122,7 @@ impl eframe::App for RvahApp {
             Screen::Settings => settings_view(ui, &self.state, &mut intents),
             Screen::Diagnostics => diagnostics_view(ui, &self.state, &mut intents),
             Screen::Auth => auth_view(ui, &self.state, &mut intents),
+            Screen::Install => install_view(ui, &mut self.state, &mut intents),
         });
 
         self.dispatch(intents);
@@ -153,6 +157,9 @@ fn loaded<'a, T>(ui: &mut egui::Ui, load: &'a Load<T>, what: &str) -> Option<&'a
 
 fn home_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) {
     ui.heading("RVAH");
+    if let Some(done) = &state.install_done {
+        ui.colored_label(egui::Color32::GREEN, done);
+    }
     let Some(home) = loaded(ui, &state.home, "home") else {
         return;
     };
@@ -497,6 +504,55 @@ fn diagnostics_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiInte
             ));
         }
     });
+}
+
+fn install_view(ui: &mut egui::Ui, state: &mut UiState, intents: &mut Vec<UiIntent>) {
+    ui.heading("Install add-on");
+    ui.horizontal(|ui| {
+        ui.label("Package (.rvah):");
+        let mut pkg = state.install_pkg.clone();
+        if ui.text_edit_singleline(&mut pkg).changed() {
+            intents.push(UiIntent::SetInstallPkg(pkg));
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("Publisher key (.pub):");
+        let mut key = state.install_pubkey.clone();
+        if ui.text_edit_singleline(&mut key).changed() {
+            intents.push(UiIntent::SetInstallPubkey(key));
+        }
+    });
+    ui.horizontal(|ui| {
+        if ui.button("Verify & preview").clicked() {
+            intents.push(UiIntent::PreviewInstall);
+        }
+        if ui.button("Cancel").clicked() {
+            intents.push(UiIntent::CancelInstall);
+        }
+    });
+    match &state.install {
+        Load::Idle => {}
+        Load::Loading => {
+            ui.spinner();
+        }
+        Load::Failed(error) => error_label(ui, error),
+        Load::Loaded(preview) => {
+            ui.separator();
+            ui.strong(format!("{} v{}", preview.id, preview.version));
+            ui.label("This add-on requests:");
+            ui.label(format!("• network: {:?}", preview.network));
+            ui.label(format!("• storage: {} bytes", preview.storage_bytes));
+            ui.label(format!("• secrets: {:?}", preview.secrets));
+            ui.horizontal(|ui| {
+                if ui.button("✓ Approve & install").clicked() {
+                    intents.push(UiIntent::ConfirmInstall);
+                }
+                if ui.button("✕ Deny").clicked() {
+                    intents.push(UiIntent::CancelInstall);
+                }
+            });
+        }
+    }
 }
 
 fn auth_view(ui: &mut egui::Ui, state: &UiState, _intents: &mut Vec<UiIntent>) {

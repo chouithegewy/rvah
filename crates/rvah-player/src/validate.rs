@@ -17,10 +17,14 @@ const ALLOWED_HEADERS: [&str; 2] = ["user-agent", "referer"];
 
 /// Gate every resolver output before it reaches a player backend.
 ///
-/// MVP allows http/https/HLS only; DASH is deferred and file/local paths are
-/// always denied (TC-PLY-003/004/005). Header policy: only `User-Agent` and
-/// `Referer` may accompany a source (FR-063).
-pub fn validate_source(source: &PlayableSource, now_unix: u64) -> Result<(), SourceRejection> {
+/// Allows http/https/HLS always; DASH only when the backend declares support
+/// (`allow_dash`); file/local paths never (TC-PLY-003/004/005). Header
+/// policy: only `User-Agent` and `Referer` may accompany a source (FR-063).
+pub fn validate_source_opts(
+    source: &PlayableSource,
+    now_unix: u64,
+    allow_dash: bool,
+) -> Result<(), SourceRejection> {
     // Distrust the declared protocol: classify from the URL as well.
     if source
         .url
@@ -32,6 +36,7 @@ pub fn validate_source(source: &PlayableSource, now_unix: u64) -> Result<(), Sou
     }
     match source.protocol {
         Protocol::Http | Protocol::Https | Protocol::Hls => {}
+        Protocol::Dash if allow_dash => {}
         Protocol::Dash => return Err(SourceRejection::UnsupportedProtocol("dash".into())),
         Protocol::File => return Err(SourceRejection::LocalPathDenied(source.url.clone())),
     }
@@ -46,6 +51,11 @@ pub fn validate_source(source: &PlayableSource, now_unix: u64) -> Result<(), Sou
         }
     }
     Ok(())
+}
+
+/// [`validate_source_opts`] with the conservative default (no DASH).
+pub fn validate_source(source: &PlayableSource, now_unix: u64) -> Result<(), SourceRejection> {
+    validate_source_opts(source, now_unix, false)
 }
 
 #[cfg(test)]
@@ -88,6 +98,19 @@ mod tests {
             validate_source(&source(Protocol::Https, "file:///etc/passwd"), 0),
             Err(SourceRejection::LocalPathDenied(_))
         ));
+    }
+
+    #[test]
+    fn validator_allows_dash_only_with_backend_support() {
+        let s = source(Protocol::Dash, "https://ex.com/a.mpd");
+        assert_eq!(
+            validate_source_opts(&s, 0, false),
+            Err(SourceRejection::UnsupportedProtocol("dash".into()))
+        );
+        assert!(validate_source_opts(&s, 0, true).is_ok());
+        // File stays denied regardless of capability.
+        let f = source(Protocol::File, "file:///etc/passwd");
+        assert!(validate_source_opts(&f, 0, true).is_err());
     }
 
     #[test]

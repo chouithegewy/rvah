@@ -11,7 +11,8 @@ use rvah_addon_sdk::{
 use rvah_auth::SecretVault;
 use rvah_data::{AddonStatus, Database, DiagnosticEvent, FavoriteRecord, WatchState};
 use rvah_player::{
-    validate_source, PlayerBackend, PlayerController, PlayerEvent, ProgressTracker, SourceRejection,
+    validate_source_opts, PlayerBackend, PlayerController, PlayerEvent, ProgressTracker,
+    SourceRejection,
 };
 
 use crate::errors::CoreError;
@@ -242,14 +243,18 @@ impl<B: PlayerBackend> AppCore<B> {
         };
 
         let now = unix_now();
+        // DASH passes validation only when the active backend can play it.
+        let allow_dash = self.player.backend().supports_dash();
         let mut last_rejection: Option<SourceRejection> = None;
-        let source = sources.into_iter().find(|s| match validate_source(s, now) {
-            Ok(()) => true,
-            Err(r) => {
-                last_rejection = Some(r);
-                false
-            }
-        });
+        let source = sources
+            .into_iter()
+            .find(|s| match validate_source_opts(s, now, allow_dash) {
+                Ok(()) => true,
+                Err(r) => {
+                    last_rejection = Some(r);
+                    false
+                }
+            });
         let source = match source {
             Some(s) => s,
             None => {

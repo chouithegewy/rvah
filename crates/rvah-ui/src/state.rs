@@ -35,6 +35,18 @@ pub enum Screen {
     Settings,
     Diagnostics,
     Auth,
+    Install,
+}
+
+/// A signature-verified permission grant awaiting the user's decision
+/// (UC-01, FR-005 in the GUI).
+#[derive(Debug, Clone, PartialEq)]
+pub struct InstallPreviewView {
+    pub id: String,
+    pub version: String,
+    pub network: Vec<String>,
+    pub storage_bytes: u64,
+    pub secrets: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -87,6 +99,10 @@ pub struct UiState {
     pub diagnostics: Load<Vec<DiagnosticEvent>>,
     pub export_status: Option<String>,
     pub auth: Load<AuthView>,
+    pub install_pkg: String,
+    pub install_pubkey: String,
+    pub install: Load<InstallPreviewView>,
+    pub install_done: Option<String>,
     pub banner: Option<ErrorView>,
 }
 
@@ -113,6 +129,10 @@ impl Default for UiState {
             diagnostics: Load::Idle,
             export_status: None,
             auth: Load::Idle,
+            install_pkg: String::new(),
+            install_pubkey: String::new(),
+            install: Load::Idle,
+            install_done: None,
             banner: None,
         }
     }
@@ -176,6 +196,12 @@ pub enum UiIntent {
         addon_id: String,
     },
     PollAuth,
+    OpenInstall,
+    SetInstallPkg(String),
+    SetInstallPubkey(String),
+    PreviewInstall,
+    ConfirmInstall,
+    CancelInstall,
     DismissBanner,
 }
 
@@ -295,6 +321,47 @@ pub fn intent(state: &mut UiState, intent: UiIntent) -> Option<CoreRequest> {
             Some(CoreRequest::StartAuth { addon_id })
         }
         UiIntent::PollAuth => Some(CoreRequest::PollAuth),
+        UiIntent::OpenInstall => {
+            state.screen = Screen::Install;
+            state.install = Load::Idle;
+            state.install_done = None;
+            None
+        }
+        UiIntent::SetInstallPkg(path) => {
+            state.install_pkg = path;
+            None
+        }
+        UiIntent::SetInstallPubkey(path) => {
+            state.install_pubkey = path;
+            None
+        }
+        UiIntent::PreviewInstall => {
+            if state.install_pkg.trim().is_empty() || state.install_pubkey.trim().is_empty() {
+                return None;
+            }
+            state.install = Load::Loading;
+            Some(CoreRequest::PreviewInstall {
+                pkg: PathBuf::from(state.install_pkg.trim()),
+                pubkey: PathBuf::from(state.install_pubkey.trim()),
+            })
+        }
+        UiIntent::ConfirmInstall => {
+            // Approving is only possible from a verified preview (FR-005).
+            if !matches!(state.install, Load::Loaded(_)) {
+                return None;
+            }
+            state.install = Load::Loading;
+            Some(CoreRequest::ConfirmInstall {
+                pkg: PathBuf::from(state.install_pkg.trim()),
+                pubkey: PathBuf::from(state.install_pubkey.trim()),
+            })
+        }
+        UiIntent::CancelInstall => {
+            state.install = Load::Idle;
+            state.screen = Screen::Home;
+            state.home = Load::Loading;
+            Some(CoreRequest::LoadHome)
+        }
         UiIntent::DismissBanner => {
             state.banner = None;
             None
@@ -382,6 +449,26 @@ pub fn reduce(state: &mut UiState, event: CoreEvent) {
                 verification_url,
             });
         }
+        CoreEvent::InstallPreview {
+            id,
+            version,
+            network,
+            storage_bytes,
+            secrets,
+        } => {
+            state.install = Load::Loaded(InstallPreviewView {
+                id,
+                version,
+                network,
+                storage_bytes,
+                secrets,
+            });
+        }
+        CoreEvent::Installed { id, version } => {
+            state.install = Load::Idle;
+            state.install_done = Some(format!("installed {id} v{version}"));
+            state.screen = Screen::Home;
+        }
         CoreEvent::Failed {
             context,
             message,
@@ -404,6 +491,7 @@ pub fn reduce(state: &mut UiState, event: CoreEvent) {
                 "settings" => state.settings = Load::Failed(error),
                 "diagnostics" => state.diagnostics = Load::Failed(error),
                 "auth" => state.auth = Load::Failed(error),
+                "install" => state.install = Load::Failed(error),
                 _ => state.banner = Some(error),
             }
         }

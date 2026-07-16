@@ -4,8 +4,9 @@
 //! `rvah_invoke(ptr: i32, len: i32) -> i64` (packed `ptr << 32 | len` of a
 //! JSON `Result<AddonResponse, AddonError>`); the host passes a JSON
 //! [`AddonOp`]. The optional import `env.rvah_host_call(ptr, len) -> i64`
-//! dispatches JSON host-API calls; v0 implements `log` only — richer
-//! dispatch rides on the same [`HostApi`] bridge later.
+//! dispatches the full JSON-serialized [`HostApi`] (ABI v0.1): `http_fetch`,
+//! `setting_get`, `secret_get`, `storage_get/set/delete`, `log`. Responses
+//! are written back through the guest's `rvah_alloc` and returned packed.
 //!
 //! Enforcement: `StoreLimits` caps guest memory (TC-RUN-005); fuel metering
 //! plus an epoch watchdog bound CPU and wall-clock time (TC-RUN-004).
@@ -77,33 +78,127 @@ impl WasmRuntime {
     }
 }
 
-/// v0 host-call dispatch: `{"fn":"log","level":"info","message":"..."}`.
-/// Unknown functions are ignored (return 0) rather than trapping the guest.
+fn parse_level(level: Option<&str>) -> LogLevel {
+    match level {
+        Some("error") => LogLevel::Error,
+        Some("warn") => LogLevel::Warn,
+        Some("debug") => LogLevel::Debug,
+        Some("trace") => LogLevel::Trace,
+        _ => LogLevel::Info,
+    }
+}
+
+/// ABI v0.1 host-call dispatch: JSON request in, JSON `{"Ok":…}/{"Err":…}`
+/// response out. Pure translation — capability and permission policy lives
+/// entirely in the [`HostApi`] implementation (the bridge).
+pub(crate) fn dispatch_host_call(host: &dyn HostApi, request: &[u8]) -> Vec<u8> {
+    use rvah_addon_sdk::HttpRequest;
+    use serde_json::{json, Value};
+
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "fn", rename_all = "snake_case")]
+    enum HostCall {
+        HttpFetch {
+            req: HttpRequest,
+        },
+        SettingGet {
+            key: String,
+        },
+        SecretGet {
+            name: String,
+        },
+        StorageGet {
+            key: String,
+        },
+        StorageSet {
+            key: String,
+            value: Vec<u8>,
+        },
+        StorageDelete {
+            key: String,
+        },
+        Log {
+            #[serde(default)]
+            level: Option<String>,
+            message: String,
+        },
+    }
+
+    fn ok(value: Value) -> Vec<u8> {
+        serde_json::to_vec(&json!({ "Ok": value })).expect("host response serializes")
+    }
+    fn err(error: &AddonError) -> Vec<u8> {
+        serde_json::to_vec(&json!({ "Err": error })).expect("host error serializes")
+    }
+
+    let call: HostCall = match serde_json::from_slice(request) {
+        Ok(call) => call,
+        Err(e) => {
+            return err(&AddonError::new(
+                AddonErrorCode::Malformed,
+                format!("host call: {e}"),
+            ))
+        }
+    };
+    match call {
+        HostCall::HttpFetch { req } => match host.http_fetch(req) {
+            Ok(resp) => ok(serde_json::to_value(resp).expect("response serializes")),
+            Err(e) => err(&e),
+        },
+        HostCall::SettingGet { key } => ok(json!({ "value": host.setting_get(&key) })),
+        HostCall::SecretGet { name } => match host.secret_get(&name) {
+            Ok(value) => ok(json!({ "value": value })),
+            Err(e) => err(&e),
+        },
+        HostCall::StorageGet { key } => ok(json!({ "value": host.storage_get(&key) })),
+        HostCall::StorageSet { key, value } => match host.storage_set(&key, &value) {
+            Ok(()) => ok(Value::Null),
+            Err(e) => err(&e),
+        },
+        HostCall::StorageDelete { key } => {
+            host.storage_delete(&key);
+            ok(Value::Null)
+        }
+        HostCall::Log { level, message } => {
+            host.log(parse_level(level.as_deref()), &message);
+            ok(Value::Null)
+        }
+    }
+}
+
+/// FFI shim: read the request from guest memory, dispatch, write the
+/// response back through the guest's own allocator, return packed ptr/len.
+/// `0` signals a plumbing failure (bad pointers, missing exports).
 fn host_call(caller: &mut Caller<'_, StoreData>, ptr: i32, len: i32) -> i64 {
     let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
         return 0;
     };
-    let Some(bytes) = memory
+    let Some(request) = memory
         .data(&caller)
         .get(ptr as usize..(ptr as usize + len as usize))
+        .map(|b| b.to_vec())
     else {
         return 0;
     };
-    let Ok(req) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+    let host = Arc::clone(&caller.data().host);
+    let response = dispatch_host_call(host.as_ref(), &request);
+
+    let Some(wasmtime::Extern::Func(alloc)) = caller.get_export("rvah_alloc") else {
         return 0;
     };
-    if req["fn"] == "log" {
-        let level = match req["level"].as_str() {
-            Some("error") => LogLevel::Error,
-            Some("warn") => LogLevel::Warn,
-            Some("debug") => LogLevel::Debug,
-            Some("trace") => LogLevel::Trace,
-            _ => LogLevel::Info,
-        };
-        let message = req["message"].as_str().unwrap_or_default().to_string();
-        caller.data().host.log(level, &message);
+    let Ok(alloc) = alloc.typed::<i32, i32>(&caller) else {
+        return 0;
+    };
+    let Ok(response_ptr) = alloc.call(&mut *caller, response.len() as i32) else {
+        return 0;
+    };
+    if memory
+        .write(&mut *caller, response_ptr as usize, &response)
+        .is_err()
+    {
+        return 0;
     }
-    0
+    (((response_ptr as u64) << 32) | response.len() as u64) as i64
 }
 
 impl AddonRuntime for WasmRuntime {
@@ -302,6 +397,151 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code, AddonErrorCode::Timeout);
         assert!(err.message.contains("fuel"));
+    }
+
+    /// Host with in-memory storage and recorded logs for dispatch tests.
+    #[derive(Default)]
+    struct RecordingHost {
+        storage: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
+        logs: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl HostApi for RecordingHost {
+        fn http_fetch(&self, _req: HttpRequest) -> Result<HttpResponse, AddonError> {
+            Ok(HttpResponse {
+                status: 200,
+                headers: Default::default(),
+                body: b"fetched".to_vec(),
+            })
+        }
+        fn setting_get(&self, key: &str) -> Option<String> {
+            (key == "region").then(|| "us".to_string())
+        }
+        fn secret_get(&self, _name: &str) -> Result<Option<String>, AddonError> {
+            Err(AddonError::new(
+                AddonErrorCode::PermissionDenied,
+                "secret not declared in manifest",
+            ))
+        }
+        fn storage_get(&self, key: &str) -> Option<Vec<u8>> {
+            self.storage.lock().unwrap().get(key).cloned()
+        }
+        fn storage_set(&self, key: &str, value: &[u8]) -> Result<(), AddonError> {
+            self.storage
+                .lock()
+                .unwrap()
+                .insert(key.to_string(), value.to_vec());
+            Ok(())
+        }
+        fn storage_delete(&self, key: &str) {
+            self.storage.lock().unwrap().remove(key);
+        }
+        fn log(&self, level: LogLevel, message: &str) {
+            self.logs
+                .lock()
+                .unwrap()
+                .push(format!("{level:?}:{message}"));
+        }
+    }
+
+    fn call(host: &dyn HostApi, request: serde_json::Value) -> serde_json::Value {
+        let response = dispatch_host_call(host, &serde_json::to_vec(&request).unwrap());
+        serde_json::from_slice(&response).unwrap()
+    }
+
+    #[test]
+    fn dispatch_covers_full_host_api() {
+        use serde_json::json;
+        let host = RecordingHost::default();
+
+        // http_fetch passes through the bridge.
+        let resp = call(
+            &host,
+            json!({"fn":"http_fetch","req":{"method":"GET","url":"https://api.example.com/v1"}}),
+        );
+        assert_eq!(resp["Ok"]["status"], 200);
+
+        // settings read manifest-default/stored values.
+        let resp = call(&host, json!({"fn":"setting_get","key":"region"}));
+        assert_eq!(resp["Ok"]["value"], "us");
+        let resp = call(&host, json!({"fn":"setting_get","key":"missing"}));
+        assert_eq!(resp["Ok"]["value"], serde_json::Value::Null);
+
+        // secret denial surfaces verbatim (policy stays in the bridge).
+        let resp = call(&host, json!({"fn":"secret_get","name":"tok"}));
+        assert_eq!(resp["Err"]["code"], "permission_denied");
+
+        // storage roundtrip, then delete.
+        let resp = call(&host, json!({"fn":"storage_set","key":"k","value":[1,2,3]}));
+        assert!(resp.get("Ok").is_some());
+        let resp = call(&host, json!({"fn":"storage_get","key":"k"}));
+        assert_eq!(resp["Ok"]["value"], json!([1, 2, 3]));
+        call(&host, json!({"fn":"storage_delete","key":"k"}));
+        let resp = call(&host, json!({"fn":"storage_get","key":"k"}));
+        assert_eq!(resp["Ok"]["value"], serde_json::Value::Null);
+
+        // log recorded with level.
+        call(
+            &host,
+            json!({"fn":"log","level":"warn","message":"careful"}),
+        );
+        assert_eq!(host.logs.lock().unwrap().as_slice(), ["Warn:careful"]);
+
+        // malformed request is an error, not a crash.
+        let resp = call(&host, json!({"fn":"no_such_op"}));
+        assert_eq!(resp["Err"]["code"], "malformed");
+    }
+
+    #[test]
+    fn wasm_guest_host_call_roundtrip() {
+        // Guest logs through the import, then returns a static empty page —
+        // proves the request-read + alloc + write-back plumbing end to end.
+        let log_req = r#"{"fn":"log","level":"info","message":"hello from wasm"}"#;
+        let ok_json = r#"{"Ok":{"kind":"page","value":{"items":[]}}}"#;
+        let wat = format!(
+            r#"(module
+  (import "env" "rvah_host_call" (func $host_call (param i32 i32) (result i64)))
+  (memory (export "memory") 2)
+  (data (i32.const 1024) "{log_data}")
+  (data (i32.const 2048) "{ok_data}")
+  (global $heap (mut i32) (i32.const 65536))
+  (func (export "rvah_alloc") (param $len i32) (result i32)
+    (local $ptr i32)
+    global.get $heap
+    local.set $ptr
+    global.get $heap
+    local.get $len
+    i32.add
+    global.set $heap
+    local.get $ptr)
+  (func (export "rvah_invoke") (param i32 i32) (result i64)
+    (drop (call $host_call (i32.const 1024) (i32.const {log_len})))
+    i64.const {packed_ok}))"#,
+            log_data = wat_escape(log_req),
+            ok_data = wat_escape(ok_json),
+            log_len = log_req.len(),
+            packed_ok = pack(2048, ok_json.len() as u32),
+        );
+        let rt = WasmRuntime::load(wat.as_bytes(), WasmLimits::default()).unwrap();
+        let host = Arc::new(RecordingHost::default());
+        let ctx = InvocationCtx {
+            timeout: Duration::from_secs(5),
+            host: Arc::clone(&host) as Arc<dyn HostApi>,
+        };
+        let resp = rt
+            .invoke(
+                AddonOp::List {
+                    path: None,
+                    cursor: None,
+                },
+                &ctx,
+            )
+            .unwrap();
+        assert!(matches!(resp, AddonResponse::Page(_)));
+        assert_eq!(
+            host.logs.lock().unwrap().as_slice(),
+            ["Info:hello from wasm"]
+        );
     }
 
     #[test]

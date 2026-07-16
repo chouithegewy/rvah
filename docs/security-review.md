@@ -70,9 +70,11 @@ the mitigation as built, the tests that pin it, and known gaps.
 
 ### License contamination
 - **Built:** no Kodi code or assets; the workspace is original code. All
-  dependencies come from crates.io.
-- **Gap:** no SBOM tooling wired up (`cargo about`/`cargo deny` recommended
-  in CI as a follow-up).
+  dependencies come from crates.io. `cargo deny` runs in CI (licenses,
+  advisories, sources); the license allowlist and accepted-advisory
+  rationale live in `deny.toml`. Wasmtime is pinned to the 36 LTS line after
+  the 2026 Winch/pooling advisories (RVAH uses neither Winch nor the pooling
+  allocator, but runs the patched release regardless).
 
 ## Additional observations
 
@@ -81,7 +83,9 @@ the mitigation as built, the tests that pin it, and known gaps.
 2. Player source validation refuses `file:` URLs even when the declared
    protocol lies (`validator_rejects_unsupported_protocol`), and the header
    policy allows only User-Agent/Referer through to mpv.
-3. Wasm ABI v0 host-call dispatch implements `log` only — a deliberately
-   minimal surface until the full HostApi dispatch is specified.
+3. Wasm ABI v0.1 host-call dispatch covers the full `HostApi`
+   (http/settings/secrets/storage/log) but adds no policy of its own —
+   every call lands in `BridgedHostApi`, so wasm guests face exactly the
+   same permission checks as in-process providers.
 4. mpv runs as a separate process; a compromised add-on cannot reach its IPC
    socket through any host API (sockets are host-only, no path is exposed).

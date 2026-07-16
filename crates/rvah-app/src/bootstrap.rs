@@ -105,8 +105,20 @@ pub fn bootstrap(data_dir: &Path) -> Result<Bootstrapped, String> {
         );
     }
 
+    // GUI installs (UC-01) register the same simulator runtime immediately.
+    let factory: rvah_ui::RuntimeFactory = Box::new(|_id, caps| {
+        let caps = caps.iter().filter_map(|c| capability_from_str(c)).collect();
+        (
+            Box::new(InProcessRuntime::new(
+                Arc::new(CatalogEchoProvider) as Arc<dyn AddonProvider + Send + Sync>,
+                caps,
+            )) as Box<dyn rvah_addon_host::AddonRuntime>,
+            Arc::new(NoopHost::default()) as Arc<dyn rvah_addon_sdk::HostApi>,
+        )
+    });
+
     Ok(Bootstrapped {
-        handle: CoreService::spawn(core),
+        handle: CoreService::spawn_with(core, Some(factory)),
         backend_note,
     })
 }

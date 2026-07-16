@@ -53,6 +53,11 @@ pub trait PlayerBackend {
     fn set_volume(&mut self, volume: f32) -> Result<(), PlayerError>;
     /// Drain pending backend events (non-blocking).
     fn poll_events(&mut self) -> Vec<PlayerEvent>;
+    /// Whether this backend can play DASH manifests (source validation
+    /// rejects DASH for backends that can't).
+    fn supports_dash(&self) -> bool {
+        false
+    }
 }
 
 /// Scriptable backend for tests and the developer simulator (STP mock player).
@@ -68,11 +73,21 @@ pub struct MockPlayer {
     pub volume: f32,
     /// When set, the next command returns this error once.
     pub fail_next: Option<PlayerError>,
+    /// Simulated DASH capability (real backends: mpv yes, others no).
+    pub dash: bool,
 }
 
 impl MockPlayer {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A mock that claims DASH support, for capability-gating tests.
+    pub fn with_dash() -> Self {
+        MockPlayer {
+            dash: true,
+            ..Self::default()
+        }
     }
 
     pub fn script_events(&mut self, events: impl IntoIterator<Item = PlayerEvent>) {
@@ -118,5 +133,9 @@ impl PlayerBackend for MockPlayer {
 
     fn poll_events(&mut self) -> Vec<PlayerEvent> {
         self.queue.drain(..).collect()
+    }
+
+    fn supports_dash(&self) -> bool {
+        self.dash
     }
 }

@@ -38,9 +38,27 @@ impl World {
             )),
             Arc::new(NoopHost::default()),
         );
+        // Same factory shape rvah-app uses: fresh installs get the simulator
+        // runtime immediately.
+        let factory: rvah_ui::RuntimeFactory = Box::new(|_id, caps| {
+            let caps = caps
+                .iter()
+                .filter_map(|c| match c.as_str() {
+                    "catalog" => Some(Capability::Catalog),
+                    "search" => Some(Capability::Search),
+                    "resolve" => Some(Capability::Resolve),
+                    _ => None,
+                })
+                .collect();
+            (
+                Box::new(InProcessRuntime::new(Arc::new(CatalogEchoProvider), caps))
+                    as Box<dyn rvah_addon_host::AddonRuntime>,
+                Arc::new(NoopHost::default()) as Arc<dyn rvah_addon_sdk::HostApi>,
+            )
+        });
         World {
             _tmp: tmp,
-            handle: CoreService::spawn(core),
+            handle: CoreService::spawn_with(core, Some(factory)),
             state: UiState::default(),
         }
     }
@@ -185,6 +203,87 @@ fn diagnostics_export_writes_redacted_bundle() {
     let bundle: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(bundle["addons"][0]["id"], ECHO_FIXTURE_ID);
     assert!(bundle["events"].is_array());
+}
+
+/// Package a fixture add-on and write hex pubkey + sig files, GUI-style.
+fn packaged_addon(dir: &std::path::Path, id: &str) -> (String, String) {
+    let (pkg, sig, pubkey) = rvah_testkit::write_named_fixture_package(dir, id, &["catalog"]);
+    let sig_path = format!("{}.sig", pkg.display());
+    std::fs::write(&sig_path, hex::encode(sig)).unwrap();
+    let pub_path = dir.join(format!("{id}.pub"));
+    std::fs::write(&pub_path, hex::encode(pubkey.to_bytes())).unwrap();
+    (
+        pkg.to_str().unwrap().to_string(),
+        pub_path.to_str().unwrap().to_string(),
+    )
+}
+
+#[test]
+fn gui_install_preview_approve_flow() {
+    let mut w = World::new();
+    let (pkg, pubkey) = packaged_addon(w._tmp.path(), "com.example.guiinstall");
+
+    w.send(UiIntent::OpenInstall);
+    w.send(UiIntent::SetInstallPkg(pkg));
+    w.send(UiIntent::SetInstallPubkey(pubkey));
+    w.send(UiIntent::PreviewInstall);
+    w.pump();
+    let Load::Loaded(preview) = &w.state.install else {
+        panic!("preview not loaded: {:?}", w.state.install);
+    };
+    assert_eq!(preview.id, "com.example.guiinstall");
+    assert_eq!(preview.storage_bytes, 1024 * 1024);
+
+    w.send(UiIntent::ConfirmInstall);
+    // Confirm emits Installed then a refreshed Home; pump until both landed.
+    w.pump();
+    if !matches!(w.state.home, Load::Loaded(_)) {
+        w.pump();
+    }
+    assert_eq!(w.state.screen, Screen::Home);
+    assert!(w
+        .state
+        .install_done
+        .as_deref()
+        .unwrap()
+        .contains("guiinstall"));
+    let Load::Loaded(home) = &w.state.home else {
+        panic!("home not refreshed");
+    };
+    assert!(home.addons.iter().any(|a| a.id == "com.example.guiinstall"));
+
+    // The factory registered a runtime: the new add-on browses immediately.
+    w.send(UiIntent::OpenBrowse {
+        addon_id: "com.example.guiinstall".into(),
+        path: None,
+    });
+    w.pump();
+    assert!(matches!(w.state.browse, Load::Loaded(_)));
+}
+
+#[test]
+fn gui_install_rejects_tampered_package() {
+    let mut w = World::new();
+    let (pkg, pubkey) = packaged_addon(w._tmp.path(), "com.example.tamperedgui");
+    let mut bytes = std::fs::read(&pkg).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0xFF;
+    std::fs::write(&pkg, bytes).unwrap();
+
+    w.send(UiIntent::OpenInstall);
+    w.send(UiIntent::SetInstallPkg(pkg));
+    w.send(UiIntent::SetInstallPubkey(pubkey));
+    w.send(UiIntent::PreviewInstall);
+    w.pump();
+    let Load::Failed(error) = &w.state.install else {
+        panic!("expected failed install, got {:?}", w.state.install);
+    };
+    assert!(error.message.contains("signature"));
+    // Approve without a verified preview is refused client-side too.
+    assert_eq!(
+        rvah_ui::intent(&mut w.state, UiIntent::ConfirmInstall),
+        None
+    );
 }
 
 #[test]

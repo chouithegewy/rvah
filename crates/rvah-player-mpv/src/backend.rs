@@ -193,6 +193,11 @@ impl PlayerBackend for MpvBackend {
             .filter_map(|v| self.translate(v))
             .collect()
     }
+
+    /// mpv demuxes DASH natively.
+    fn supports_dash(&self) -> bool {
+        true
+    }
 }
 
 impl Drop for MpvBackend {

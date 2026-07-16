@@ -12,7 +12,7 @@ mod validate;
 pub use backend::{MockPlayer, PlayerBackend, PlayerError, PlayerErrorCode, PlayerEvent};
 pub use controller::{PlayerController, PlayerState};
 pub use progress::{ProgressTracker, ProgressUpdate};
-pub use validate::{validate_source, SourceRejection};
+pub use validate::{validate_source, validate_source_opts, SourceRejection};
 
 /// Allow runtime-chosen backends (`AppCore<Box<dyn PlayerBackend + Send>>`).
 impl PlayerBackend for Box<dyn PlayerBackend + Send> {
@@ -40,5 +40,8 @@ impl PlayerBackend for Box<dyn PlayerBackend + Send> {
     }
     fn poll_events(&mut self) -> Vec<PlayerEvent> {
         (**self).poll_events()
+    }
+    fn supports_dash(&self) -> bool {
+        (**self).supports_dash()
     }
 }

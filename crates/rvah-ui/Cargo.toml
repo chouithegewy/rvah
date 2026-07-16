@@ -13,6 +13,8 @@ rvah-core = { workspace = true }
 rvah-data = { workspace = true }
 rvah-player = { workspace = true }
 eframe = { workspace = true }
+ed25519-dalek = { workspace = true }
+hex = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]

@@ -74,6 +74,16 @@ pub enum CoreRequest {
         addon_id: String,
     },
     PollAuth,
+    /// Verify a package's signature and show its permission grant (UC-01).
+    PreviewInstall {
+        pkg: PathBuf,
+        pubkey: PathBuf,
+    },
+    /// User approved the previewed grant: install (or update) the package.
+    ConfirmInstall {
+        pkg: PathBuf,
+        pubkey: PathBuf,
+    },
     Shutdown,
 }
 
@@ -134,6 +144,18 @@ pub enum CoreEvent {
         user_code: Option<String>,
         verification_url: Option<String>,
     },
+    /// Signature-verified permission grant, awaiting the user's decision.
+    InstallPreview {
+        id: String,
+        version: String,
+        network: Vec<String>,
+        storage_bytes: u64,
+        secrets: Vec<String>,
+    },
+    Installed {
+        id: String,
+        version: String,
+    },
     Failed {
         context: String,
         message: String,
@@ -148,6 +170,18 @@ pub struct CoreHandle {
     pub events: Receiver<CoreEvent>,
 }
 
+/// Builds the runtime + host bridge for a freshly installed add-on so it is
+/// usable without restarting the app. Args: addon id, declared capabilities.
+pub type RuntimeFactory = Box<
+    dyn Fn(
+            &str,
+            &[String],
+        ) -> (
+            Box<dyn rvah_addon_host::AddonRuntime>,
+            std::sync::Arc<dyn rvah_addon_sdk::HostApi>,
+        ) + Send,
+>;
+
 /// Runs `AppCore` on a dedicated thread so the UI never blocks on SQLite,
 /// add-on invocations, or player IPC.
 pub struct CoreService<B: PlayerBackend> {
@@ -155,6 +189,7 @@ pub struct CoreService<B: PlayerBackend> {
     auth: Option<(String, DeviceCodeFlow)>,
     auth_polls: u32,
     events: Sender<CoreEvent>,
+    runtime_factory: Option<RuntimeFactory>,
 }
 
 fn unix_now() -> u64 {
@@ -166,6 +201,10 @@ fn unix_now() -> u64 {
 
 impl<B: PlayerBackend + Send + 'static> CoreService<B> {
     pub fn spawn(core: AppCore<B>) -> CoreHandle {
+        Self::spawn_with(core, None)
+    }
+
+    pub fn spawn_with(core: AppCore<B>, runtime_factory: Option<RuntimeFactory>) -> CoreHandle {
         let (req_tx, req_rx) = channel::<CoreRequest>();
         let (event_tx, event_rx) = channel::<CoreEvent>();
         std::thread::spawn(move || {
@@ -174,6 +213,7 @@ impl<B: PlayerBackend + Send + 'static> CoreService<B> {
                 auth: None,
                 auth_polls: 0,
                 events: event_tx,
+                runtime_factory,
             };
             while let Ok(request) = req_rx.recv() {
                 if matches!(request, CoreRequest::Shutdown) {
@@ -364,7 +404,97 @@ impl<B: PlayerBackend + Send + 'static> CoreService<B> {
                 }
                 self.send_auth_state();
             }
+            CoreRequest::PreviewInstall { pkg, pubkey } => self.preview_install(&pkg, &pubkey),
+            CoreRequest::ConfirmInstall { pkg, pubkey } => self.confirm_install(&pkg, &pubkey),
             CoreRequest::Shutdown => {}
+        }
+    }
+
+    /// Load and check everything needed to trust a package file:
+    /// pinned pubkey (hex), detached signature (`<pkg>.sig`, hex), signature
+    /// verification — nothing is parsed before this passes (TC-SEC-001).
+    fn verify_pkg(
+        pkg: &std::path::Path,
+        pubkey: &std::path::Path,
+    ) -> Result<
+        (
+            rvah_addon_host::Manifest,
+            [u8; 64],
+            ed25519_dalek::VerifyingKey,
+        ),
+        String,
+    > {
+        let key_hex = std::fs::read_to_string(pubkey)
+            .map_err(|e| format!("read {}: {e}", pubkey.display()))?;
+        let key_bytes: [u8; 32] = hex::decode(key_hex.trim())
+            .map_err(|e| format!("pubkey: {e}"))?
+            .try_into()
+            .map_err(|_| "pubkey must be 32 bytes".to_string())?;
+        let key = ed25519_dalek::VerifyingKey::from_bytes(&key_bytes)
+            .map_err(|e| format!("pubkey: {e}"))?;
+        let sig_path = format!("{}.sig", pkg.display());
+        let sig_hex =
+            std::fs::read_to_string(&sig_path).map_err(|e| format!("read {sig_path}: {e}"))?;
+        let sig: [u8; 64] = hex::decode(sig_hex.trim())
+            .map_err(|e| format!("signature: {e}"))?
+            .try_into()
+            .map_err(|_| "signature must be 64 bytes".to_string())?;
+        rvah_addon_host::verify_package(pkg, &sig, &key).map_err(|e| e.to_string())?;
+        let manifest_bytes =
+            rvah_addon_host::read_package_file(pkg, "manifest.toml").map_err(|e| e.to_string())?;
+        let manifest =
+            Manifest::parse(&String::from_utf8(manifest_bytes).map_err(|e| e.to_string())?)
+                .map_err(|e| format!("invalid manifest: {e}"))?;
+        Ok((manifest, sig, key))
+    }
+
+    fn preview_install(&self, pkg: &std::path::Path, pubkey: &std::path::Path) {
+        match Self::verify_pkg(pkg, pubkey) {
+            Ok((manifest, _, _)) => self.send(CoreEvent::InstallPreview {
+                id: manifest.addon.id.clone(),
+                version: manifest.addon.version.to_string(),
+                network: manifest.permissions.network.clone(),
+                storage_bytes: manifest.permissions.storage_bytes,
+                secrets: manifest.permissions.secrets.clone(),
+            }),
+            Err(message) => self.fail("install", CoreError::Data(message)),
+        }
+    }
+
+    fn confirm_install(&mut self, pkg: &std::path::Path, pubkey: &std::path::Path) {
+        let (manifest, sig, key) = match Self::verify_pkg(pkg, pubkey) {
+            Ok(parts) => parts,
+            Err(message) => return self.fail("install", CoreError::Data(message)),
+        };
+        let exists = match self.core.db().get_addon(&manifest.addon.id) {
+            Ok(rec) => rec.is_some(),
+            Err(e) => return self.fail("install", e.into()),
+        };
+        let result = if exists {
+            self.core
+                .manager
+                .update(pkg, &sig, &key, rvah_addon_host::InstallDecision::Approve)
+        } else {
+            self.core
+                .manager
+                .install(pkg, &sig, &key, rvah_addon_host::InstallDecision::Approve)
+        };
+        match result {
+            Ok(installed) => {
+                // Make the new add-on usable immediately.
+                if let Some(factory) = &self.runtime_factory {
+                    if let Ok(Some(rec)) = self.core.db().get_addon(&installed.id) {
+                        let (runtime, host) = factory(&rec.id, &rec.capabilities);
+                        self.core.register_runtime(rec.id, runtime, host);
+                    }
+                }
+                self.send(CoreEvent::Installed {
+                    id: installed.id,
+                    version: installed.version,
+                });
+                self.load_home();
+            }
+            Err(e) => self.fail("install", CoreError::Data(e.to_string())),
         }
     }
 
