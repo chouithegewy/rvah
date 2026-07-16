@@ -26,6 +26,7 @@ ureq = "2"
 hex = "0.4"
 tempfile = "3"
 wasmtime = "24"
+eframe = "0.29"
 
 rvah-addon-sdk = { path = "crates/rvah-addon-sdk" }
 rvah-addon-host = { path = "crates/rvah-addon-host" }
@@ -35,3 +36,5 @@ rvah-auth = { path = "crates/rvah-auth" }
 rvah-player = { path = "crates/rvah-player" }
 rvah-core = { path = "crates/rvah-core" }
 rvah-testkit = { path = "crates/rvah-testkit" }
+rvah-player-mpv = { path = "crates/rvah-player-mpv" }
+rvah-ui = { path = "crates/rvah-ui" }

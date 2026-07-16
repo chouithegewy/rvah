@@ -1,0 +1,14 @@
+[package]
+name = "rvah-player-mpv"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rvah-addon-sdk = { workspace = true }
+rvah-player = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

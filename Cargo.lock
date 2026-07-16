@@ -1481,6 +1481,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rvah-player-mpv"
+version = "0.1.0"
+dependencies = [
+ "rvah-addon-sdk",
+ "rvah-player",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "rvah-testkit"
 version = "0.1.0"
 dependencies = [
