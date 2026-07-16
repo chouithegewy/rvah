@@ -1,0 +1,23 @@
+[package]
+name = "rvah-addon-host"
+description = "Manifest parsing, package verification, runtime, and add-on lifecycle for RVAH"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rvah-addon-sdk.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+semver.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+ed25519-dalek.workspace = true
+rand.workspace = true
+tar.workspace = true
+flate2.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
