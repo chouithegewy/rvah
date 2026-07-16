@@ -10,3 +10,6 @@ rvah-addon-sdk.workspace = true
 thiserror.workspace = true
 url.workspace = true
 ureq.workspace = true
+
+[dev-dependencies]
+proptest = { workspace = true }

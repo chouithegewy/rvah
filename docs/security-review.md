@@ -1,0 +1,87 @@
+# RVAH Security Review — Phase 3
+
+Review of the implementation against the SDD §9 risk table. Each risk lists
+the mitigation as built, the tests that pin it, and known gaps.
+
+## Risk-by-risk
+
+### Malicious add-on exfiltrates secrets
+- **Built:** secrets live in `rvah-auth` (`EncryptedFileVault`, AES-256-GCM,
+  key file 0600) keyed by `(addon_id, name)`; `BridgedHostApi::secret_get`
+  denies any name not declared in `manifest.permissions.secrets`; values read
+  through the bridge are auto-registered with the `Redactor` so they cannot
+  reach diagnostics.
+- **Tests:** `vault_roundtrip_and_isolation_by_addon`,
+  `bridged_api_denies_undeclared_secret`, `log_redacts_fetched_secrets`,
+  `registered_secret_never_survives` (property).
+- **Gap:** no OS-keychain integration (SDD lists it as an alternative); the
+  encrypted vault is the sole store.
+
+### Broad web scraping / arbitrary hosts
+- **Built:** all add-on HTTP flows through `PermissionedClient`: scheme check
+  (http/https only), allowlist (exact or `*.` wildcard on label boundary, no
+  IP literals under wildcards), request-count quota — all before the
+  transport runs.
+- **Tests:** `denies_unlisted_domain_before_transport`, `denies_file_scheme`,
+  `request_quota_enforced`, `wildcard_only_matches_true_subdomains` and
+  `wildcard_never_permits_ipv4` (property).
+- **Gap:** allowlisting is by host name; no DNS-pinning or redirect policy
+  (a 30x to a disallowed host would be followed by ureq inside one fetch).
+  Tracked for Phase 4+.
+
+### Add-on hangs or allocates excessive memory
+- **Built:** `InProcessRuntime` enforces a wall-clock timeout per invoke;
+  `WasmRuntime` adds `StoreLimits` memory caps, fuel metering, and an epoch
+  watchdog. Three consecutive failures quarantine the add-on (`AppCore`).
+- **Tests:** `runtime_times_out_slow_provider`,
+  `wasm_infinite_loop_trapped_by_fuel`, `wasm_memory_hog_capped`,
+  `repeated_failures_quarantine_addon`.
+- **Gap:** the in-process runtime cannot bound memory (native code); only the
+  wasm runtime provides real containment. Timed-out native provider threads
+  are stranded, not killed.
+
+### Package tampering
+- **Built:** `.rvah` packages carry a detached ed25519 signature over the
+  archive sha256; install verifies before extraction; tar extraction rejects
+  path traversal; `verify_installed` re-hashes the stored package against the
+  recorded hash; repository indexes are signature-verified before parsing and
+  downloads hash-checked against the index.
+- **Tests:** `tampered_package_rejected`, `install_rejects_tampered_package`
+  (CLI), `tampered_index_rejected`, `download_hash_mismatch_rejected`.
+
+### Insecure update
+- **Built:** updates re-verify signatures; a changed permission hash requires
+  explicit re-approval (`PermissionExpansionNeedsApproval`); repo updates run
+  through the same `AddonManager::update` path.
+- **Tests:** `update_with_expanded_permissions_requires_reapproval`,
+  `install_from_repo_end_to_end`.
+
+### Log leakage
+- **Built:** `Redactor` masks registered secret values plus pattern matches
+  (`Authorization:`, `Bearer`, `api_key=`, `access_token=`) at write time in
+  the host bridge, and again at display/export time (CLI diagnostics, UI
+  diagnostics export).
+- **Tests:** `redactor_masks_registered_and_patterns`,
+  `diagnostics_output_contains_no_secret` (CLI end-to-end),
+  `bearer_tokens_pattern_masked` (property).
+- **Gap:** pattern list is fixed; cookies are not in the pattern set (add-ons
+  cannot set cookies through the bridge today, but the pattern should grow
+  with the API).
+
+### License contamination
+- **Built:** no Kodi code or assets; the workspace is original code. All
+  dependencies come from crates.io.
+- **Gap:** no SBOM tooling wired up (`cargo about`/`cargo deny` recommended
+  in CI as a follow-up).
+
+## Additional observations
+
+1. The manifest parser is property-tested to never panic on arbitrary input;
+   accepted ids are re-validated against the reverse-DNS rule.
+2. Player source validation refuses `file:` URLs even when the declared
+   protocol lies (`validator_rejects_unsupported_protocol`), and the header
+   policy allows only User-Agent/Referer through to mpv.
+3. Wasm ABI v0 host-call dispatch implements `log` only — a deliberately
+   minimal surface until the full HostApi dispatch is specified.
+4. mpv runs as a separate process; a compromised add-on cannot reach its IPC
+   socket through any host API (sockets are host-only, no path is exposed).

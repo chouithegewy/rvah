@@ -8,8 +8,12 @@
 //!
 //! Unix only for now — Windows named-pipe transport is deferred.
 
+#[cfg(unix)]
 mod backend;
+#[cfg(unix)]
 mod ipc;
 
+#[cfg(unix)]
 pub use backend::MpvBackend;
+#[cfg(unix)]
 pub use ipc::MpvIpc;

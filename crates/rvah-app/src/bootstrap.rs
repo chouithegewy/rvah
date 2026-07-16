@@ -10,6 +10,7 @@ use rvah_auth::{EncryptedFileVault, SecretVault};
 use rvah_core::AppCore;
 use rvah_data::Database;
 use rvah_player::{MockPlayer, PlayerBackend};
+#[cfg(unix)]
 use rvah_player_mpv::MpvBackend;
 use rvah_testkit::{CatalogEchoProvider, NoopHost};
 use rvah_ui::{CoreHandle, CoreService};
@@ -43,6 +44,7 @@ fn capability_from_str(s: &str) -> Option<Capability> {
 
 /// Pick mpv when available, otherwise fall back to the mock player so the UI
 /// stays usable on machines without mpv.
+#[cfg(unix)]
 fn select_backend(data_dir: &Path) -> (Box<dyn PlayerBackend + Send>, Option<String>) {
     if MpvBackend::find_mpv().is_some() {
         let socket = data_dir.join("mpv.sock");
@@ -63,6 +65,15 @@ fn select_backend(data_dir: &Path) -> (Box<dyn PlayerBackend + Send>, Option<Str
     (
         Box::new(MockPlayer::new()),
         Some("mpv not found on PATH; using mock player".into()),
+    )
+}
+
+/// mpv IPC is Unix-only; other platforms always use the mock player.
+#[cfg(not(unix))]
+fn select_backend(_data_dir: &Path) -> (Box<dyn PlayerBackend + Send>, Option<String>) {
+    (
+        Box::new(MockPlayer::new()),
+        Some("mpv playback is unix-only for now; using mock player".into()),
     )
 }
 
@@ -110,8 +121,11 @@ mod tests {
     fn bootstrap_headless_serves_home() {
         let tmp = tempfile::tempdir().unwrap();
         let booted = bootstrap(tmp.path()).unwrap();
-        // No mpv on this machine: the note must say we fell back.
+        // Without mpv the note must say we fell back to the mock player.
+        #[cfg(unix)]
         assert!(booted.backend_note.is_some() || MpvBackend::find_mpv().is_some());
+        #[cfg(not(unix))]
+        assert!(booted.backend_note.is_some());
 
         booted.handle.requests.send(CoreRequest::LoadHome).unwrap();
         let event = booted

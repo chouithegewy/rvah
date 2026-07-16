@@ -2,6 +2,11 @@
 resolver = "2"
 members = ["crates/*"]
 
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
@@ -27,6 +32,7 @@ hex = "0.4"
 tempfile = "3"
 wasmtime = "24"
 eframe = "0.29"
+proptest = "1"
 
 rvah-addon-sdk = { path = "crates/rvah-addon-sdk" }
 rvah-addon-host = { path = "crates/rvah-addon-host" }
@@ -38,3 +44,4 @@ rvah-core = { path = "crates/rvah-core" }
 rvah-testkit = { path = "crates/rvah-testkit" }
 rvah-player-mpv = { path = "crates/rvah-player-mpv" }
 rvah-ui = { path = "crates/rvah-ui" }
+rvah-repo = { path = "crates/rvah-repo" }
