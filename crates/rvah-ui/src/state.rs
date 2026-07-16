@@ -70,6 +70,9 @@ pub struct PlayerView {
     pub duration_secs: Option<f64>,
     pub volume: f32,
     pub now_playing: Option<String>,
+    /// Subtitle track labels for the active source.
+    pub subtitles: Vec<String>,
+    pub subtitle_selected: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -259,8 +262,10 @@ pub fn intent(state: &mut UiState, intent: UiIntent) -> Option<CoreRequest> {
             Some(CoreRequest::Play { addon_id, item_id })
         }
         UiIntent::Player(cmd) => {
-            if let PlayerCommand::Volume(v) = &cmd {
-                state.player.volume = *v;
+            match &cmd {
+                PlayerCommand::Volume(v) => state.player.volume = *v,
+                PlayerCommand::Subtitle(index) => state.player.subtitle_selected = *index,
+                _ => {}
             }
             Some(CoreRequest::Player(cmd))
         }
@@ -369,6 +374,43 @@ pub fn intent(state: &mut UiState, intent: UiIntent) -> Option<CoreRequest> {
     }
 }
 
+/// Remote-friendly key input (FR-045 direction), decoupled from any toolkit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavKey {
+    Home,
+    Back,
+    Forward,
+    PlayPause,
+    Stop,
+}
+
+/// Map a navigation key to an intent for the current screen. `None` means
+/// the key has no meaning right now.
+pub fn key_intent(state: &UiState, key: NavKey) -> Option<UiIntent> {
+    match key {
+        NavKey::Home => Some(UiIntent::OpenHome),
+        NavKey::Back => match state.screen {
+            Screen::Home => None,
+            Screen::Install => Some(UiIntent::CancelInstall),
+            Screen::Browse => Some(UiIntent::NavBack),
+            _ => Some(UiIntent::OpenHome),
+        },
+        NavKey::Forward => (state.screen == Screen::Browse).then_some(UiIntent::NavForward),
+        NavKey::PlayPause => {
+            if state.screen != Screen::Player {
+                return None;
+            }
+            match state.player.state? {
+                PlayerState::Playing => Some(UiIntent::Player(PlayerCommand::Pause)),
+                _ => Some(UiIntent::Player(PlayerCommand::Play)),
+            }
+        }
+        NavKey::Stop => {
+            (state.screen == Screen::Player).then_some(UiIntent::Player(PlayerCommand::Stop))
+        }
+    }
+}
+
 fn open_browse(state: &mut UiState, loc: BrowseLoc) -> Option<CoreRequest> {
     state.screen = Screen::Browse;
     state.browse = Load::Loading;
@@ -406,9 +448,11 @@ pub fn reduce(state: &mut UiState, event: CoreEvent) {
         CoreEvent::SearchResults { results } => {
             state.search = Load::Loaded(results);
         }
-        CoreEvent::PlaybackStarted { url, .. } => {
+        CoreEvent::PlaybackStarted { url, subtitles, .. } => {
             state.screen = Screen::Player;
             state.player.now_playing = Some(url);
+            state.player.subtitles = subtitles;
+            state.player.subtitle_selected = None;
         }
         CoreEvent::Playback(PlaybackSnapshot {
             state: player_state,
@@ -620,6 +664,75 @@ mod tests {
         assert!(
             matches!(req, CoreRequest::Search { addon_id: None, ref query } if query == "naruto")
         );
+    }
+
+    #[test]
+    fn key_intents_depend_on_screen_and_player_state() {
+        let mut state = UiState::default();
+        // Home: Back is a no-op, Home key still allowed.
+        assert_eq!(key_intent(&state, NavKey::Back), None);
+        assert_eq!(key_intent(&state, NavKey::Home), Some(UiIntent::OpenHome));
+        assert_eq!(key_intent(&state, NavKey::PlayPause), None);
+
+        // Browse: back/forward map to history.
+        browse_intent(&mut state, "a", None);
+        assert_eq!(key_intent(&state, NavKey::Back), Some(UiIntent::NavBack));
+        assert_eq!(
+            key_intent(&state, NavKey::Forward),
+            Some(UiIntent::NavForward)
+        );
+
+        // Player: space toggles by playback state; S stops.
+        state.screen = Screen::Player;
+        state.player.state = Some(rvah_player::PlayerState::Playing);
+        assert_eq!(
+            key_intent(&state, NavKey::PlayPause),
+            Some(UiIntent::Player(PlayerCommand::Pause))
+        );
+        state.player.state = Some(rvah_player::PlayerState::Paused);
+        assert_eq!(
+            key_intent(&state, NavKey::PlayPause),
+            Some(UiIntent::Player(PlayerCommand::Play))
+        );
+        assert_eq!(
+            key_intent(&state, NavKey::Stop),
+            Some(UiIntent::Player(PlayerCommand::Stop))
+        );
+        // Back from a non-browse screen returns home.
+        assert_eq!(key_intent(&state, NavKey::Back), Some(UiIntent::OpenHome));
+
+        // Install screen: Back cancels the pending install.
+        state.screen = Screen::Install;
+        assert_eq!(
+            key_intent(&state, NavKey::Back),
+            Some(UiIntent::CancelInstall)
+        );
+    }
+
+    #[test]
+    fn subtitle_selection_tracked_and_playback_started_resets_it() {
+        let mut state = UiState::default();
+        reduce(
+            &mut state,
+            CoreEvent::PlaybackStarted {
+                addon_id: "a".into(),
+                item_id: "m1".into(),
+                url: "https://cdn.example.com/m1.mp4".into(),
+                subtitles: vec!["English".into(), "Deutsch".into()],
+            },
+        );
+        assert_eq!(state.player.subtitles.len(), 2);
+        assert_eq!(state.player.subtitle_selected, None);
+
+        let req = intent(
+            &mut state,
+            UiIntent::Player(PlayerCommand::Subtitle(Some(1))),
+        );
+        assert_eq!(
+            req,
+            Some(CoreRequest::Player(PlayerCommand::Subtitle(Some(1))))
+        );
+        assert_eq!(state.player.subtitle_selected, Some(1));
     }
 
     #[test]

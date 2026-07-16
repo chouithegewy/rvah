@@ -44,4 +44,7 @@ impl PlayerBackend for Box<dyn PlayerBackend + Send> {
     fn supports_dash(&self) -> bool {
         (**self).supports_dash()
     }
+    fn select_subtitle(&mut self, index: Option<usize>) -> Result<(), PlayerError> {
+        (**self).select_subtitle(index)
+    }
 }

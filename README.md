@@ -103,10 +103,11 @@ Consume: `rvah repo-check` / `rvah repo-install … --approve` with `--index`
 
 ## Deferred (post-MVP)
 
-- Subtitle rendering backend; DRM is out of scope entirely (DASH plays on
-  DASH-capable backends such as mpv)
-- FR-045 remote-friendly focus navigation; Windows mpv transport;
-  DNS pinning / redirect policy for add-on HTTP
+- DRM is out of scope entirely (DASH and resolver-provided subtitle tracks
+  play on capable backends such as mpv)
+- Full spatial (D-pad) focus movement — Escape/Backspace/Alt-arrows/Space
+  shortcuts shipped as the FR-045 first step
+- Windows mpv transport (named pipes); DNS pinning for add-on HTTP
 - Telemetry: deliberately none (see docs/developer-guide.md)
 
 ## Development

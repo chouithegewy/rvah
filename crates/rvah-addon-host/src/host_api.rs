@@ -47,7 +47,7 @@ fn net_to_addon_error(err: NetError) -> AddonError {
     let code = match &err {
         NetError::DomainDenied(_) | NetError::SchemeDenied(_) => AddonErrorCode::PermissionDenied,
         NetError::QuotaExceeded => AddonErrorCode::Quota,
-        NetError::Transport(_) => AddonErrorCode::Network,
+        NetError::Transport(_) | NetError::TooManyRedirects => AddonErrorCode::Network,
         NetError::InvalidUrl(_) => AddonErrorCode::Malformed,
     };
     AddonError::new(code, err.to_string())

@@ -71,15 +71,16 @@ impl World {
 
     /// Apply every event the core produces within the timeout.
     fn pump(&mut self) {
-        while let Ok(event) = self.handle.events.recv_timeout(Duration::from_secs(2)) {
-            reduce(&mut self.state, event);
-            // Drain whatever arrived alongside it without waiting again.
-            while let Ok(more) = self.handle.events.try_recv() {
-                reduce(&mut self.state, more);
-            }
-            return;
+        let event = self
+            .handle
+            .events
+            .recv_timeout(Duration::from_secs(2))
+            .expect("no core event within timeout");
+        reduce(&mut self.state, event);
+        // Drain whatever arrived alongside it without waiting again.
+        while let Ok(more) = self.handle.events.try_recv() {
+            reduce(&mut self.state, more);
         }
-        panic!("no core event within timeout");
     }
 }
 

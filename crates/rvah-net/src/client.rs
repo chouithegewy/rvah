@@ -17,6 +17,8 @@ pub enum NetError {
     Transport(String),
     #[error("invalid url: {0}")]
     InvalidUrl(String),
+    #[error("too many redirects")]
+    TooManyRedirects,
 }
 
 /// Pluggable HTTP execution. The real transport is [`UreqTransport`];
@@ -35,6 +37,9 @@ impl Default for UreqTransport {
         UreqTransport {
             agent: ureq::AgentBuilder::new()
                 .timeout(std::time::Duration::from_secs(30))
+                // The transport never follows redirects: PermissionedClient
+                // re-checks the allowlist on every hop (SDD §9).
+                .redirects(0)
                 .build(),
         }
     }
@@ -95,23 +100,59 @@ impl PermissionedClient {
         }
     }
 
+    /// Fetch with policy enforced on *every* hop: redirects are followed here
+    /// (the transport never follows them itself), so a 30x can never smuggle
+    /// a request to a disallowed host, and each hop consumes request quota.
     pub fn fetch(&self, req: &HttpRequest) -> Result<HttpResponse, NetError> {
-        let url = Url::parse(&req.url).map_err(|e| NetError::InvalidUrl(e.to_string()))?;
-        match url.scheme() {
-            "http" | "https" => {}
-            other => return Err(NetError::SchemeDenied(other.to_string())),
+        const MAX_REDIRECTS: u32 = 5;
+        let mut current_url = req.url.clone();
+        let mut method = req.method.clone();
+        let mut body = req.body.clone();
+        for _hop in 0..=MAX_REDIRECTS {
+            let url = Url::parse(&current_url).map_err(|e| NetError::InvalidUrl(e.to_string()))?;
+            match url.scheme() {
+                "http" | "https" => {}
+                other => return Err(NetError::SchemeDenied(other.to_string())),
+            }
+            let host = url
+                .host_str()
+                .ok_or_else(|| NetError::InvalidUrl("missing host".into()))?;
+            if !self.allowlist.permits(host) {
+                return Err(NetError::DomainDenied(host.to_string()));
+            }
+            let used = self.used.fetch_add(1, Ordering::SeqCst);
+            if used >= self.max_requests {
+                return Err(NetError::QuotaExceeded);
+            }
+
+            let hop_req = HttpRequest {
+                method: method.clone(),
+                url: current_url.clone(),
+                headers: req.headers.clone(),
+                body: body.clone(),
+            };
+            let resp = self.transport.execute(&hop_req)?;
+            if !matches!(resp.status, 301 | 302 | 303 | 307 | 308) {
+                return Ok(resp);
+            }
+            let Some(location) = resp
+                .headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("location"))
+                .map(|(_, v)| v.clone())
+            else {
+                return Ok(resp); // 30x without Location: hand it to the caller.
+            };
+            current_url = url
+                .join(&location)
+                .map_err(|e| NetError::InvalidUrl(format!("redirect target: {e}")))?
+                .to_string();
+            if resp.status == 303 {
+                method = "GET".into();
+                body = None;
+            }
         }
-        let host = url
-            .host_str()
-            .ok_or_else(|| NetError::InvalidUrl("missing host".into()))?;
-        if !self.allowlist.permits(host) {
-            return Err(NetError::DomainDenied(host.to_string()));
-        }
-        let used = self.used.fetch_add(1, Ordering::SeqCst);
-        if used >= self.max_requests {
-            return Err(NetError::QuotaExceeded);
-        }
-        self.transport.execute(req)
+        Err(NetError::TooManyRedirects)
     }
 }
 
@@ -173,5 +214,84 @@ mod tests {
         assert!(c.fetch(&req).is_ok());
         assert_eq!(c.fetch(&req).unwrap_err(), NetError::QuotaExceeded);
         assert_eq!(mock.request_count(), 2);
+    }
+
+    #[test]
+    fn follows_redirect_within_allowlist() {
+        let mock = MockTransport::default();
+        mock.route_redirect("GET", "https://api.example.com/old", 302, "/new");
+        mock.route("GET", "https://api.example.com/new", 200, b"moved".to_vec());
+        let c = PermissionedClient::new(
+            Box::new(mock.clone()),
+            Allowlist::new(["api.example.com"]),
+            10,
+        );
+        let resp = c
+            .fetch(&HttpRequest::get("https://api.example.com/old"))
+            .unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, b"moved");
+        // Both hops went through the transport (and the quota).
+        assert_eq!(mock.request_count(), 2);
+    }
+
+    #[test]
+    fn redirect_to_disallowed_host_denied() {
+        // SDD §9: a 30x must not smuggle a request past the allowlist.
+        let mock = MockTransport::default();
+        mock.route_redirect(
+            "GET",
+            "https://api.example.com/old",
+            302,
+            "https://evil.example.org/steal",
+        );
+        mock.route("GET", "https://evil.example.org/", 200, b"gotcha".to_vec());
+        let c = PermissionedClient::new(
+            Box::new(mock.clone()),
+            Allowlist::new(["api.example.com"]),
+            10,
+        );
+        let err = c
+            .fetch(&HttpRequest::get("https://api.example.com/old"))
+            .unwrap_err();
+        assert_eq!(err, NetError::DomainDenied("evil.example.org".into()));
+        // The disallowed hop never reached the transport.
+        assert_eq!(mock.request_count(), 1);
+    }
+
+    #[test]
+    fn redirect_loop_hits_hop_limit() {
+        let mock = MockTransport::default();
+        mock.route_redirect("GET", "https://api.example.com/loop", 302, "/loop");
+        let c = PermissionedClient::new(
+            Box::new(mock.clone()),
+            Allowlist::new(["api.example.com"]),
+            100,
+        );
+        let err = c
+            .fetch(&HttpRequest::get("https://api.example.com/loop"))
+            .unwrap_err();
+        assert_eq!(err, NetError::TooManyRedirects);
+        assert_eq!(mock.request_count(), 6); // initial + 5 followed hops
+    }
+
+    #[test]
+    fn see_other_downgrades_to_get_without_body() {
+        let mock = MockTransport::default();
+        mock.route_redirect("POST", "https://api.example.com/submit", 303, "/result");
+        mock.route("GET", "https://api.example.com/result", 200, b"ok".to_vec());
+        let c = PermissionedClient::new(
+            Box::new(mock.clone()),
+            Allowlist::new(["api.example.com"]),
+            10,
+        );
+        let mut req = HttpRequest::get("https://api.example.com/submit");
+        req.method = "POST".into();
+        req.body = Some(b"payload".to_vec());
+        let resp = c.fetch(&req).unwrap();
+        assert_eq!(resp.status, 200);
+        let hops = mock.requests();
+        assert_eq!(hops[1].method, "GET");
+        assert_eq!(hops[1].body, None);
     }
 }

@@ -25,9 +25,13 @@ the mitigation as built, the tests that pin it, and known gaps.
 - **Tests:** `denies_unlisted_domain_before_transport`, `denies_file_scheme`,
   `request_quota_enforced`, `wildcard_only_matches_true_subdomains` and
   `wildcard_never_permits_ipv4` (property).
-- **Gap:** allowlisting is by host name; no DNS-pinning or redirect policy
-  (a 30x to a disallowed host would be followed by ureq inside one fetch).
-  Tracked for Phase 4+.
+- **Redirect policy (Phase 6):** the transport never follows redirects;
+  `PermissionedClient` follows up to 5 hops itself, re-running scheme +
+  allowlist checks and consuming quota on every hop (303 downgrades to a
+  body-less GET). Tests: `follows_redirect_within_allowlist`,
+  `redirect_to_disallowed_host_denied`, `redirect_loop_hits_hop_limit`.
+- **Gap:** allowlisting is by host name; no DNS pinning (a permitted name
+  re-resolving to a different address between checks is not detected).
 
 ### Add-on hangs or allocates excessive memory
 - **Built:** `InProcessRuntime` enforces a wall-clock timeout per invoke;

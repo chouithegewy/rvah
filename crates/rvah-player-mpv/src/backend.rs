@@ -153,7 +153,22 @@ impl PlayerBackend for MpvBackend {
                 "replace".into(),
                 json!(format!("start={start_at}")),
             ])
-            .map_err(|e| io_error(e, true))
+            .map_err(|e| io_error(e, true))?;
+        // Attach resolver-provided subtitle tracks (FR-064 direction); the
+        // UI selects among them via `select_subtitle`.
+        for track in &source.subtitles {
+            let label = track.label.clone().unwrap_or_else(|| track.lang.clone());
+            self.ipc
+                .command(&[
+                    "sub-add".into(),
+                    json!(track.url),
+                    "auto".into(),
+                    json!(label),
+                    json!(track.lang),
+                ])
+                .map_err(|e| io_error(e, false))?;
+        }
+        Ok(())
     }
 
     fn play(&mut self) -> Result<(), PlayerError> {
@@ -197,6 +212,17 @@ impl PlayerBackend for MpvBackend {
     /// mpv demuxes DASH natively.
     fn supports_dash(&self) -> bool {
         true
+    }
+
+    fn select_subtitle(&mut self, index: Option<usize>) -> Result<(), PlayerError> {
+        // mpv sub ids are 1-based; "no" disables subtitles.
+        let sid = match index {
+            Some(i) => json!(i as u64 + 1),
+            None => json!("no"),
+        };
+        self.ipc
+            .set_property("sid", sid)
+            .map_err(|e| io_error(e, false))
     }
 }
 
@@ -336,6 +362,35 @@ mod tests {
             .iter()
             .any(|c| c[0] == "set_property" && c[1] == "volume" && c[2] == json!(50.0)));
         assert!(cmds.iter().any(|c| c[0] == "stop"));
+    }
+
+    #[test]
+    fn subtitles_added_and_selected() {
+        let (_tmp, fake, mut backend) = setup();
+        let mut src = source_with_headers();
+        src.subtitles.push(rvah_addon_sdk::SubtitleTrack {
+            url: "https://cdn.example.com/en.srt".into(),
+            lang: "en".into(),
+            label: Some("English".into()),
+        });
+        backend.load(&src, 0.0).unwrap();
+        backend.select_subtitle(Some(0)).unwrap();
+        backend.select_subtitle(None).unwrap();
+
+        let cmds = fake.commands();
+        let sub_add = cmds
+            .iter()
+            .find(|c| c[0] == "sub-add")
+            .expect("sub-add sent");
+        assert_eq!(sub_add[1], "https://cdn.example.com/en.srt");
+        assert_eq!(sub_add[3], "English");
+        assert_eq!(sub_add[4], "en");
+        assert!(cmds
+            .iter()
+            .any(|c| c[0] == "set_property" && c[1] == "sid" && c[2] == json!(1)));
+        assert!(cmds
+            .iter()
+            .any(|c| c[0] == "set_property" && c[1] == "sid" && c[2] == json!("no")));
     }
 
     #[test]
