@@ -61,9 +61,14 @@ impl MpvBackend {
         }
     }
 
-    /// Attach to an already-running IPC endpoint (used by tests).
+    /// Attach to an already-running IPC endpoint.
     pub fn connect(socket_path: &Path) -> Result<Self, PlayerError> {
         let ipc = MpvIpc::connect(socket_path).map_err(|e| io_error(e, true))?;
+        Self::from_parts(ipc, None)
+    }
+
+    /// Wrap an already-connected IPC session (tests, custom transports).
+    pub fn from_ipc(ipc: MpvIpc) -> Result<Self, PlayerError> {
         Self::from_parts(ipc, None)
     }
 
@@ -80,9 +85,10 @@ impl MpvBackend {
 
     /// Locate mpv on PATH, if present.
     pub fn find_mpv() -> Option<PathBuf> {
+        let binary = if cfg!(windows) { "mpv.exe" } else { "mpv" };
         let path = std::env::var_os("PATH")?;
         std::env::split_paths(&path)
-            .map(|dir| dir.join("mpv"))
+            .map(|dir| dir.join(binary))
             .find(|candidate| candidate.is_file())
     }
 
@@ -242,20 +248,21 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixListener;
+    use std::net::{TcpListener, TcpStream};
     use std::sync::mpsc::{channel, Receiver};
 
     use rvah_addon_sdk::Protocol;
 
     /// Fake mpv: accepts one IPC connection, records every command line, and
-    /// lets the test inject event lines toward the client.
+    /// lets the test inject event lines toward the client. Runs over TCP
+    /// loopback so the suite exercises every platform, including the CI
+    /// windows job (the real transport differs only in `MpvIpc::connect`).
     struct FakeMpv {
         received: Receiver<Value>,
         event_tx: std::sync::mpsc::Sender<String>,
     }
 
-    fn fake_mpv(socket: &Path) -> FakeMpv {
-        let listener = UnixListener::bind(socket).unwrap();
+    fn fake_mpv(listener: TcpListener) -> FakeMpv {
         let (cmd_tx, cmd_rx) = channel();
         let (event_tx, event_rx) = channel::<String>();
         std::thread::spawn(move || {
@@ -311,17 +318,48 @@ mod tests {
         }
     }
 
-    fn setup() -> (tempfile::TempDir, FakeMpv, MpvBackend) {
+    fn setup() -> (FakeMpv, MpvBackend) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let fake = fake_mpv(listener);
+        let stream = TcpStream::connect(addr).unwrap();
+        let reader = stream.try_clone().unwrap();
+        let backend = MpvBackend::from_ipc(MpvIpc::from_stream(stream, reader)).unwrap();
+        (fake, backend)
+    }
+
+    /// The real transport still works end-to-end on unix: same suite entry
+    /// point, actual `MpvIpc::connect` over a Unix socket.
+    #[cfg(unix)]
+    #[test]
+    fn unix_socket_transport_connects_and_commands() {
         let tmp = tempfile::tempdir().unwrap();
         let socket = tmp.path().join("mpv.sock");
-        let fake = fake_mpv(&socket);
-        let backend = MpvBackend::connect(&socket).unwrap();
-        (tmp, fake, backend)
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let (cmd_tx, cmd_rx) = channel();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let reader = BufReader::new(stream);
+            for line in reader.lines() {
+                let Ok(line) = line else { break };
+                let v: Value = serde_json::from_str(&line).unwrap();
+                if cmd_tx.send(v).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut backend = MpvBackend::connect(&socket).unwrap();
+        backend.play().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        let cmds: Vec<Value> = cmd_rx.try_iter().collect();
+        assert!(cmds
+            .iter()
+            .any(|v| v["command"][0] == "set_property" && v["command"][1] == "pause"));
     }
 
     #[test]
     fn load_sends_headers_pause_and_loadfile_with_resume() {
-        let (_tmp, fake, mut backend) = setup();
+        let (fake, mut backend) = setup();
         backend.load(&source_with_headers(), 42.5).unwrap();
 
         let cmds = fake.commands();
@@ -344,7 +382,7 @@ mod tests {
 
     #[test]
     fn transport_commands_map_to_ipc() {
-        let (_tmp, fake, mut backend) = setup();
+        let (fake, mut backend) = setup();
         backend.play().unwrap();
         backend.pause().unwrap();
         backend.seek(300.0).unwrap();
@@ -366,7 +404,7 @@ mod tests {
 
     #[test]
     fn subtitles_added_and_selected() {
-        let (_tmp, fake, mut backend) = setup();
+        let (fake, mut backend) = setup();
         let mut src = source_with_headers();
         src.subtitles.push(rvah_addon_sdk::SubtitleTrack {
             url: "https://cdn.example.com/en.srt".into(),
@@ -395,7 +433,7 @@ mod tests {
 
     #[test]
     fn events_translate_to_player_events() {
-        let (_tmp, fake, mut backend) = setup();
+        let (fake, mut backend) = setup();
         backend.load(&source_with_headers(), 0.0).unwrap();
 
         fake.emit(r#"{"event":"property-change","id":2,"name":"duration","data":100.5}"#);
@@ -422,7 +460,7 @@ mod tests {
 
     #[test]
     fn end_file_error_is_fatal() {
-        let (_tmp, fake, mut backend) = setup();
+        let (fake, mut backend) = setup();
         fake.emit(r#"{"event":"end-file","reason":"error","file_error":"unsupported codec"}"#);
         std::thread::sleep(Duration::from_millis(100));
         let events = backend.poll_events();

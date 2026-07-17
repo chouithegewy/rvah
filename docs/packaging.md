@@ -37,6 +37,18 @@ License/advisory auditing is `cargo deny` (see `deny.toml`); the `sbom` job
 generates per-crate CycloneDX SBOMs with `cargo cyclonedx` and uploads them
 as the `sbom-cyclonedx` build artifact.
 
+## Debian package
+
+```sh
+cargo build --release -p rvah-app -p rvah-cli
+cargo deb -p rvah-app --no-build   # -> target/debian/rvah_<version>_amd64.deb
+```
+
+One `rvah` package ships both binaries (`rvah-app`, `rvah`) plus the README
+and an auto-generated copyright file; `mpv` is a Recommends. Metadata lives
+in `[package.metadata.deb]` in `crates/rvah-app/Cargo.toml`. Built at
+release time, not per-push in CI.
+
 ## Follow-ups (not yet wired)
 
-- Platform installers (deb/rpm/dmg/msi) — plain binaries only for now.
+- rpm/dmg/msi installers — deb + plain binaries only for now.

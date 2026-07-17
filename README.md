@@ -91,8 +91,11 @@ real add-on code execution is the job of the Wasm runtime (below).
 
 `rvah-app` (Phase 2 MVP UX) provides home/browse/search/player/permissions/
 settings/diagnostics/auth screens over the same core the CLI uses. Playback
-uses system `mpv` over JSON IPC when present (video in mpv's own window),
-falling back to the mock player with an on-screen note. Diagnostics can be
+uses system `mpv` over JSON IPC when present (a Unix socket on unix, a named
+pipe on Windows; video in mpv's own window), falling back to the mock player
+with an on-screen note. Built with `--features keychain`, add-on secrets go
+to the OS keychain (freedesktop Secret Service) instead of the encrypted
+file vault when a daemon is available. Diagnostics can be
 exported as a redacted JSON bundle. Remote-friendly keys: Up/Down move a
 D-pad focus across rows, Left/Right across a row's actions, Enter activates;
 Escape goes home, Backspace goes back, Alt+arrows walk browse history, Space
@@ -111,7 +114,6 @@ Consume: `rvah repo-check` / `rvah repo-install … --approve` with `--index`
 
 - DRM is out of scope entirely (DASH and resolver-provided subtitle tracks
   play on capable backends such as mpv)
-- Windows mpv transport (named pipes)
 - Telemetry: deliberately none (see docs/developer-guide.md)
 
 ## Development

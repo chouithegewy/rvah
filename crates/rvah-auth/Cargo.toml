@@ -5,10 +5,16 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+## OS-keychain SecretVault over the freedesktop Secret Service (SDD §9
+## alternative store). Off by default: it needs a running daemon.
+keychain = ["dep:secret-service"]
+
 [dependencies]
 aes-gcm = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
+secret-service = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

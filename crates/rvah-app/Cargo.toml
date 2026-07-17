@@ -4,6 +4,32 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+description = "RVAH — sandboxed video add-on host (desktop app + CLI)"
+
+# Debian package (docs/packaging.md): build the workspace in release first,
+# then `cargo deb -p rvah-app --no-build` so the rvah CLI asset exists.
+[package.metadata.deb]
+name = "rvah"
+copyright = "2026 RVAH contributors"
+license-file = ["../../LICENSE-MIT", "0"]
+extended-description = """\
+RVAH hosts sandboxed, permissioned video add-ons: signed packages, \
+allowlisted networking, quota'd storage, and an encrypted secret vault. \
+Ships the egui desktop app (rvah-app) and the developer CLI (rvah)."""
+section = "video"
+priority = "optional"
+depends = "$auto"
+recommends = "mpv"
+assets = [
+    ["target/release/rvah-app", "usr/bin/", "755"],
+    ["target/release/rvah", "usr/bin/", "755"],
+    ["../../README.md", "usr/share/doc/rvah/README.md", "644"],
+]
+
+[features]
+## Prefer the OS keychain (freedesktop Secret Service) for add-on secrets,
+## falling back to the encrypted file vault when no daemon answers.
+keychain = ["rvah-auth/keychain"]
 
 [[bin]]
 name = "rvah-app"
