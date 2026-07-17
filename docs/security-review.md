@@ -14,8 +14,16 @@ the mitigation as built, the tests that pin it, and known gaps.
 - **Tests:** `vault_roundtrip_and_isolation_by_addon`,
   `bridged_api_denies_undeclared_secret`, `log_redacts_fetched_secrets`,
   `registered_secret_never_survives` (property).
-- **Gap:** no OS-keychain integration (SDD lists it as an alternative); the
-  encrypted vault is the sole store.
+- **OS keychain (Phase 9):** `KeychainVault` (rvah-auth `keychain` feature)
+  stores secrets in the freedesktop Secret Service, one item per
+  `(addon_id, name)` with searchable attributes; D-Bus transport uses DH
+  session encryption. `rvah-app --features keychain` prefers it and falls
+  back to the encrypted file vault when no daemon answers. Test:
+  `keychain_roundtrip_isolation_and_list` (skips without a daemon; verified
+  against gnome-keyring).
+- **Gap:** the keychain item scope is the user session, so any process in
+  the session with Secret Service access can read the items — the file
+  vault's key-file permission model does not apply there.
 
 ### Broad web scraping / arbitrary hosts
 - **Built:** all add-on HTTP flows through `PermissionedClient`: scheme check

@@ -10,7 +10,6 @@ use rvah_auth::{EncryptedFileVault, SecretVault};
 use rvah_core::AppCore;
 use rvah_data::Database;
 use rvah_player::{MockPlayer, PlayerBackend};
-#[cfg(unix)]
 use rvah_player_mpv::MpvBackend;
 use rvah_testkit::{CatalogEchoProvider, NoopHost};
 use rvah_ui::{CoreHandle, CoreService};
@@ -43,13 +42,15 @@ fn capability_from_str(s: &str) -> Option<Capability> {
 }
 
 /// Pick mpv when available, otherwise fall back to the mock player so the UI
-/// stays usable on machines without mpv.
-#[cfg(unix)]
+/// stays usable on machines without mpv. The IPC endpoint is a Unix socket
+/// on unix and a named pipe on Windows (`MpvIpc::default_endpoint`).
 fn select_backend(data_dir: &Path) -> (Box<dyn PlayerBackend + Send>, Option<String>) {
     if MpvBackend::find_mpv().is_some() {
-        let socket = data_dir.join("mpv.sock");
-        let _ = std::fs::remove_file(&socket);
-        match MpvBackend::spawn(&socket) {
+        let endpoint = rvah_player_mpv::MpvIpc::default_endpoint(data_dir);
+        if cfg!(unix) {
+            let _ = std::fs::remove_file(&endpoint);
+        }
+        match MpvBackend::spawn(&endpoint) {
             Ok(backend) => return (Box::new(backend), None),
             Err(e) => {
                 return (
@@ -68,23 +69,24 @@ fn select_backend(data_dir: &Path) -> (Box<dyn PlayerBackend + Send>, Option<Str
     )
 }
 
-/// mpv IPC is Unix-only; other platforms always use the mock player.
-#[cfg(not(unix))]
-fn select_backend(_data_dir: &Path) -> (Box<dyn PlayerBackend + Send>, Option<String>) {
-    (
-        Box::new(MockPlayer::new()),
-        Some("mpv playback is unix-only for now; using mock player".into()),
-    )
+/// The OS keychain when built with `--features keychain` and a Secret
+/// Service daemon answers; the encrypted file vault otherwise.
+fn select_vault(data_dir: &Path) -> Result<Arc<dyn SecretVault>, String> {
+    #[cfg(feature = "keychain")]
+    if let Ok(vault) = rvah_auth::KeychainVault::connect() {
+        return Ok(Arc::new(vault));
+    }
+    Ok(Arc::new(
+        EncryptedFileVault::open(data_dir.join("secrets.vault"), data_dir.join("vault.key"))
+            .map_err(|e| e.to_string())?,
+    ))
 }
 
 pub fn bootstrap(data_dir: &Path) -> Result<Bootstrapped, String> {
     std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
     let db = Arc::new(Database::open(&data_dir.join("rvah.sqlite")).map_err(|e| e.to_string())?);
     let manager = AddonManager::new(Arc::clone(&db), data_dir.join("addons"));
-    let vault: Arc<dyn SecretVault> = Arc::new(
-        EncryptedFileVault::open(data_dir.join("secrets.vault"), data_dir.join("vault.key"))
-            .map_err(|e| e.to_string())?,
-    );
+    let vault = select_vault(data_dir)?;
 
     let (backend, backend_note) = select_backend(data_dir);
     let mut core = AppCore::new(manager, Arc::clone(&db), vault, backend);
@@ -134,10 +136,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let booted = bootstrap(tmp.path()).unwrap();
         // Without mpv the note must say we fell back to the mock player.
-        #[cfg(unix)]
         assert!(booted.backend_note.is_some() || MpvBackend::find_mpv().is_some());
-        #[cfg(not(unix))]
-        assert!(booted.backend_note.is_some());
 
         booted.handle.requests.send(CoreRequest::LoadHome).unwrap();
         let event = booted
