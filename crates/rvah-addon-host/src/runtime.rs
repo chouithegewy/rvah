@@ -60,6 +60,36 @@ pub trait AddonRuntime: Send {
     fn invoke(&self, op: AddonOp, ctx: &InvocationCtx) -> Result<AddonResponse, AddonError>;
 }
 
+/// Wraps any runtime with manifest-capability gating (FR-021). The
+/// in-process runtime gates internally; sandboxed runtimes (wasm) are
+/// registered behind this wrapper.
+pub struct CapabilityGated<R> {
+    inner: R,
+    capabilities: Vec<Capability>,
+}
+
+impl<R: AddonRuntime> CapabilityGated<R> {
+    pub fn new(inner: R, capabilities: Vec<Capability>) -> Self {
+        Self {
+            inner,
+            capabilities,
+        }
+    }
+}
+
+impl<R: AddonRuntime> AddonRuntime for CapabilityGated<R> {
+    fn invoke(&self, op: AddonOp, ctx: &InvocationCtx) -> Result<AddonResponse, AddonError> {
+        let required = op.required_capability();
+        if !self.capabilities.contains(&required) {
+            return Err(AddonError::new(
+                AddonErrorCode::PermissionDenied,
+                format!("capability {required:?} not declared in manifest"),
+            ));
+        }
+        self.inner.invoke(op, ctx)
+    }
+}
+
 /// Runs a native provider on a worker thread with a wall-clock timeout
 /// (FR-022): a hung provider strands its thread, but never the host.
 pub struct InProcessRuntime {
@@ -247,5 +277,41 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(err.code, AddonErrorCode::PermissionDenied);
+    }
+
+    #[test]
+    fn capability_gate_wraps_any_runtime() {
+        struct AlwaysPage;
+        impl AddonRuntime for AlwaysPage {
+            fn invoke(
+                &self,
+                _op: AddonOp,
+                _ctx: &InvocationCtx,
+            ) -> Result<AddonResponse, AddonError> {
+                Ok(AddonResponse::Page(Page::default()))
+            }
+        }
+        let gated = CapabilityGated::new(AlwaysPage, vec![Capability::Catalog]);
+        let ctx = ctx(1000);
+        assert!(gated
+            .invoke(
+                AddonOp::List {
+                    path: None,
+                    cursor: None
+                },
+                &ctx
+            )
+            .is_ok());
+        let err = gated
+            .invoke(
+                AddonOp::Resolve {
+                    item_id: "x".into(),
+                    source_id: None,
+                },
+                &ctx,
+            )
+            .unwrap_err();
+        assert_eq!(err.code, AddonErrorCode::PermissionDenied);
+        assert!(err.message.contains("Resolve"));
     }
 }

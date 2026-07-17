@@ -20,6 +20,8 @@ pub use package::{
     extract_package, keygen, package_dir, read_package_file, sha256_file, sign_package,
     verify_package, PackageError,
 };
-pub use runtime::{AddonOp, AddonResponse, AddonRuntime, InProcessRuntime, InvocationCtx};
+pub use runtime::{
+    AddonOp, AddonResponse, AddonRuntime, CapabilityGated, InProcessRuntime, InvocationCtx,
+};
 #[cfg(feature = "wasm")]
 pub use wasm_runtime::{WasmLimits, WasmRuntime};

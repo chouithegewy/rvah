@@ -27,6 +27,10 @@ assets = [
 ]
 
 [features]
+default = ["wasm"]
+## Run installed wasm add-ons in the Wasmtime sandbox (the product path);
+## without it every installed add-on gets the dev fixture provider.
+wasm = ["rvah-addon-host/wasm"]
 ## Prefer the OS keychain (freedesktop Secret Service) for add-on secrets,
 ## falling back to the encrypted file vault when no daemon answers.
 keychain = ["rvah-auth/keychain"]
@@ -41,6 +45,7 @@ rvah-addon-sdk = { workspace = true }
 rvah-auth = { workspace = true }
 rvah-core = { workspace = true }
 rvah-data = { workspace = true }
+rvah-net = { workspace = true }
 rvah-player = { workspace = true }
 rvah-player-mpv = { workspace = true }
 rvah-testkit = { workspace = true }

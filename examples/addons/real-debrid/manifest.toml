@@ -1,0 +1,12 @@
+[addon]
+id = "com.real-debrid.downloads"
+name = "Real-Debrid Downloads"
+version = "0.1.0"
+sdk = ">=0.1, <0.2"
+entry = "module.wasm"
+capabilities = ["catalog", "resolve", "account_status"]
+
+[permissions]
+network = ["api.real-debrid.com"]
+storage = "64KiB"
+secrets = ["api_token"]

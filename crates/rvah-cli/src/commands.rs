@@ -7,7 +7,7 @@ use rvah_addon_host::{
     InProcessRuntime, InstallDecision, Manifest,
 };
 use rvah_addon_sdk::{AddonProvider, PageItem, ResolveResult};
-use rvah_auth::{MemoryVault, Redactor};
+use rvah_auth::{EncryptedFileVault, Redactor, SecretVault};
 use rvah_core::AppCore;
 use rvah_data::Database;
 use rvah_player::{validate_source, PlayerEvent};
@@ -28,6 +28,7 @@ USAGE:
   rvah resolve <id> <item-id> --data-dir <DIR>
   rvah play <id> <item-id> --data-dir <DIR>
   rvah diagnostics --data-dir <DIR>
+  rvah secret-set <id> <name> --data-dir <DIR>   (value read from stdin)
   rvah repo-index <packages-dir> -o <index.json> --key <signing.key> [--base-url URL] [--channel <id>=<channel>]
   rvah repo-check --index <url-or-path> --pubkey <verify.pub> --data-dir <DIR> [--channel stable]
   rvah repo-install <addon-id> --index <url-or-path> --pubkey <verify.pub> --data-dir <DIR> [--channel stable] [--approve]
@@ -47,6 +48,7 @@ pub fn run(args: &[String]) -> i32 {
     }
 }
 
+#[derive(Debug)]
 enum CliError {
     Usage(String),
     Failed(String),
@@ -73,6 +75,7 @@ fn dispatch(args: &[String]) -> Result<(), CliError> {
         "resolve" => cmd_resolve(rest),
         "play" => cmd_play(rest),
         "diagnostics" => cmd_diagnostics(rest),
+        "secret-set" => cmd_secret_set(rest),
         "repo-index" => cmd_repo_index(rest),
         "repo-check" => cmd_repo_check(rest),
         "repo-install" => cmd_repo_install(rest),
@@ -131,6 +134,15 @@ fn open_manager(data_dir: &Path) -> Result<(Arc<Database>, AddonManager), CliErr
     Ok((db, manager))
 }
 
+/// The same encrypted file vault the desktop app opens for this data dir.
+fn open_vault(data_dir: &Path) -> Result<Arc<dyn SecretVault>, CliError> {
+    std::fs::create_dir_all(data_dir).map_err(fail)?;
+    Ok(Arc::new(
+        EncryptedFileVault::open(data_dir.join("secrets.vault"), data_dir.join("vault.key"))
+            .map_err(fail)?,
+    ))
+}
+
 fn capability_from_str(s: &str) -> Option<Capability> {
     match s {
         "catalog" => Some(Capability::Catalog),
@@ -146,7 +158,9 @@ fn capability_from_str(s: &str) -> Option<Capability> {
 /// echo fixture provider, gated by the capabilities it declared at install.
 fn open_core(data_dir: &Path) -> Result<AppCore<MockPlayer>, CliError> {
     let (db, manager) = open_manager(data_dir)?;
-    let mut core = AppCore::new(manager, db, Arc::new(MemoryVault::new()), MockPlayer::new());
+    // Same vault files as the desktop app, so `secret-set` state is shared.
+    let vault = open_vault(data_dir)?;
+    let mut core = AppCore::new(manager, db, vault, MockPlayer::new());
     for rec in core.db().list_addons().map_err(fail)? {
         let caps = rec
             .capabilities
@@ -331,6 +345,31 @@ fn cmd_uninstall(args: &[String]) -> Result<(), CliError> {
         if purge { " (data purged)" } else { "" }
     );
     Ok(())
+}
+
+/// Store an add-on secret (FR-083) in the data dir's vault — the value is
+/// read from stdin so tokens stay out of argv and shell history.
+fn cmd_secret_set(args: &[String]) -> Result<(), CliError> {
+    let pos = positional(args);
+    let [id, name] = pos.as_slice() else {
+        return Err(CliError::Usage(
+            "secret-set takes an add-on id and a secret name".into(),
+        ));
+    };
+    let data_dir = require_data_dir(args)?;
+    let mut value = String::new();
+    use std::io::Read;
+    std::io::stdin().read_to_string(&mut value).map_err(fail)?;
+    store_secret(&data_dir, id, name, value.trim())?;
+    println!("stored secret {name} for {id}");
+    Ok(())
+}
+
+fn store_secret(data_dir: &Path, id: &str, name: &str, value: &str) -> Result<(), CliError> {
+    if value.is_empty() {
+        return Err(CliError::Usage("empty secret value on stdin".into()));
+    }
+    open_vault(data_dir)?.set(id, name, value).map_err(fail)
 }
 
 fn cmd_browse(args: &[String]) -> Result<(), CliError> {
@@ -643,4 +682,23 @@ fn cmd_repo_install(args: &[String]) -> Result<(), CliError> {
         installed.id, installed.version
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn store_secret_shares_the_app_vault_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        store_secret(tmp.path(), "com.example.rd", "api_token", "tok-123").unwrap();
+        // A fresh open over the same files (what the desktop app does) sees it.
+        let vault = open_vault(tmp.path()).unwrap();
+        assert_eq!(
+            vault.get("com.example.rd", "api_token").unwrap().as_deref(),
+            Some("tok-123")
+        );
+        // Empty values are refused.
+        assert!(store_secret(tmp.path(), "com.example.rd", "api_token", "").is_err());
+    }
 }

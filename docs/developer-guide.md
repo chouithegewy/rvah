@@ -74,9 +74,31 @@ rvah diagnostics --data-dir ./dev
 
 The simulator runs your manifest against the host's fixture provider so you
 can exercise install, permissions, browsing surfaces, and playback plumbing
-end-to-end. Wasm module execution (ABI v0: `rvah_alloc`/`rvah_invoke`
-exports, JSON-serialized ops) runs under the `wasm` feature of
-`rvah-addon-host`; host-call dispatch currently supports `log`.
+end-to-end.
+
+## Run for real in the desktop app
+
+`rvah-app` executes installed **wasm** add-ons in the Wasmtime sandbox
+(ABI v0.1: `rvah_alloc`/`rvah_invoke` exports, JSON-serialized ops; the
+`env.rvah_host_call` import dispatches the full `HostApi` — `http_fetch`,
+`setting_get`, `secret_get`, `storage_*`, `log`). The bridge enforces the
+manifest's allowlist (with DNS pinning), storage quota, declared secrets,
+and capability gating; memory, fuel, and wall-clock limits contain the
+guest. Packages whose `entry` is not a `.wasm` module fall back to the
+fixture provider (dev simulator behavior).
+
+Write the add-on as a Rust `cdylib` for `wasm32-unknown-unknown` —
+`examples/addons/real-debrid` is a complete, tested reference (catalog +
+resolve + account_status against a real HTTP API, with a secret). Typical
+loop:
+
+```sh
+./examples/addons/real-debrid/build.sh          # dist/ = manifest + module.wasm
+rvah package dist -o addon.rvah --key keys/signing.key
+rvah install addon.rvah --pubkey keys/verify.pub --data-dir DIR --approve
+printf '%s' "$TOKEN" | rvah secret-set <addon-id> <secret-name> --data-dir DIR
+rvah-app   # same --data-dir (or XDG default)
+```
 
 ## Publish to a repository
 
