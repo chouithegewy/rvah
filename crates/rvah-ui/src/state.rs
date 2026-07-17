@@ -107,8 +107,10 @@ pub struct UiState {
     pub install: Load<InstallPreviewView>,
     pub install_done: Option<String>,
     pub banner: Option<ErrorView>,
-    /// Index into [`focus_targets`] for D-pad navigation (FR-045).
-    pub focus: Option<usize>,
+    /// `(row, column)` into [`focus_grid`] for D-pad navigation (FR-045).
+    pub focus: Option<(usize, usize)>,
+    /// A cursor-follow-up browse request is in flight (FR-024).
+    pub loading_more: bool,
 }
 
 impl Default for UiState {
@@ -140,6 +142,7 @@ impl Default for UiState {
             install_done: None,
             banner: None,
             focus: None,
+            loading_more: false,
         }
     }
 }
@@ -209,11 +212,16 @@ pub enum UiIntent {
     ConfirmInstall,
     CancelInstall,
     DismissBanner,
-    /// D-pad focus movement over [`focus_targets`] (FR-045).
+    /// D-pad focus movement over [`focus_grid`] (FR-045): Next/Prev move
+    /// rows, Left/Right move within a row.
     FocusNext,
     FocusPrev,
+    FocusLeft,
+    FocusRight,
     /// Dispatch the focused target's intent.
     Activate,
+    /// Fetch the next browse page via `cursor_next` (FR-024).
+    LoadMore,
 }
 
 /// Apply a user action; returns the request to send to the core, if any.
@@ -382,68 +390,159 @@ pub fn intent(state: &mut UiState, intent: UiIntent) -> Option<CoreRequest> {
             None
         }
         UiIntent::FocusNext => {
-            let len = focus_targets(state).len();
-            if len > 0 {
-                state.focus = Some(state.focus.map_or(0, |i| (i + 1).min(len - 1)));
-            }
+            move_focus(state, 1, 0);
             None
         }
         UiIntent::FocusPrev => {
-            let len = focus_targets(state).len();
-            if len > 0 {
-                state.focus = Some(state.focus.map_or(0, |i| i.saturating_sub(1)));
-            }
+            move_focus(state, -1, 0);
+            None
+        }
+        UiIntent::FocusLeft => {
+            move_focus(state, 0, -1);
+            None
+        }
+        UiIntent::FocusRight => {
+            move_focus(state, 0, 1);
             None
         }
         UiIntent::Activate => {
-            let target = focus_targets(state).into_iter().nth(state.focus?)?;
-            crate::state::intent(state, target.intent)
+            let (row, col) = state.focus?;
+            let entry = focus_grid(state)
+                .into_iter()
+                .nth(row)?
+                .into_iter()
+                .nth(col)?;
+            crate::state::intent(state, entry.intent)
+        }
+        UiIntent::LoadMore => {
+            if state.loading_more {
+                return None;
+            }
+            let Load::Loaded(page) = &state.browse else {
+                return None;
+            };
+            let cursor = page.cursor_next.clone()?;
+            let loc = state.browse_loc.clone()?;
+            state.loading_more = true;
+            Some(CoreRequest::Browse {
+                addon_id: loc.addon_id,
+                path: loc.path,
+                cursor: Some(cursor),
+            })
         }
     }
 }
 
-/// One row the D-pad can land on (FR-045). Order matches the view's render
-/// order, so index `n` is the screen's `n`-th actionable row.
+/// Move the D-pad focus by whole rows (`dr`) or within a row (`dc`),
+/// clamping at the grid edges; an unfocused grid focuses its first cell.
+fn move_focus(state: &mut UiState, dr: isize, dc: isize) {
+    let grid = focus_grid(state);
+    if grid.is_empty() {
+        return;
+    }
+    let Some((row, col)) = state.focus else {
+        state.focus = Some((0, 0));
+        return;
+    };
+    let row = row
+        .saturating_add_signed(dr)
+        .min(grid.len().saturating_sub(1));
+    let col = col
+        .saturating_add_signed(dc)
+        .min(grid[row].len().saturating_sub(1));
+    state.focus = Some((row, col));
+}
+
+/// One action the D-pad can land on (FR-045).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FocusEntry {
     pub label: String,
     pub intent: UiIntent,
 }
 
-/// The focusable rows of the current screen, in render order.
-pub fn focus_targets(state: &UiState) -> Vec<FocusEntry> {
+/// The focusable actions of the current screen: outer index is the row in
+/// render order, inner index the row's actions left-to-right.
+pub fn focus_grid(state: &UiState) -> Vec<Vec<FocusEntry>> {
     let mut out = Vec::new();
+    let entry = |label: &str, intent: UiIntent| FocusEntry {
+        label: label.to_string(),
+        intent,
+    };
     match state.screen {
         Screen::Home => {
             if let Load::Loaded(home) = &state.home {
                 for addon in &home.addons {
+                    let mut row = Vec::new();
                     if matches!(addon.status, rvah_data::AddonStatus::Enabled) {
-                        out.push(FocusEntry {
-                            label: format!("Open {}", addon.id),
-                            intent: UiIntent::OpenBrowse {
+                        row.push(entry(
+                            "Open",
+                            UiIntent::OpenBrowse {
                                 addon_id: addon.id.clone(),
                                 path: None,
                             },
-                        });
+                        ));
+                        row.push(entry(
+                            "Disable",
+                            UiIntent::SetEnabled {
+                                addon_id: addon.id.clone(),
+                                enabled: false,
+                            },
+                        ));
+                    } else {
+                        row.push(entry(
+                            "Enable",
+                            UiIntent::SetEnabled {
+                                addon_id: addon.id.clone(),
+                                enabled: true,
+                            },
+                        ));
                     }
+                    row.push(entry(
+                        "Permissions",
+                        UiIntent::OpenPermissions {
+                            addon_id: addon.id.clone(),
+                        },
+                    ));
+                    row.push(entry(
+                        "Settings",
+                        UiIntent::OpenSettings {
+                            addon_id: addon.id.clone(),
+                        },
+                    ));
+                    row.push(entry(
+                        "Sign in",
+                        UiIntent::OpenAuth {
+                            addon_id: addon.id.clone(),
+                        },
+                    ));
+                    out.push(row);
                 }
                 for fav in &home.favorites {
-                    out.push(FocusEntry {
-                        label: fav.title.clone(),
-                        intent: UiIntent::PlayItem {
-                            addon_id: fav.addon_id.clone(),
-                            item_id: fav.item_id.clone(),
-                        },
-                    });
+                    out.push(vec![
+                        entry(
+                            &fav.title,
+                            UiIntent::PlayItem {
+                                addon_id: fav.addon_id.clone(),
+                                item_id: fav.item_id.clone(),
+                            },
+                        ),
+                        entry(
+                            "✕",
+                            UiIntent::RemoveFavorite {
+                                addon_id: fav.addon_id.clone(),
+                                item_id: fav.item_id.clone(),
+                            },
+                        ),
+                    ]);
                 }
                 for recent in home.recents.iter().filter(|r| !r.watched) {
-                    out.push(FocusEntry {
-                        label: format!("{}:{}", recent.addon_id, recent.item_id),
-                        intent: UiIntent::PlayItem {
+                    out.push(vec![entry(
+                        &format!("{}:{}", recent.addon_id, recent.item_id),
+                        UiIntent::PlayItem {
                             addon_id: recent.addon_id.clone(),
                             item_id: recent.item_id.clone(),
                         },
-                    });
+                    )]);
                 }
             }
         }
@@ -451,21 +550,34 @@ pub fn focus_targets(state: &UiState) -> Vec<FocusEntry> {
             if let (Some(loc), Load::Loaded(page)) = (&state.browse_loc, &state.browse) {
                 for item in &page.items {
                     out.push(match item {
-                        PageItem::Directory(d) => FocusEntry {
-                            label: d.title.clone(),
-                            intent: UiIntent::OpenBrowse {
+                        PageItem::Directory(d) => vec![entry(
+                            &d.title,
+                            UiIntent::OpenBrowse {
                                 addon_id: loc.addon_id.clone(),
                                 path: Some(d.path.clone()),
                             },
-                        },
-                        PageItem::Media(m) => FocusEntry {
-                            label: m.title.clone(),
-                            intent: UiIntent::PlayItem {
-                                addon_id: loc.addon_id.clone(),
-                                item_id: m.id.clone(),
-                            },
-                        },
+                        )],
+                        PageItem::Media(m) => vec![
+                            entry(
+                                &m.title,
+                                UiIntent::PlayItem {
+                                    addon_id: loc.addon_id.clone(),
+                                    item_id: m.id.clone(),
+                                },
+                            ),
+                            entry(
+                                "☆",
+                                UiIntent::AddFavorite {
+                                    addon_id: loc.addon_id.clone(),
+                                    item_id: m.id.clone(),
+                                    title: m.title.clone(),
+                                },
+                            ),
+                        ],
                     });
+                }
+                if page.cursor_next.is_some() {
+                    out.push(vec![entry("Load more", UiIntent::LoadMore)]);
                 }
             }
         }
@@ -475,13 +587,13 @@ pub fn focus_targets(state: &UiState) -> Vec<FocusEntry> {
                     let Ok(page) = result else { continue };
                     for item in &page.items {
                         if let PageItem::Media(m) = item {
-                            out.push(FocusEntry {
-                                label: m.title.clone(),
-                                intent: UiIntent::PlayItem {
+                            out.push(vec![entry(
+                                &m.title,
+                                UiIntent::PlayItem {
                                     addon_id: addon_id.clone(),
                                     item_id: m.id.clone(),
                                 },
-                            });
+                            )]);
                         }
                     }
                 }
@@ -492,11 +604,14 @@ pub fn focus_targets(state: &UiState) -> Vec<FocusEntry> {
     out
 }
 
-/// The intent of the currently focused row, for views to highlight it.
+/// The intent of the currently focused action, for views to highlight it.
 pub fn focused_intent(state: &UiState) -> Option<UiIntent> {
-    focus_targets(state)
+    let (row, col) = state.focus?;
+    focus_grid(state)
         .into_iter()
-        .nth(state.focus?)
+        .nth(row)?
+        .into_iter()
+        .nth(col)
         .map(|e| e.intent)
 }
 
@@ -510,6 +625,8 @@ pub enum NavKey {
     Stop,
     Up,
     Down,
+    Left,
+    Right,
     Select,
 }
 
@@ -537,8 +654,10 @@ pub fn key_intent(state: &UiState, key: NavKey) -> Option<UiIntent> {
         NavKey::Stop => {
             (state.screen == Screen::Player).then_some(UiIntent::Player(PlayerCommand::Stop))
         }
-        NavKey::Up => (!focus_targets(state).is_empty()).then_some(UiIntent::FocusPrev),
-        NavKey::Down => (!focus_targets(state).is_empty()).then_some(UiIntent::FocusNext),
+        NavKey::Up => (!focus_grid(state).is_empty()).then_some(UiIntent::FocusPrev),
+        NavKey::Down => (!focus_grid(state).is_empty()).then_some(UiIntent::FocusNext),
+        NavKey::Left => (!focus_grid(state).is_empty()).then_some(UiIntent::FocusLeft),
+        NavKey::Right => (!focus_grid(state).is_empty()).then_some(UiIntent::FocusRight),
         NavKey::Select => state.focus.map(|_| UiIntent::Activate),
     }
 }
@@ -547,6 +666,7 @@ fn open_browse(state: &mut UiState, loc: BrowseLoc) -> Option<CoreRequest> {
     state.screen = Screen::Browse;
     state.browse = Load::Loading;
     state.focus = None;
+    state.loading_more = false;
     state.browse_loc = Some(loc.clone());
     Some(CoreRequest::Browse {
         addon_id: loc.addon_id,
@@ -577,6 +697,17 @@ pub fn reduce(state: &mut UiState, event: CoreEvent) {
             // Stale response for a location we already left; drop it.
         }
         CoreEvent::Page { page, .. } => {
+            if state.loading_more {
+                // Cursor follow-up (FR-024): grow the page in place so
+                // focus and scroll position stay valid.
+                state.loading_more = false;
+                if let Load::Loaded(existing) = &mut state.browse {
+                    existing.items.extend(page.items);
+                    existing.cursor_next = page.cursor_next;
+                    existing.total_hint = page.total_hint;
+                    return;
+                }
+            }
             state.browse = Load::Loaded(page);
             state.focus = None;
         }
@@ -664,6 +795,11 @@ pub fn reduce(state: &mut UiState, event: CoreEvent) {
             // Route the failure into the slot it belongs to (FR-043) and
             // surface a banner for everything else.
             match context.as_str() {
+                // A failed load-more must not nuke the loaded page.
+                "browse" if state.loading_more => {
+                    state.loading_more = false;
+                    state.banner = Some(error);
+                }
                 "browse" => state.browse = Load::Failed(error),
                 "home" => state.home = Load::Failed(error),
                 "search" => state.search = Load::Failed(error),
@@ -731,15 +867,17 @@ mod tests {
         );
         assert_eq!(state.focus, None, "fresh data starts unfocused");
 
-        let targets = focus_targets(&state);
-        assert_eq!(targets.len(), 2);
-        assert_eq!(targets[0].label, "Movies");
+        let grid = focus_grid(&state);
+        assert_eq!(grid.len(), 2);
+        assert_eq!(grid[0][0].label, "Movies");
+        // A media row has two actions: play and favorite.
+        assert_eq!(grid[1].len(), 2);
 
         assert_eq!(intent(&mut state, UiIntent::FocusNext), None);
-        assert_eq!(state.focus, Some(0));
+        assert_eq!(state.focus, Some((0, 0)));
         intent(&mut state, UiIntent::FocusNext);
         intent(&mut state, UiIntent::FocusNext);
-        assert_eq!(state.focus, Some(1), "clamped at the last target");
+        assert_eq!(state.focus, Some((1, 0)), "clamped at the last row");
 
         // Activating the focused media item plays it.
         let req = intent(&mut state, UiIntent::Activate);
@@ -764,10 +902,142 @@ mod tests {
         );
         intent(&mut state, UiIntent::FocusPrev);
         intent(&mut state, UiIntent::FocusPrev);
-        assert_eq!(state.focus, Some(0));
+        assert_eq!(state.focus, Some((0, 0)));
         let req = intent(&mut state, UiIntent::Activate);
         assert!(
             matches!(req, Some(CoreRequest::Browse { ref path, .. }) if path.as_deref() == Some("/movies"))
+        );
+    }
+
+    #[test]
+    fn focus_moves_within_rows_and_clamps_columns() {
+        let mut state = UiState::default();
+        browse_intent(&mut state, "a", None);
+        reduce(
+            &mut state,
+            CoreEvent::Page {
+                addon_id: "a".into(),
+                path: None,
+                page: Page {
+                    items: vec![media("m1", "Two Actions"), dir("d1", "One", "/one")],
+                    ..Default::default()
+                },
+            },
+        );
+        // Right with nothing focused lands on the first cell.
+        intent(&mut state, UiIntent::FocusRight);
+        assert_eq!(state.focus, Some((0, 0)));
+        // Move to the favorite action; clamp at the row edge.
+        intent(&mut state, UiIntent::FocusRight);
+        intent(&mut state, UiIntent::FocusRight);
+        assert_eq!(state.focus, Some((0, 1)));
+        // Activating the favorite action favorites, not plays.
+        let req = intent(&mut state, UiIntent::Activate);
+        assert!(
+            matches!(req, Some(CoreRequest::AddFavorite { ref item_id, .. }) if item_id == "m1"),
+            "{req:?}"
+        );
+        // Moving down into a shorter row clamps the column.
+        state.focus = Some((0, 1));
+        intent(&mut state, UiIntent::FocusNext);
+        assert_eq!(state.focus, Some((1, 0)));
+        // Left clamps at zero.
+        intent(&mut state, UiIntent::FocusLeft);
+        assert_eq!(state.focus, Some((1, 0)));
+    }
+
+    #[test]
+    fn load_more_appends_and_keeps_focus() {
+        let mut state = UiState::default();
+        browse_intent(&mut state, "a", None);
+        reduce(
+            &mut state,
+            CoreEvent::Page {
+                addon_id: "a".into(),
+                path: None,
+                page: Page {
+                    items: vec![media("m1", "First")],
+                    cursor_next: Some("c1".into()),
+                    ..Default::default()
+                },
+            },
+        );
+        // The pending cursor adds a Load-more row after the items.
+        let grid = focus_grid(&state);
+        assert_eq!(grid.len(), 2);
+        assert_eq!(grid[1][0].intent, UiIntent::LoadMore);
+
+        intent(&mut state, UiIntent::FocusNext); // focus (0,0)
+        let req = intent(&mut state, UiIntent::LoadMore);
+        assert!(
+            matches!(
+                req,
+                Some(CoreRequest::Browse { ref cursor, .. }) if cursor.as_deref() == Some("c1")
+            ),
+            "{req:?}"
+        );
+        assert!(state.loading_more);
+        // Duplicate requests are swallowed while one is in flight.
+        assert_eq!(intent(&mut state, UiIntent::LoadMore), None);
+
+        // The next page appends; focus and earlier items survive.
+        reduce(
+            &mut state,
+            CoreEvent::Page {
+                addon_id: "a".into(),
+                path: None,
+                page: Page {
+                    items: vec![media("m2", "Second")],
+                    cursor_next: None,
+                    ..Default::default()
+                },
+            },
+        );
+        assert!(!state.loading_more);
+        assert_eq!(state.focus, Some((0, 0)));
+        let Load::Loaded(page) = &state.browse else {
+            panic!("browse not loaded");
+        };
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.cursor_next, None);
+        // Cursor consumed: the Load-more row is gone.
+        assert_eq!(focus_grid(&state).len(), 2);
+
+        // Without a cursor, LoadMore is inert.
+        assert_eq!(intent(&mut state, UiIntent::LoadMore), None);
+    }
+
+    #[test]
+    fn failed_load_more_keeps_page_and_banners() {
+        let mut state = UiState::default();
+        browse_intent(&mut state, "a", None);
+        reduce(
+            &mut state,
+            CoreEvent::Page {
+                addon_id: "a".into(),
+                path: None,
+                page: Page {
+                    items: vec![media("m1", "First")],
+                    cursor_next: Some("c1".into()),
+                    ..Default::default()
+                },
+            },
+        );
+        intent(&mut state, UiIntent::LoadMore);
+        reduce(
+            &mut state,
+            CoreEvent::Failed {
+                context: "browse".into(),
+                message: "provider hiccup".into(),
+                class: ErrorClass::Recoverable,
+                retryable: true,
+            },
+        );
+        assert!(!state.loading_more);
+        assert!(state.banner.is_some(), "failure surfaces as a banner");
+        assert!(
+            matches!(state.browse, Load::Loaded(_)),
+            "loaded page survives a failed load-more"
         );
     }
 
@@ -814,19 +1084,37 @@ mod tests {
                 }],
             },
         );
-        let targets = focus_targets(&state);
-        // Disabled add-on is not focusable; favorite and recent are.
-        assert_eq!(targets.len(), 3);
+        let grid = focus_grid(&state);
+        // Two add-on rows, one favorite row, one recent row.
+        assert_eq!(grid.len(), 4);
+        // Enabled add-on: Open, Disable, Permissions, Settings, Sign in.
+        assert_eq!(grid[0].len(), 5);
         assert!(matches!(
-            &targets[0].intent,
+            &grid[0][0].intent,
             UiIntent::OpenBrowse { addon_id, .. } if addon_id == "com.example.on"
         ));
         assert!(matches!(
-            &targets[1].intent,
+            &grid[0][1].intent,
+            UiIntent::SetEnabled { enabled: false, .. }
+        ));
+        // Disabled add-on: Enable, Permissions, Settings, Sign in — no Open.
+        assert_eq!(grid[1].len(), 4);
+        assert!(matches!(
+            &grid[1][0].intent,
+            UiIntent::SetEnabled { addon_id, enabled: true } if addon_id == "com.example.off"
+        ));
+        // Favorite row: play + remove.
+        assert!(matches!(
+            &grid[2][0].intent,
             UiIntent::PlayItem { item_id, .. } if item_id == "f1"
         ));
         assert!(matches!(
-            &targets[2].intent,
+            &grid[2][1].intent,
+            UiIntent::RemoveFavorite { item_id, .. } if item_id == "f1"
+        ));
+        // Recent row: play.
+        assert!(matches!(
+            &grid[3][0].intent,
             UiIntent::PlayItem { item_id, .. } if item_id == "r1"
         ));
     }
@@ -852,6 +1140,11 @@ mod tests {
         );
         assert_eq!(key_intent(&state, NavKey::Down), Some(UiIntent::FocusNext));
         assert_eq!(key_intent(&state, NavKey::Up), Some(UiIntent::FocusPrev));
+        assert_eq!(key_intent(&state, NavKey::Left), Some(UiIntent::FocusLeft));
+        assert_eq!(
+            key_intent(&state, NavKey::Right),
+            Some(UiIntent::FocusRight)
+        );
         // Select only acts once something is focused.
         assert_eq!(key_intent(&state, NavKey::Select), None);
         intent(&mut state, UiIntent::FocusNext);

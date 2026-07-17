@@ -106,6 +106,12 @@ impl eframe::App for RvahApp {
             if !typing && i.key_pressed(egui::Key::ArrowDown) {
                 keys.push(NavKey::Down);
             }
+            if !typing && !i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft) {
+                keys.push(NavKey::Left);
+            }
+            if !typing && !i.modifiers.alt && i.key_pressed(egui::Key::ArrowRight) {
+                keys.push(NavKey::Right);
+            }
             if !typing && i.key_pressed(egui::Key::Enter) {
                 keys.push(NavKey::Select);
             }
@@ -212,6 +218,21 @@ fn nav_button(
     resp.clicked()
 }
 
+/// `nav_button`, small variant.
+fn nav_small_button(
+    ui: &mut egui::Ui,
+    text: impl Into<egui::WidgetText>,
+    focused: &Option<UiIntent>,
+    this: &UiIntent,
+) -> bool {
+    let mut resp = ui.small_button(text);
+    if focused.as_ref() == Some(this) {
+        resp = resp.highlight();
+        resp.scroll_to_me(Some(egui::Align::Center));
+    }
+    resp.clicked()
+}
+
 fn home_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) {
     let focused = focused_intent(state);
     ui.heading("RVAH");
@@ -241,32 +262,39 @@ fn home_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) {
                 if nav_button(ui, "Open", &focused, &open) {
                     intents.push(open);
                 }
-                if ui.button("Disable").clicked() {
-                    intents.push(UiIntent::SetEnabled {
-                        addon_id: addon.id.clone(),
-                        enabled: false,
-                    });
+                let disable = UiIntent::SetEnabled {
+                    addon_id: addon.id.clone(),
+                    enabled: false,
+                };
+                if nav_button(ui, "Disable", &focused, &disable) {
+                    intents.push(disable);
                 }
-            } else if ui.button("Enable").clicked() {
-                intents.push(UiIntent::SetEnabled {
+            } else {
+                let enable = UiIntent::SetEnabled {
                     addon_id: addon.id.clone(),
                     enabled: true,
-                });
+                };
+                if nav_button(ui, "Enable", &focused, &enable) {
+                    intents.push(enable);
+                }
             }
-            if ui.button("Permissions").clicked() {
-                intents.push(UiIntent::OpenPermissions {
-                    addon_id: addon.id.clone(),
-                });
+            let permissions = UiIntent::OpenPermissions {
+                addon_id: addon.id.clone(),
+            };
+            if nav_button(ui, "Permissions", &focused, &permissions) {
+                intents.push(permissions);
             }
-            if ui.button("Settings").clicked() {
-                intents.push(UiIntent::OpenSettings {
-                    addon_id: addon.id.clone(),
-                });
+            let settings = UiIntent::OpenSettings {
+                addon_id: addon.id.clone(),
+            };
+            if nav_button(ui, "Settings", &focused, &settings) {
+                intents.push(settings);
             }
-            if ui.button("Sign in").clicked() {
-                intents.push(UiIntent::OpenAuth {
-                    addon_id: addon.id.clone(),
-                });
+            let auth = UiIntent::OpenAuth {
+                addon_id: addon.id.clone(),
+            };
+            if nav_button(ui, "Sign in", &focused, &auth) {
+                intents.push(auth);
             }
         });
     }
@@ -284,11 +312,12 @@ fn home_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) {
             if nav_button(ui, &fav.title, &focused, &play) {
                 intents.push(play);
             }
-            if ui.small_button("✕").clicked() {
-                intents.push(UiIntent::RemoveFavorite {
-                    addon_id: fav.addon_id.clone(),
-                    item_id: fav.item_id.clone(),
-                });
+            let remove = UiIntent::RemoveFavorite {
+                addon_id: fav.addon_id.clone(),
+                item_id: fav.item_id.clone(),
+            };
+            if nav_small_button(ui, "✕", &focused, &remove) {
+                intents.push(remove);
             }
         });
     }
@@ -351,19 +380,27 @@ fn browse_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) 
                         if let Some(year) = media.year {
                             ui.weak(year.to_string());
                         }
-                        if ui.small_button("☆").clicked() {
-                            intents.push(UiIntent::AddFavorite {
-                                addon_id: loc.addon_id.clone(),
-                                item_id: media.id.clone(),
-                                title: media.title.clone(),
-                            });
+                        let favorite = UiIntent::AddFavorite {
+                            addon_id: loc.addon_id.clone(),
+                            item_id: media.id.clone(),
+                            title: media.title.clone(),
+                        };
+                        if nav_small_button(ui, "☆", &focused, &favorite) {
+                            intents.push(favorite);
                         }
                     });
                 }
             }
         }
         if page.cursor_next.is_some() {
-            ui.weak("more items available (pagination cursor present)");
+            if state.loading_more {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.weak("loading more…");
+                });
+            } else if nav_button(ui, "Load more", &focused, &UiIntent::LoadMore) {
+                intents.push(UiIntent::LoadMore);
+            }
         }
     });
 }

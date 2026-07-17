@@ -38,6 +38,23 @@ jobs:
         with:
           command: check
 
+  sbom:
+    name: SBOM (cargo-cyclonedx)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --locked
+      - name: Generate CycloneDX SBOMs
+        run: cargo cyclonedx --format json
+      - name: Upload SBOMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: crates/*/*.cdx.json
+
   wasm-sandbox:
     name: test (wasm feature)
     runs-on: ubuntu-latest

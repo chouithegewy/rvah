@@ -33,8 +33,10 @@ symbol stripping for small distributable binaries.
 
 `.github/workflows/ci.yml` runs fmt, clippy `-D warnings`, and the full test
 suite on Linux/macOS/Windows, plus an `--all-features` job (wasm) on Linux.
+License/advisory auditing is `cargo deny` (see `deny.toml`); the `sbom` job
+generates per-crate CycloneDX SBOMs with `cargo cyclonedx` and uploads them
+as the `sbom-cyclonedx` build artifact.
 
 ## Follow-ups (not yet wired)
 
-- SBOM / license audit (`cargo about`, `cargo deny`) in CI.
 - Platform installers (deb/rpm/dmg/msi) — plain binaries only for now.
