@@ -3586,6 +3586,7 @@ dependencies = [
  "rvah-auth",
  "rvah-core",
  "rvah-data",
+ "rvah-net",
  "rvah-player",
  "rvah-player-mpv",
  "rvah-testkit",

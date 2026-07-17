@@ -65,8 +65,10 @@ rvah play com.example.demo m1 --data-dir ./data     # persists resume state
 rvah diagnostics --data-dir ./data                  # redacted event log
 ```
 
-The simulator runs installed add-ons against the in-process fixture provider;
-real add-on code execution is the job of the Wasm runtime (below).
+The CLI simulator drives installed add-ons with the in-process fixture
+provider; the desktop app executes wasm add-ons for real (see below). Store
+an add-on's declared secret with
+`printf '%s' "$TOKEN" | rvah secret-set <id> <name> --data-dir DIR`.
 
 ## Security model
 
@@ -89,8 +91,12 @@ real add-on code execution is the job of the Wasm runtime (below).
 
 ## Desktop app
 
-`rvah-app` (Phase 2 MVP UX) provides home/browse/search/player/permissions/
-settings/diagnostics/auth screens over the same core the CLI uses. Playback
+`rvah-app` provides home/browse/search/player/permissions/settings/
+diagnostics/auth screens over the same core the CLI uses. Installed add-ons
+whose package ships a wasm module run in the Wasmtime sandbox against the
+real permission bridge (allowlisted + DNS-pinned HTTP, quota'd storage,
+declared secrets, capability gating); `examples/addons/real-debrid` is a
+complete real-service add-on. Playback
 uses system `mpv` over JSON IPC when present (a Unix socket on unix, a named
 pipe on Windows; video in mpv's own window), falling back to the mock player
 with an on-screen note. Built with `--features keychain`, add-on secrets go

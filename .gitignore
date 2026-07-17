@@ -2,3 +2,4 @@ target/
 *.docx#
 .~lock*
 *.cdx.json
+examples/addons/*/dist/

@@ -172,8 +172,13 @@ impl PermissionedClient {
     /// addresses are vetted against the non-global policy, and the transport
     /// connects only to what was checked.
     pub fn with_resolver(mut self, resolver: Box<dyn Resolve>) -> Self {
-        self.resolver = Some(resolver);
+        self.set_resolver(resolver);
         self
+    }
+
+    /// In-place form of [`PermissionedClient::with_resolver`].
+    pub fn set_resolver(&mut self, resolver: Box<dyn Resolve>) {
+        self.resolver = Some(resolver);
     }
 
     /// Resolve and vet the addresses for one hop. An allowlisted IP literal

@@ -41,6 +41,13 @@ impl BridgedHostApi {
             storage_quota: manifest.permissions.storage_bytes,
         }
     }
+
+    /// Enable DNS pinning on the add-on's HTTP client (SDD §9). Production
+    /// wiring passes `SystemResolver`; tests keep the plain constructor.
+    pub fn with_resolver(mut self, resolver: Box<dyn rvah_net::Resolve>) -> Self {
+        self.client.set_resolver(resolver);
+        self
+    }
 }
 
 fn net_to_addon_error(err: NetError) -> AddonError {
