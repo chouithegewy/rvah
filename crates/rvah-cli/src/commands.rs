@@ -357,9 +357,14 @@ fn cmd_secret_set(args: &[String]) -> Result<(), CliError> {
         ));
     };
     let data_dir = require_data_dir(args)?;
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() {
+        eprint!("value for {name} (one line, Enter to finish): ");
+    }
+    // One line is the value: works for interactive paste-and-Enter and for
+    // `printf '%s' "$TOKEN" | rvah secret-set …` alike.
     let mut value = String::new();
-    use std::io::Read;
-    std::io::stdin().read_to_string(&mut value).map_err(fail)?;
+    std::io::stdin().read_line(&mut value).map_err(fail)?;
     store_secret(&data_dir, id, name, value.trim())?;
     println!("stored secret {name} for {id}");
     Ok(())
