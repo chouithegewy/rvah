@@ -1,3 +1,4 @@
 target/
 *.docx#
 .~lock*
+*.cdx.json

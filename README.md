@@ -93,9 +93,11 @@ real add-on code execution is the job of the Wasm runtime (below).
 settings/diagnostics/auth screens over the same core the CLI uses. Playback
 uses system `mpv` over JSON IPC when present (video in mpv's own window),
 falling back to the mock player with an on-screen note. Diagnostics can be
-exported as a redacted JSON bundle. Remote-friendly keys: arrows + Enter move
-a D-pad focus over the list screens, Escape goes home, Backspace goes back,
-Alt+arrows walk browse history, Space toggles play/pause, S stops.
+exported as a redacted JSON bundle. Remote-friendly keys: Up/Down move a
+D-pad focus across rows, Left/Right across a row's actions, Enter activates;
+Escape goes home, Backspace goes back, Alt+arrows walk browse history, Space
+toggles play/pause, S stops. Paginated catalogs load further pages via the
+Load-more row (FR-024).
 
 ## Repositories
 
