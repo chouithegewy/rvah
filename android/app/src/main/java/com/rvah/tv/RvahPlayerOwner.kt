@@ -1,6 +1,9 @@
 package com.rvah.tv
 
 import android.content.Context
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -20,12 +23,27 @@ import kotlinx.coroutines.launch
 import uniffi.rvah_android.AndroidCore
 import uniffi.rvah_android.NativePlaybackEvent
 
+/** What the player screen renders; updated from ExoPlayer callbacks (main thread). */
+data class PlayerUi(
+    val isPlaying: Boolean = false,
+    val status: String = "",
+    val failure: String? = null,
+)
+
+/**
+ * Activity-scoped Media3 player. Rust prepares and validates the source;
+ * this class plays it and reports session-scoped state back to the core.
+ */
 class RvahPlayerOwner(
     context: Context,
     private val scope: CoroutineScope,
-    private val core: AndroidCore,
 ) : Player.Listener {
-    var onFailure: (String) -> Unit = {}
+    /** Set once the Rust core has opened; callbacks before that are dropped. */
+    @Volatile var core: AndroidCore? = null
+
+    var ui by mutableStateOf(PlayerUi())
+        private set
+
     private val requestHeaders = AtomicReference<Map<String, String>>(emptyMap())
     private val httpFactory = DefaultHttpDataSource.Factory().setAllowCrossProtocolRedirects(true)
     private val dataSourceFactory = ResolvingDataSource.Factory(
@@ -41,6 +59,7 @@ class RvahPlayerOwner(
 
     fun play(spec: PlaybackSpec) {
         active = spec
+        ui = PlayerUi(status = "Buffering…")
         requestHeaders.set(spec.headers)
         report(NativePlaybackEvent.Preparing)
         player.setMediaItem(spec.toMediaItem(), spec.resumePositionMs)
@@ -55,33 +74,58 @@ class RvahPlayerOwner(
         }
     }
 
+    /** Show a failure that happened before the player got a source. */
+    fun fail(message: String) {
+        ui = PlayerUi(failure = message)
+    }
+
+    fun togglePlayPause() {
+        if (player.isPlaying) player.pause() else player.play()
+    }
+
     fun seekBy(deltaMs: Long) {
         val duration = player.duration.takeIf { it != C.TIME_UNSET } ?: Long.MAX_VALUE
         player.seekTo((player.currentPosition + deltaMs).coerceIn(0L, duration))
     }
 
     fun stop() {
-        val session = active ?: return
-        player.stop()
-        scope.launch(Dispatchers.IO) { core.stopPlayback(session.sessionId) }
+        progressJob?.cancel()
+        val session = active
         active = null
+        player.stop()
+        ui = PlayerUi()
+        if (session != null) {
+            val core = core ?: return
+            scope.launch(Dispatchers.IO) { runCatching { core.stopPlayback(session.sessionId) } }
+        }
     }
 
     override fun onPlaybackStateChanged(state: Int) {
         when (state) {
-            Player.STATE_BUFFERING -> report(NativePlaybackEvent.Buffering)
-            Player.STATE_READY -> if (player.isPlaying) reportPlaying() else reportPaused()
-            Player.STATE_ENDED -> report(
-                NativePlaybackEvent.Ended(
-                    player.currentPosition.toULong(),
-                    durationMs(),
-                ),
-            )
+            Player.STATE_BUFFERING -> {
+                ui = ui.copy(status = "Buffering…")
+                report(NativePlaybackEvent.Buffering)
+            }
+            Player.STATE_READY -> {
+                ui = ui.copy(status = if (player.isPlaying) "" else "Paused")
+                if (player.isPlaying) reportPlaying() else reportPaused()
+            }
+            Player.STATE_ENDED -> {
+                ui = ui.copy(isPlaying = false, status = "Finished")
+                report(NativePlaybackEvent.Ended(player.currentPosition.toULong(), durationMs()))
+            }
         }
     }
 
     override fun onIsPlayingChanged(isPlaying: Boolean) {
-        if (isPlaying) reportPlaying() else if (player.playbackState == Player.STATE_READY) reportPaused()
+        val ready = player.playbackState == Player.STATE_READY
+        val status = when {
+            isPlaying -> ""
+            ready -> "Paused"
+            else -> ui.status
+        }
+        ui = ui.copy(isPlaying = isPlaying, status = status)
+        if (isPlaying) reportPlaying() else if (ready) reportPaused()
     }
 
     override fun onPlayerError(error: PlaybackException) {
@@ -91,8 +135,8 @@ class RvahPlayerOwner(
             PlaybackException.ERROR_CODE_DECODING_FAILED -> "This device could not decode the video."
             else -> "Playback failed: ${error.errorCodeName}"
         }
+        ui = ui.copy(isPlaying = false, failure = message)
         report(NativePlaybackEvent.Error(message))
-        onFailure(message)
     }
 
     private fun durationMs(): ULong? = player.duration
@@ -109,13 +153,10 @@ class RvahPlayerOwner(
 
     private fun report(event: NativePlaybackEvent) {
         val session = active ?: return
+        val core = core ?: return
         scope.launch(Dispatchers.IO) {
+            // Losing one progress report is harmless; the next one carries the position.
             runCatching { core.reportPlaybackEvent(session.sessionId, event) }
-                .onFailure { error ->
-                    scope.launch(Dispatchers.Main) {
-                        onFailure(error.message ?: "Rust playback event failed")
-                    }
-                }
         }
     }
 

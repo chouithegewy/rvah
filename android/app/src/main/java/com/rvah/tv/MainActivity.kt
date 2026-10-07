@@ -11,9 +11,20 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val core = AndroidCore.open(filesDir.absolutePath, AndroidKeystoreSecretStore(this))
-        owner = RvahPlayerOwner(this, lifecycleScope, core)
-        setContent { RvahTvApp(core, owner) }
+        owner = RvahPlayerOwner(this, lifecycleScope)
+        // Opening the core touches SQLite and compiles every installed add-on;
+        // RvahTvApp calls this on Dispatchers.IO, never on the main thread.
+        val openCore = {
+            AndroidCore.open(filesDir.absolutePath, AndroidKeystoreSecretStore(applicationContext))
+        }
+        setContent {
+            RvahTvApp(
+                openCore = openCore,
+                owner = owner,
+                packagesDir = getExternalFilesDir("addons"),
+                trustedKeys = parseTrustedKeys(BuildConfig.TRUSTED_KEYS),
+            )
+        }
     }
 
     override fun onDestroy() {

@@ -18,6 +18,12 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
+        // Ed25519 keys (hex, comma-separated) whose signed .rvah packages this
+        // build may install: -Prvah.trustedKeys=<hex> or ~/.gradle/gradle.properties.
+        // Filtered to hex digits and commas so the value cannot inject code.
+        val trustedKeys = (project.findProperty("rvah.trustedKeys") as String?).orEmpty()
+            .filter { it in '0'..'9' || it.lowercaseChar() in 'a'..'f' || it == ',' }
+        buildConfigField("String", "TRUSTED_KEYS", "\"$trustedKeys\"")
     }
 
     buildTypes {
