@@ -431,3 +431,114 @@ fn favorites_roundtrip() {
     w.core.favorites_remove(ECHO_FIXTURE_ID, "m1").unwrap();
     assert!(w.core.favorites_list().unwrap().is_empty());
 }
+
+#[test]
+fn failed_load_does_not_leave_a_session_behind() {
+    let mut w = World::new();
+    w.core.player.backend_mut().fail_next =
+        Some(rvah_player::PlayerError::internal("load refused"));
+    assert!(w.core.resolve_and_play(ECHO_FIXTURE_ID, "m1").is_err());
+    assert_eq!(w.core.session(), None);
+}
+
+#[test]
+fn loaded_after_play_reports_buffering_not_paused() {
+    // Play during Loading unpauses the backend; the load completing must not
+    // be reported to native-player observers as a pause.
+    let mut w = World::new();
+    w.core.resolve_and_play(ECHO_FIXTURE_ID, "m1").unwrap();
+    w.core.player.play().unwrap();
+    w.core
+        .player
+        .backend_mut()
+        .script_events([PlayerEvent::Loaded {
+            duration_secs: 100.0,
+        }]);
+    w.core.tick_playback().unwrap();
+    assert_eq!(
+        w.core.session().unwrap().lifecycle,
+        rvah_core::PlaybackLifecycleEvent::Buffering
+    );
+}
+
+/// Blocks inside `list` until released, standing in for a slow network call.
+struct BlockingProvider {
+    entered: std::sync::Mutex<std::sync::mpsc::Sender<()>>,
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl AddonProvider for BlockingProvider {
+    fn list(
+        &self,
+        _ctx: &dyn rvah_addon_sdk::HostApi,
+        _path: Option<&str>,
+        _cursor: Option<&str>,
+    ) -> Result<rvah_addon_sdk::Page, rvah_addon_sdk::AddonError> {
+        let _ = self.entered.lock().unwrap().send(());
+        let _ = self.release.lock().unwrap().recv();
+        Ok(rvah_addon_sdk::Page::default())
+    }
+}
+
+#[test]
+fn playback_events_do_not_wait_for_an_addon_invocation() {
+    use std::sync::{mpsc, Mutex};
+    use std::time::Duration;
+
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let mut w = World::new();
+    w.add_addon(
+        "com.rvah.fixtures.slow",
+        &["catalog"],
+        Arc::new(BlockingProvider {
+            entered: Mutex::new(entered_tx),
+            release: Mutex::new(release_rx),
+        }),
+        vec![Capability::Catalog],
+    );
+    w.core.invoke_timeout = Duration::from_secs(10);
+    let prepared = w
+        .core
+        .prepare_playback(
+            ECHO_FIXTURE_ID,
+            "m1",
+            rvah_core::PlaybackCapabilities::media3(),
+        )
+        .unwrap();
+    let tracker = w.core.playback_tracker();
+    let core = Arc::new(Mutex::new(w.core));
+
+    // An add-on call holds the core lock for its whole duration.
+    let browsing = {
+        let core = Arc::clone(&core);
+        std::thread::spawn(move || {
+            let _ = core
+                .lock()
+                .unwrap()
+                .browse("com.rvah.fixtures.slow", None, None);
+        })
+    };
+    entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("slow add-on entered");
+
+    let (done_tx, done_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let recorded = tracker.lock().unwrap().report(
+            prepared.session_id,
+            rvah_core::PlaybackLifecycleEvent::Playing {
+                position_secs: 30.0,
+                duration_secs: Some(100.0),
+            },
+        );
+        let _ = done_tx.send(recorded.map_err(|e| e.to_string()));
+    });
+    let recorded = done_rx.recv_timeout(Duration::from_secs(2));
+    release_tx.send(()).unwrap();
+    browsing.join().unwrap();
+    assert_eq!(
+        recorded.expect("playback report blocked behind the add-on call"),
+        Ok(true)
+    );
+}

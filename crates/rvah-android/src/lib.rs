@@ -2,7 +2,7 @@
 //! Blocking methods are intentionally synchronous; Kotlin calls them from
 //! `Dispatchers.IO` so Rust owns policy while Media3 owns playback surfaces.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use rvah_addon_host::{
@@ -12,7 +12,8 @@ use rvah_addon_host::{
 use rvah_addon_sdk::{PageItem, Protocol, SubtitleFormat};
 use rvah_auth::{SecretVault, VaultError};
 use rvah_core::{
-    AppCore, PlaybackCapabilities, PlaybackLifecycleEvent, PlaybackSessionId, PreparedPlayback,
+    lock_tracker, AppCore, PlaybackCapabilities, PlaybackLifecycleEvent, PlaybackSessionId,
+    PlaybackTracker, PreparedPlayback,
 };
 use rvah_data::Database;
 use rvah_player::MockPlayer;
@@ -281,9 +282,39 @@ fn lifecycle(event: NativePlaybackEvent) -> PlaybackLifecycleEvent {
 type AndroidAppCore = AppCore<MockPlayer>;
 type RuntimePair = (Box<dyn AddonRuntime>, Arc<dyn rvah_addon_sdk::HostApi>);
 
+/// Locking: `core` serializes add-on invocations (browse, search, resolve,
+/// install), which can block on the network for up to the invoke timeout.
+/// Everything a TV UI needs while that happens — native-player callbacks
+/// (`playback`), and database-only reads and writes (`db`, `manager`) — uses
+/// its own handle and never waits for `core`.
 #[derive(uniffi::Object)]
 pub struct AndroidCore {
     core: Mutex<AndroidAppCore>,
+    playback: Arc<Mutex<PlaybackTracker>>,
+    db: Arc<Database>,
+    vault: Arc<dyn SecretVault>,
+    manager: AddonManager,
+}
+
+impl AndroidCore {
+    fn installed_manifest(&self, addon_id: &str) -> Result<Manifest, AndroidCoreError> {
+        let addon = self
+            .db
+            .get_addon(addon_id)
+            .map_err(storage_error)?
+            .ok_or_else(|| AndroidCoreError::Addon {
+                reason: format!("add-on not installed: {addon_id}"),
+            })?;
+        read_manifest(&self.manager.install_dir(addon_id, &addon.version))
+    }
+
+    /// A panic in one call must not wedge every later call across the FFI
+    /// boundary, so lock poisoning is ignored.
+    fn core(&self) -> MutexGuard<'_, AndroidAppCore> {
+        self.core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 #[uniffi::export]
@@ -307,7 +338,7 @@ impl AndroidCore {
         let manager = AddonManager::new(Arc::clone(&db), data_dir.join("addons"));
         let vault: Arc<dyn SecretVault> = Arc::new(KeystoreVault { store: secrets });
         let mut core = AppCore::new(
-            manager,
+            AddonManager::new(Arc::clone(&db), data_dir.join("addons")),
             Arc::clone(&db),
             Arc::clone(&vault),
             MockPlayer::new(),
@@ -325,58 +356,38 @@ impl AndroidCore {
             }
         }
         Ok(Arc::new(Self {
+            playback: core.playback_tracker(),
             core: Mutex::new(core),
+            db,
+            vault,
+            manager,
         }))
     }
 
     pub fn addons(&self) -> Result<Vec<AddonRecord>, AndroidCoreError> {
-        let core = self.core.lock().unwrap();
-        core.db()
-            .list_addons()
-            .map(|addons| {
-                addons
-                    .into_iter()
-                    .map(|addon| AddonRecord {
-                        name: addon.id.clone(),
-                        id: addon.id,
-                        version: addon.version,
-                        enabled: addon.status == rvah_data::AddonStatus::Enabled,
-                    })
-                    .collect()
+        let addons = self.db.list_addons().map_err(storage_error)?;
+        Ok(addons
+            .into_iter()
+            .map(|addon| AddonRecord {
+                name: read_manifest(&self.manager.install_dir(&addon.id, &addon.version))
+                    .map(|manifest| manifest.addon.name)
+                    .unwrap_or_else(|_| addon.id.clone()),
+                enabled: addon.status == rvah_data::AddonStatus::Enabled,
+                id: addon.id,
+                version: addon.version,
             })
-            .map_err(|error| AndroidCoreError::Storage {
-                reason: error.to_string(),
-            })
+            .collect())
     }
 
     pub fn settings(&self, addon_id: String) -> Result<Vec<SettingRecord>, AndroidCoreError> {
-        let core = self.core.lock().unwrap();
-        let addon = core
-            .db()
-            .get_addon(&addon_id)
-            .map_err(storage_error)?
-            .ok_or_else(|| AndroidCoreError::Addon {
-                reason: format!("add-on not installed: {addon_id}"),
-            })?;
-        let path = core
-            .manager
-            .install_dir(&addon_id, &addon.version)
-            .join("manifest.toml");
-        let manifest = Manifest::parse(&std::fs::read_to_string(path).map_err(|error| {
-            AndroidCoreError::Storage {
-                reason: error.to_string(),
-            }
-        })?)
-        .map_err(|error| AndroidCoreError::Addon {
-            reason: error.to_string(),
-        })?;
+        let manifest = self.installed_manifest(&addon_id)?;
         let defaults = manifest.default_settings();
         manifest
             .settings
             .iter()
             .map(|(key, spec)| {
-                let value = core
-                    .db()
+                let value = self
+                    .db
                     .get_setting(&addon_id, key)
                     .map_err(storage_error)?
                     .or_else(|| defaults.get(key).cloned())
@@ -391,25 +402,40 @@ impl AndroidCore {
             .collect()
     }
 
+    /// Store a setting the add-on's manifest declares, checked against its
+    /// declared type and options.
     pub fn save_setting(
         &self,
         addon_id: String,
         key: String,
         value: String,
     ) -> Result<(), AndroidCoreError> {
-        self.core
-            .lock()
-            .unwrap()
-            .db()
+        let manifest = self.installed_manifest(&addon_id)?;
+        let spec = manifest
+            .settings
+            .get(&key)
+            .ok_or_else(|| AndroidCoreError::Addon {
+                reason: format!("{addon_id} declares no setting {key}"),
+            })?;
+        let valid = match (&spec.r#enum, spec.r#type.as_str()) {
+            (Some(options), _) => options.contains(&value),
+            (None, "bool") => value == "true" || value == "false",
+            (None, "int" | "integer") => value.parse::<i64>().is_ok(),
+            (None, "float" | "number") => value.parse::<f64>().is_ok(),
+            (None, _) => true,
+        };
+        if !valid {
+            return Err(AndroidCoreError::Addon {
+                reason: format!("invalid value for {key}"),
+            });
+        }
+        self.db
             .set_setting(&addon_id, &key, &value)
             .map_err(storage_error)
     }
 
     pub fn diagnostics(&self, limit: u32) -> Result<Vec<DiagnosticRecord>, AndroidCoreError> {
-        self.core
-            .lock()
-            .unwrap()
-            .db()
+        self.db
             .recent_events(limit.min(500))
             .map(|events| {
                 events
@@ -461,8 +487,7 @@ impl AndroidCore {
                 reason: format!("invalid public key: {error}"),
             }
         })?;
-        let mut core = self.core.lock().unwrap();
-        let installed = core
+        let installed = self
             .manager
             .install(
                 &package,
@@ -473,11 +498,10 @@ impl AndroidCore {
             .map_err(|error| AndroidCoreError::Addon {
                 reason: error.to_string(),
             })?;
-        let db = Arc::clone(core.db());
-        let vault = Arc::clone(core.vault());
-        let dir = core.manager.install_dir(&installed.id, &installed.version);
-        let (runtime, host) = load_wasmi_runtime(&dir, &db, &vault)?;
-        core.register_runtime(installed.id.clone(), runtime, host);
+        let dir = self.manager.install_dir(&installed.id, &installed.version);
+        let (runtime, host) = load_wasmi_runtime(&dir, &self.db, &self.vault)?;
+        self.core()
+            .register_runtime(installed.id.clone(), runtime, host);
         Ok(AddonRecord {
             name: installed.id.clone(),
             id: installed.id,
@@ -492,9 +516,7 @@ impl AndroidCore {
         path: Option<String>,
     ) -> Result<Vec<CatalogEntry>, AndroidCoreError> {
         let page = self
-            .core
-            .lock()
-            .unwrap()
+            .core()
             .browse(&addon_id, path, None)
             .map_err(playback_error)?;
         Ok(page.items.into_iter().map(catalog_entry).collect())
@@ -506,9 +528,7 @@ impl AndroidCore {
         query: String,
     ) -> Result<Vec<CatalogEntry>, AndroidCoreError> {
         let page = self
-            .core
-            .lock()
-            .unwrap()
+            .core()
             .search(&addon_id, &query)
             .map_err(playback_error)?;
         Ok(page.items.into_iter().map(catalog_entry).collect())
@@ -519,32 +539,26 @@ impl AndroidCore {
         addon_id: String,
         item_id: String,
     ) -> Result<NativePreparedPlayback, AndroidCoreError> {
-        self.core
-            .lock()
-            .unwrap()
+        self.core()
             .prepare_playback(&addon_id, &item_id, PlaybackCapabilities::media3())
             .map(NativePreparedPlayback::from)
             .map_err(playback_error)
     }
 
+    /// Never waits for an in-flight add-on call (see [`AndroidCore`]).
     pub fn report_playback_event(
         &self,
         session_id: u64,
         event: NativePlaybackEvent,
     ) -> Result<bool, AndroidCoreError> {
-        self.core
-            .lock()
-            .unwrap()
-            .report_playback_event(PlaybackSessionId(session_id), lifecycle(event))
+        lock_tracker(&self.playback)
+            .report(PlaybackSessionId(session_id), lifecycle(event))
             .map_err(playback_error)
     }
 
+    /// Never waits for an in-flight add-on call (see [`AndroidCore`]).
     pub fn stop_playback(&self, session_id: u64) -> Result<bool, AndroidCoreError> {
-        self.core
-            .lock()
-            .unwrap()
-            .stop_playback(PlaybackSessionId(session_id))
-            .map_err(playback_error)
+        Ok(lock_tracker(&self.playback).stop(PlaybackSessionId(session_id)))
     }
 }
 
@@ -577,19 +591,23 @@ fn catalog_entry(item: PageItem) -> CatalogEntry {
     }
 }
 
+fn read_manifest(dir: &std::path::Path) -> Result<Manifest, AndroidCoreError> {
+    let text = std::fs::read_to_string(dir.join("manifest.toml")).map_err(|error| {
+        AndroidCoreError::Storage {
+            reason: error.to_string(),
+        }
+    })?;
+    Manifest::parse(&text).map_err(|error| AndroidCoreError::Addon {
+        reason: error.to_string(),
+    })
+}
+
 fn load_wasmi_runtime(
     dir: &std::path::Path,
     db: &Arc<Database>,
     vault: &Arc<dyn SecretVault>,
 ) -> Result<RuntimePair, AndroidCoreError> {
-    let manifest = Manifest::parse(&std::fs::read_to_string(dir.join("manifest.toml")).map_err(
-        |error| AndroidCoreError::Addon {
-            reason: error.to_string(),
-        },
-    )?)
-    .map_err(|error| AndroidCoreError::Addon {
-        reason: error.to_string(),
-    })?;
+    let manifest = read_manifest(dir)?;
     if !manifest.addon.entry.ends_with(".wasm") {
         return Err(AndroidCoreError::Addon {
             reason: "Android add-ons must provide a .wasm entry".into(),
