@@ -83,6 +83,14 @@ impl World {
             reduce(&mut self.state, more);
         }
     }
+
+    /// Pump until `done` holds. A request may answer with several events
+    /// sent back to back; `pump` alone can return between them.
+    fn pump_until(&mut self, done: impl Fn(&UiState) -> bool) {
+        while !done(&self.state) {
+            self.pump();
+        }
+    }
 }
 
 #[test]
@@ -143,7 +151,7 @@ fn play_starts_session_and_playback_updates() {
         item_id: "m1".into(),
     });
     assert!(w.state.player.resolving);
-    w.pump();
+    w.pump_until(|s| s.player.state.is_some());
     assert_eq!(w.state.screen, Screen::Player);
     assert!(!w.state.player.resolving);
     assert!(w

@@ -197,7 +197,20 @@ impl<B: PlayerBackend> AppCore<B> {
             timeout: self.invoke_timeout,
             host: Arc::clone(&addon.host),
         };
-        match addon.runtime.invoke(op, &ctx) {
+        let op_name = match &op {
+            AddonOp::List { .. } => "list",
+            AddonOp::Search { .. } => "search",
+            AddonOp::Resolve { .. } => "resolve",
+            AddonOp::AccountStatus => "account_status",
+        };
+        let started = std::time::Instant::now();
+        let result = addon.runtime.invoke(op, &ctx);
+        crate::debug_log!(
+            "{addon_id} {op_name}: {} in {:.3}s",
+            if result.is_ok() { "ok" } else { "error" },
+            started.elapsed().as_secs_f64()
+        );
+        match result {
             Ok(resp) => {
                 self.failures.remove(addon_id);
                 Ok(resp)

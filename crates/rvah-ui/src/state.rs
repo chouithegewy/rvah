@@ -1230,8 +1230,10 @@ mod tests {
 
     #[test]
     fn player_controls_are_focusable_for_remote_select() {
-        let mut state = UiState::default();
-        state.screen = Screen::Player;
+        let mut state = UiState {
+            screen: Screen::Player,
+            ..Default::default()
+        };
         reduce(
             &mut state,
             CoreEvent::Playback(PlaybackSnapshot {

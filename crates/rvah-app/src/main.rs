@@ -15,6 +15,9 @@ fn main() -> Result<(), String> {
         .and_then(|i| args.get(i + 1))
         .map(std::path::PathBuf::from)
         .unwrap_or_else(default_data_dir);
+    if args.iter().any(|a| a == "--debug") {
+        rvah_core::debug::set_enabled(true);
+    }
 
     let mut options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()

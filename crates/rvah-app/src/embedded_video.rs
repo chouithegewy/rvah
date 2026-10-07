@@ -57,7 +57,10 @@ mod platform {
         }
 
         pub fn window_id(&self) -> u64 {
-            self.window as u64
+            // `xlib::Window` is `c_ulong`: u64 here, u32 on 32-bit targets.
+            #[allow(clippy::unnecessary_cast)]
+            let id = self.window as u64;
+            id
         }
     }
 
