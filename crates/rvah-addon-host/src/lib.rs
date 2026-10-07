@@ -2,6 +2,8 @@
 //! runtime invocation with quotas, capability-checked host API bridge, and the
 //! install/update/disable/uninstall lifecycle.
 
+#[cfg(any(feature = "wasm", feature = "wasm-wasmi"))]
+mod abi;
 pub mod host_api;
 pub mod install;
 pub mod manifest;

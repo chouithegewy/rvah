@@ -61,6 +61,14 @@ the mitigation as built, the tests that pin it, and known gaps.
 - **Tests:** `runtime_times_out_slow_provider`,
   `wasm_infinite_loop_trapped_by_fuel`, `wasm_memory_hog_capped`,
   `repeated_failures_quarantine_addon`.
+- **Android (Wasmi):** `WasmiRuntime` has the same memory cap and fuel, and
+  enforces the wall-clock budget (`min(limits.timeout, ctx.timeout)`) at
+  every host-call boundary, before and after the call, since Wasmi has no
+  epoch interruption. Pure compute between host calls is bounded by fuel.
+  Both runtimes share one ABI module (`abi.rs`: host-call dispatch and
+  overflow-checked guest pointer ranges).
+- **Tests:** `rvah-addon-host/tests/wasmi_limits.rs`,
+  `hostile_host_call_pointers_do_not_panic_the_host` (both runtimes).
 - **Gap:** the in-process runtime cannot bound memory (native code); only the
   wasm runtime provides real containment. Timed-out native provider threads
   are stranded, not killed.

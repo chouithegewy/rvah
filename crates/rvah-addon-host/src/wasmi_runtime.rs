@@ -1,15 +1,21 @@
 //! Portable `.rvah` ABI v0.1 runtime for Android. Wasmi avoids Wasmtime's
 //! 32-bit target limitation while retaining fuel and memory enforcement.
+//!
+//! Wasmi has no epoch interruption, so the wall-clock budget is enforced at
+//! host-call boundaries (before and after every `rvah_host_call`, which is
+//! where a guest can block on the network); pure guest compute between host
+//! calls is bounded by fuel.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use rvah_addon_sdk::{AddonError, AddonErrorCode, HostApi, LogLevel};
+use rvah_addon_sdk::{AddonError, AddonErrorCode, HostApi};
 use wasmi::{
     core::TrapCode, Caller, Config, Engine, Extern, Linker, Module, Store, StoreLimits,
     StoreLimitsBuilder,
 };
 
+use crate::abi::{dispatch_host_call, guest_range};
 use crate::runtime::{AddonOp, AddonResponse, AddonRuntime, InvocationCtx};
 
 #[derive(Debug, Clone, Copy)]
@@ -32,7 +38,21 @@ impl Default for WasmiLimits {
 struct StoreData {
     limits: StoreLimits,
     host: Arc<dyn HostApi>,
+    deadline: Instant,
 }
+
+/// Trap raised from a host call once the invocation's wall-clock budget is
+/// spent.
+#[derive(Debug)]
+struct DeadlineExceeded;
+
+impl std::fmt::Display for DeadlineExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("wall-clock deadline")
+    }
+}
+
+impl wasmi::core::HostError for DeadlineExceeded {}
 
 pub struct WasmiRuntime {
     engine: Engine,
@@ -45,6 +65,9 @@ fn internal(message: impl std::fmt::Display) -> AddonError {
 }
 
 fn guest_error(error: wasmi::Error) -> AddonError {
+    if error.downcast_ref::<DeadlineExceeded>().is_some() {
+        return AddonError::new(AddonErrorCode::Timeout, "wall-clock deadline");
+    }
     match error.as_trap_code() {
         Some(TrapCode::OutOfFuel) => AddonError::new(AddonErrorCode::Timeout, "fuel exhausted"),
         _ => internal(format!("guest trapped: {error}")),
@@ -66,113 +89,42 @@ impl WasmiRuntime {
     }
 }
 
-fn dispatch_host_call(host: &dyn HostApi, request: &[u8]) -> Vec<u8> {
-    use rvah_addon_sdk::HttpRequest;
-    use serde_json::{json, Value};
-
-    #[derive(serde::Deserialize)]
-    #[serde(tag = "fn", rename_all = "snake_case")]
-    enum HostCall {
-        HttpFetch {
-            req: HttpRequest,
-        },
-        SettingGet {
-            key: String,
-        },
-        SecretGet {
-            name: String,
-        },
-        StorageGet {
-            key: String,
-        },
-        StorageSet {
-            key: String,
-            value: Vec<u8>,
-        },
-        StorageDelete {
-            key: String,
-        },
-        Log {
-            level: Option<String>,
-            message: String,
-        },
+fn host_call(caller: &mut Caller<'_, StoreData>, ptr: i32, len: i32) -> Result<i64, wasmi::Error> {
+    let deadline = caller.data().deadline;
+    if Instant::now() >= deadline {
+        return Err(wasmi::Error::host(DeadlineExceeded));
     }
-    fn ok(value: Value) -> Vec<u8> {
-        serde_json::to_vec(&json!({ "Ok": value })).expect("host response serializes")
-    }
-    fn err(error: &AddonError) -> Vec<u8> {
-        serde_json::to_vec(&json!({ "Err": error })).expect("host error serializes")
-    }
-    let call: HostCall = match serde_json::from_slice(request) {
-        Ok(call) => call,
-        Err(error) => {
-            return err(&AddonError::new(
-                AddonErrorCode::Malformed,
-                format!("host call: {error}"),
-            ))
-        }
-    };
-    match call {
-        HostCall::HttpFetch { req } => match host.http_fetch(req) {
-            Ok(response) => ok(serde_json::to_value(response).expect("response serializes")),
-            Err(error) => err(&error),
-        },
-        HostCall::SettingGet { key } => ok(json!({ "value": host.setting_get(&key) })),
-        HostCall::SecretGet { name } => match host.secret_get(&name) {
-            Ok(value) => ok(json!({ "value": value })),
-            Err(error) => err(&error),
-        },
-        HostCall::StorageGet { key } => ok(json!({ "value": host.storage_get(&key) })),
-        HostCall::StorageSet { key, value } => match host.storage_set(&key, &value) {
-            Ok(()) => ok(Value::Null),
-            Err(error) => err(&error),
-        },
-        HostCall::StorageDelete { key } => {
-            host.storage_delete(&key);
-            ok(Value::Null)
-        }
-        HostCall::Log { level, message } => {
-            let level = match level.as_deref() {
-                Some("error") => LogLevel::Error,
-                Some("warn") => LogLevel::Warn,
-                Some("debug") => LogLevel::Debug,
-                Some("trace") => LogLevel::Trace,
-                _ => LogLevel::Info,
-            };
-            host.log(level, &message);
-            ok(Value::Null)
-        }
-    }
-}
-
-fn host_call(caller: &mut Caller<'_, StoreData>, ptr: i32, len: i32) -> i64 {
     let Some(Extern::Memory(memory)) = caller.get_export("memory") else {
-        return 0;
+        return Ok(0);
     };
-    let Some(request) = memory
-        .data(&*caller)
-        .get(ptr as usize..ptr as usize + len as usize)
+    let Some(request) = guest_range(ptr, len)
+        .and_then(|range| memory.data(&*caller).get(range))
         .map(<[u8]>::to_vec)
     else {
-        return 0;
+        return Ok(0);
     };
     let response = dispatch_host_call(caller.data().host.as_ref(), &request);
+    // The call may have blocked (network); do not resume a guest that is
+    // already over budget.
+    if Instant::now() >= deadline {
+        return Err(wasmi::Error::host(DeadlineExceeded));
+    }
     let Some(Extern::Func(alloc)) = caller.get_export("rvah_alloc") else {
-        return 0;
+        return Ok(0);
     };
     let Ok(alloc) = alloc.typed::<i32, i32>(&*caller) else {
-        return 0;
+        return Ok(0);
     };
     let Ok(response_ptr) = alloc.call(&mut *caller, response.len() as i32) else {
-        return 0;
+        return Ok(0);
     };
     if memory
-        .write(&mut *caller, response_ptr as usize, &response)
+        .write(&mut *caller, response_ptr as u32 as usize, &response)
         .is_err()
     {
-        return 0;
+        return Ok(0);
     }
-    (((response_ptr as u64) << 32) | response.len() as u64) as i64
+    Ok((((response_ptr as u32 as u64) << 32) | response.len() as u64) as i64)
 }
 
 impl AddonRuntime for WasmiRuntime {
@@ -182,6 +134,7 @@ impl AddonRuntime for WasmiRuntime {
                 .memory_size(self.limits.max_memory_bytes)
                 .build(),
             host: Arc::clone(&ctx.host),
+            deadline: Instant::now() + self.limits.timeout.min(ctx.timeout),
         };
         let mut store = Store::new(&self.engine, data);
         store.limiter(|data| &mut data.limits);
@@ -214,7 +167,7 @@ impl AddonRuntime for WasmiRuntime {
             .call(&mut store, payload.len() as i32)
             .map_err(guest_error)?;
         memory
-            .write(&mut store, ptr as usize, &payload)
+            .write(&mut store, ptr as u32 as usize, &payload)
             .map_err(internal)?;
         let packed = invoke
             .call(&mut store, (ptr, payload.len() as i32))
@@ -222,11 +175,8 @@ impl AddonRuntime for WasmiRuntime {
         if packed == 0 {
             return Err(internal("guest returned empty response"));
         }
-        let response_ptr = (packed >> 32) as u32 as usize;
-        let response_len = packed as u32 as usize;
-        let bytes = memory
-            .data(&store)
-            .get(response_ptr..response_ptr + response_len)
+        let bytes = guest_range((packed >> 32) as i32, packed as i32)
+            .and_then(|range| memory.data(&store).get(range))
             .ok_or_else(|| internal("guest response out of bounds"))?;
         serde_json::from_slice::<Result<AddonResponse, AddonError>>(bytes).map_err(|error| {
             AddonError::new(AddonErrorCode::Malformed, format!("guest JSON: {error}"))

@@ -14,11 +14,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rvah_addon_sdk::{AddonError, AddonErrorCode, HostApi, LogLevel};
+use rvah_addon_sdk::{AddonError, AddonErrorCode, HostApi};
 use wasmtime::{
     Caller, Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Trap,
 };
 
+use crate::abi::{dispatch_host_call, guest_range};
 use crate::runtime::{AddonOp, AddonResponse, AddonRuntime, InvocationCtx};
 
 #[derive(Debug, Clone, Copy)]
@@ -78,94 +79,6 @@ impl WasmRuntime {
     }
 }
 
-fn parse_level(level: Option<&str>) -> LogLevel {
-    match level {
-        Some("error") => LogLevel::Error,
-        Some("warn") => LogLevel::Warn,
-        Some("debug") => LogLevel::Debug,
-        Some("trace") => LogLevel::Trace,
-        _ => LogLevel::Info,
-    }
-}
-
-/// ABI v0.1 host-call dispatch: JSON request in, JSON `{"Ok":…}/{"Err":…}`
-/// response out. Pure translation — capability and permission policy lives
-/// entirely in the [`HostApi`] implementation (the bridge).
-pub(crate) fn dispatch_host_call(host: &dyn HostApi, request: &[u8]) -> Vec<u8> {
-    use rvah_addon_sdk::HttpRequest;
-    use serde_json::{json, Value};
-
-    #[derive(serde::Deserialize)]
-    #[serde(tag = "fn", rename_all = "snake_case")]
-    enum HostCall {
-        HttpFetch {
-            req: HttpRequest,
-        },
-        SettingGet {
-            key: String,
-        },
-        SecretGet {
-            name: String,
-        },
-        StorageGet {
-            key: String,
-        },
-        StorageSet {
-            key: String,
-            value: Vec<u8>,
-        },
-        StorageDelete {
-            key: String,
-        },
-        Log {
-            #[serde(default)]
-            level: Option<String>,
-            message: String,
-        },
-    }
-
-    fn ok(value: Value) -> Vec<u8> {
-        serde_json::to_vec(&json!({ "Ok": value })).expect("host response serializes")
-    }
-    fn err(error: &AddonError) -> Vec<u8> {
-        serde_json::to_vec(&json!({ "Err": error })).expect("host error serializes")
-    }
-
-    let call: HostCall = match serde_json::from_slice(request) {
-        Ok(call) => call,
-        Err(e) => {
-            return err(&AddonError::new(
-                AddonErrorCode::Malformed,
-                format!("host call: {e}"),
-            ))
-        }
-    };
-    match call {
-        HostCall::HttpFetch { req } => match host.http_fetch(req) {
-            Ok(resp) => ok(serde_json::to_value(resp).expect("response serializes")),
-            Err(e) => err(&e),
-        },
-        HostCall::SettingGet { key } => ok(json!({ "value": host.setting_get(&key) })),
-        HostCall::SecretGet { name } => match host.secret_get(&name) {
-            Ok(value) => ok(json!({ "value": value })),
-            Err(e) => err(&e),
-        },
-        HostCall::StorageGet { key } => ok(json!({ "value": host.storage_get(&key) })),
-        HostCall::StorageSet { key, value } => match host.storage_set(&key, &value) {
-            Ok(()) => ok(Value::Null),
-            Err(e) => err(&e),
-        },
-        HostCall::StorageDelete { key } => {
-            host.storage_delete(&key);
-            ok(Value::Null)
-        }
-        HostCall::Log { level, message } => {
-            host.log(parse_level(level.as_deref()), &message);
-            ok(Value::Null)
-        }
-    }
-}
-
 /// FFI shim: read the request from guest memory, dispatch, write the
 /// response back through the guest's own allocator, return packed ptr/len.
 /// `0` signals a plumbing failure (bad pointers, missing exports).
@@ -173,9 +86,8 @@ fn host_call(caller: &mut Caller<'_, StoreData>, ptr: i32, len: i32) -> i64 {
     let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
         return 0;
     };
-    let Some(request) = memory
-        .data(&caller)
-        .get(ptr as usize..(ptr as usize + len as usize))
+    let Some(request) = guest_range(ptr, len)
+        .and_then(|range| memory.data(&caller).get(range))
         .map(|b| b.to_vec())
     else {
         return 0;
@@ -261,11 +173,8 @@ impl AddonRuntime for WasmRuntime {
         if packed == 0 {
             return Err(internal("guest returned empty response"));
         }
-        let rptr = (packed >> 32) as u32 as usize;
-        let rlen = packed as u32 as usize;
-        let bytes = memory
-            .data(&store)
-            .get(rptr..rptr + rlen)
+        let bytes = guest_range((packed >> 32) as i32, packed as i32)
+            .and_then(|range| memory.data(&store).get(range))
             .ok_or_else(|| internal("guest response out of bounds"))?;
         serde_json::from_slice::<Result<AddonResponse, AddonError>>(bytes)
             .map_err(|e| AddonError::new(AddonErrorCode::Malformed, format!("guest JSON: {e}")))?
@@ -275,7 +184,7 @@ impl AddonRuntime for WasmRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rvah_addon_sdk::{HttpRequest, HttpResponse, PageItem};
+    use rvah_addon_sdk::{HttpRequest, HttpResponse, LogLevel, PageItem};
 
     struct NullHost;
     impl HostApi for NullHost {
@@ -542,6 +451,34 @@ mod tests {
             host.logs.lock().unwrap().as_slice(),
             ["Info:hello from wasm"]
         );
+    }
+
+    #[test]
+    fn hostile_host_call_pointers_do_not_panic_the_host() {
+        // ptr = -1 sign-extends to usize::MAX; ptr + len must not overflow.
+        let ok_json = r#"{"Ok":{"kind":"page","value":{"items":[]}}}"#;
+        let wat = format!(
+            r#"(module
+  (import "env" "rvah_host_call" (func $host_call (param i32 i32) (result i64)))
+  (memory (export "memory") 1)
+  (data (i32.const 2048) "{ok_data}")
+  (func (export "rvah_alloc") (param i32) (result i32) (i32.const 4096))
+  (func (export "rvah_invoke") (param i32 i32) (result i64)
+    (drop (call $host_call (i32.const -1) (i32.const 64)))
+    (drop (call $host_call (i32.const 65000) (i32.const -1)))
+    i64.const {packed_ok}))"#,
+            ok_data = wat_escape(ok_json),
+            packed_ok = pack(2048, ok_json.len() as u32),
+        );
+        let rt = WasmRuntime::load(wat.as_bytes(), WasmLimits::default()).unwrap();
+        let resp = rt.invoke(
+            AddonOp::List {
+                path: None,
+                cursor: None,
+            },
+            &ctx(),
+        );
+        assert!(matches!(resp, Ok(AddonResponse::Page(_))), "{resp:?}");
     }
 
     #[test]
