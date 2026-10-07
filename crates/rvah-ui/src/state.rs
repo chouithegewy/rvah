@@ -467,6 +467,36 @@ pub struct FocusEntry {
 
 /// The focusable actions of the current screen: outer index is the row in
 /// render order, inner index the row's actions left-to-right.
+/// The play/pause control offered in a player state: Play while paused or
+/// still opening, Pause while playing, none once idle, ended, or failed.
+pub(crate) fn player_primary_action(
+    state: Option<PlayerState>,
+) -> Option<(&'static str, PlayerCommand)> {
+    match state {
+        Some(PlayerState::Playing | PlayerState::Buffering | PlayerState::Seeking) => {
+            Some(("Pause", PlayerCommand::Pause))
+        }
+        Some(PlayerState::Loading | PlayerState::Paused) => Some(("Play", PlayerCommand::Play)),
+        _ => None,
+    }
+}
+
+/// Stop applies whenever a source is open.
+pub(crate) fn player_can_stop(state: Option<PlayerState>) -> bool {
+    matches!(
+        state,
+        Some(
+            PlayerState::Loading
+                | PlayerState::Buffering
+                | PlayerState::Playing
+                | PlayerState::Paused
+                | PlayerState::Seeking
+                | PlayerState::Ended
+                | PlayerState::Error
+        )
+    )
+}
+
 pub fn focus_grid(state: &UiState) -> Vec<Vec<FocusEntry>> {
     let mut out = Vec::new();
     let entry = |label: &str, intent: UiIntent| FocusEntry {
@@ -610,27 +640,10 @@ pub fn focus_grid(state: &UiState) -> Vec<Vec<FocusEntry>> {
         }
         Screen::Player => {
             let mut row = Vec::new();
-            match state.player.state {
-                Some(PlayerState::Playing | PlayerState::Buffering | PlayerState::Seeking) => {
-                    row.push(entry("Pause", UiIntent::Player(PlayerCommand::Pause)));
-                }
-                Some(PlayerState::Loading | PlayerState::Paused) => {
-                    row.push(entry("Play", UiIntent::Player(PlayerCommand::Play)));
-                }
-                _ => {}
+            if let Some((label, command)) = player_primary_action(state.player.state) {
+                row.push(entry(label, UiIntent::Player(command)));
             }
-            if matches!(
-                state.player.state,
-                Some(
-                    PlayerState::Loading
-                        | PlayerState::Buffering
-                        | PlayerState::Playing
-                        | PlayerState::Paused
-                        | PlayerState::Seeking
-                        | PlayerState::Ended
-                        | PlayerState::Error
-                )
-            ) {
+            if player_can_stop(state.player.state) {
                 row.push(entry("Stop", UiIntent::Player(PlayerCommand::Stop)));
             }
             if !row.is_empty() {
@@ -684,30 +697,10 @@ pub fn key_intent(state: &UiState, key: NavKey) -> Option<UiIntent> {
             if state.screen != Screen::Player {
                 return None;
             }
-            match state.player.state? {
-                PlayerState::Playing | PlayerState::Buffering | PlayerState::Seeking => {
-                    Some(UiIntent::Player(PlayerCommand::Pause))
-                }
-                PlayerState::Loading | PlayerState::Paused => {
-                    Some(UiIntent::Player(PlayerCommand::Play))
-                }
-                PlayerState::Idle | PlayerState::Ended | PlayerState::Error => None,
-            }
+            player_primary_action(state.player.state).map(|(_, command)| UiIntent::Player(command))
         }
-        NavKey::Stop => (state.screen == Screen::Player
-            && matches!(
-                state.player.state,
-                Some(
-                    PlayerState::Loading
-                        | PlayerState::Buffering
-                        | PlayerState::Playing
-                        | PlayerState::Paused
-                        | PlayerState::Seeking
-                        | PlayerState::Ended
-                        | PlayerState::Error
-                )
-            ))
-        .then_some(UiIntent::Player(PlayerCommand::Stop)),
+        NavKey::Stop => (state.screen == Screen::Player && player_can_stop(state.player.state))
+            .then_some(UiIntent::Player(PlayerCommand::Stop)),
         NavKey::Up => (!focus_grid(state).is_empty()).then_some(UiIntent::FocusPrev),
         NavKey::Down => (!focus_grid(state).is_empty()).then_some(UiIntent::FocusNext),
         NavKey::Left => (!focus_grid(state).is_empty()).then_some(UiIntent::FocusLeft),

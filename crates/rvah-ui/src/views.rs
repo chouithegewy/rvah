@@ -10,7 +10,8 @@ use rvah_player::PlayerState;
 
 use crate::service::{CoreHandle, CoreRequest, PlayerCommand};
 use crate::state::{
-    focused_intent, intent, key_intent, reduce, ErrorView, Load, NavKey, Screen, UiIntent, UiState,
+    focused_intent, intent, key_intent, player_can_stop, player_primary_action, reduce, ErrorView,
+    Load, NavKey, Screen, UiIntent, UiState,
 };
 
 /// The eframe application shell.
@@ -598,31 +599,6 @@ fn player_status_text(state: Option<PlayerState>) -> &'static str {
         Some(PlayerState::Idle) => "Stopped",
         None => "Preparing player",
     }
-}
-
-fn player_primary_action(state: Option<PlayerState>) -> Option<(&'static str, PlayerCommand)> {
-    match state {
-        Some(PlayerState::Playing | PlayerState::Buffering | PlayerState::Seeking) => {
-            Some(("Pause", PlayerCommand::Pause))
-        }
-        Some(PlayerState::Loading | PlayerState::Paused) => Some(("Play", PlayerCommand::Play)),
-        _ => None,
-    }
-}
-
-fn player_can_stop(state: Option<PlayerState>) -> bool {
-    matches!(
-        state,
-        Some(
-            PlayerState::Loading
-                | PlayerState::Buffering
-                | PlayerState::Playing
-                | PlayerState::Paused
-                | PlayerState::Seeking
-                | PlayerState::Ended
-                | PlayerState::Error
-        )
-    )
 }
 
 fn permissions_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) {
