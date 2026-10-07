@@ -11,6 +11,8 @@ pub enum SourceRejection {
     ForbiddenHeader(String),
     #[error("local paths are not playable: {0}")]
     LocalPathDenied(String),
+    #[error("DRM is not supported: {0}")]
+    UnsupportedDrm(String),
 }
 
 const ALLOWED_HEADERS: [&str; 2] = ["user-agent", "referer"];
@@ -25,6 +27,11 @@ pub fn validate_source_opts(
     now_unix: u64,
     allow_dash: bool,
 ) -> Result<(), SourceRejection> {
+    if let Some(drm) = source.drm {
+        return Err(SourceRejection::UnsupportedDrm(
+            format!("{drm:?}").to_ascii_lowercase(),
+        ));
+    }
     // Distrust the declared protocol: classify from the URL as well.
     if source
         .url
@@ -72,6 +79,7 @@ mod tests {
             quality: None,
             audio_lang: None,
             expires_at: None,
+            drm: None,
         }
     }
 

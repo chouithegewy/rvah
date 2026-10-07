@@ -9,6 +9,8 @@ pub mod package;
 pub mod runtime;
 #[cfg(feature = "wasm")]
 pub mod wasm_runtime;
+#[cfg(feature = "wasm-wasmi")]
+mod wasmi_runtime;
 
 pub use host_api::BridgedHostApi;
 pub use install::{AddonManager, InstallDecision, InstallError, InstalledAddon};
@@ -25,3 +27,5 @@ pub use runtime::{
 };
 #[cfg(feature = "wasm")]
 pub use wasm_runtime::{WasmLimits, WasmRuntime};
+#[cfg(feature = "wasm-wasmi")]
+pub use wasmi_runtime::{WasmiLimits, WasmiRuntime};

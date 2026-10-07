@@ -6,9 +6,10 @@ use rvah_addon_host::{
     AddonManager, AddonOp, AddonResponse, AddonRuntime, InvocationCtx, Manifest,
 };
 use rvah_addon_sdk::{
-    AddonError, AddonErrorCode, Filter, HostApi, Page, PlayableSource, ResolveResult,
+    AddonError, AddonErrorCode, Filter, HostApi, Page, PlayableSource, Protocol, ResolveResult,
+    SubtitleTrack,
 };
-use rvah_auth::SecretVault;
+use rvah_auth::{Redactor, SecretVault};
 use rvah_data::{AddonStatus, Database, DiagnosticEvent, FavoriteRecord, WatchState};
 use rvah_player::{
     validate_source_opts, PlayerBackend, PlayerController, PlayerEvent, ProgressTracker,
@@ -24,12 +25,92 @@ pub const QUARANTINE_THRESHOLD: u32 = 3;
 const WATCHED_THRESHOLD: f32 = 0.9;
 const PROGRESS_DEBOUNCE_SECS: f64 = 5.0;
 
-/// An in-flight playback started by [`AppCore::resolve_and_play`].
+/// Opaque correlation token shared with a platform-native player. A callback
+/// for any older token is ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PlaybackSessionId(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaybackCapabilities {
+    pub progressive_http: bool,
+    pub hls: bool,
+    pub dash: bool,
+}
+
+impl PlaybackCapabilities {
+    pub const fn media3() -> Self {
+        Self {
+            progressive_http: true,
+            hls: true,
+            dash: true,
+        }
+    }
+
+    pub fn for_backend(backend: &impl PlayerBackend) -> Self {
+        Self {
+            progressive_http: true,
+            hls: true,
+            dash: backend.supports_dash(),
+        }
+    }
+
+    fn supports(self, protocol: Protocol) -> bool {
+        match protocol {
+            Protocol::Http | Protocol::Https => self.progressive_http,
+            Protocol::Hls => self.hls,
+            Protocol::Dash => self.dash,
+            Protocol::File => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaybackDisplayMetadata {
+    pub title: String,
+    pub subtitle: Option<String>,
+}
+
+/// Platform-neutral output of source resolution. It deliberately contains no
+/// add-on secrets, diagnostics, or unsanitized provider metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreparedPlayback {
+    pub session_id: PlaybackSessionId,
+    pub source: PlayableSource,
+    pub resume_position_secs: f64,
+    pub subtitles: Vec<SubtitleTrack>,
+    pub display: PlaybackDisplayMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlaybackLifecycleEvent {
+    Preparing,
+    Buffering,
+    Playing {
+        position_secs: f64,
+        duration_secs: Option<f64>,
+    },
+    Paused {
+        position_secs: f64,
+        duration_secs: Option<f64>,
+    },
+    Ended {
+        position_secs: f64,
+        duration_secs: Option<f64>,
+    },
+    Error {
+        message: String,
+    },
+}
+
+/// An in-flight playback created by [`AppCore::prepare_playback`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaybackSession {
+    pub id: PlaybackSessionId,
     pub addon_id: String,
     pub item_id: String,
     pub source: PlayableSource,
+    pub resume_position_secs: f64,
+    pub lifecycle: PlaybackLifecycleEvent,
 }
 
 struct RegisteredAddon {
@@ -50,6 +131,7 @@ pub struct AppCore<B: PlayerBackend> {
     pub invoke_timeout: Duration,
     failures: HashMap<String, u32>,
     session: Option<PlaybackSession>,
+    next_session_id: u64,
     progress: ProgressTracker,
 }
 
@@ -70,6 +152,7 @@ impl<B: PlayerBackend> AppCore<B> {
             invoke_timeout: DEFAULT_INVOKE_TIMEOUT,
             failures: HashMap::new(),
             session: None,
+            next_session_id: 1,
             progress: ProgressTracker::new(WATCHED_THRESHOLD, PROGRESS_DEBOUNCE_SECS),
         }
     }
@@ -205,13 +288,14 @@ impl<B: PlayerBackend> AppCore<B> {
             .collect()
     }
 
-    /// Resolve an item, validate its sources, and start playback at the
-    /// persisted resume position (FR-060, FR-065, TC-PLY-008).
-    pub fn resolve_and_play(
+    /// Resolve an item and prepare a source for a platform-native player.
+    /// No backend command is executed here.
+    pub fn prepare_playback(
         &mut self,
         addon_id: &str,
         item_id: &str,
-    ) -> Result<PlaybackSession, CoreError> {
+        capabilities: PlaybackCapabilities,
+    ) -> Result<PreparedPlayback, CoreError> {
         let resp = self.invoke(
             addon_id,
             AddonOp::Resolve {
@@ -243,18 +327,22 @@ impl<B: PlayerBackend> AppCore<B> {
         };
 
         let now = unix_now();
-        // DASH passes validation only when the active backend can play it.
-        let allow_dash = self.player.backend().supports_dash();
         let mut last_rejection: Option<SourceRejection> = None;
-        let source = sources
-            .into_iter()
-            .find(|s| match validate_source_opts(s, now, allow_dash) {
+        let source = sources.into_iter().find(|s| {
+            if !capabilities.supports(s.protocol) {
+                last_rejection = Some(SourceRejection::UnsupportedProtocol(
+                    format!("{:?}", s.protocol).to_ascii_lowercase(),
+                ));
+                return false;
+            }
+            match validate_source_opts(s, now, capabilities.dash) {
                 Ok(()) => true,
                 Err(r) => {
                     last_rejection = Some(r);
                     false
                 }
-            });
+            }
+        });
         let source = match source {
             Some(s) => s,
             None => {
@@ -273,64 +361,173 @@ impl<B: PlayerBackend> AppCore<B> {
             _ => 0.0,
         };
 
-        self.player
-            .load_source(&source, start_at)
-            .map_err(CoreError::Player)?;
         self.progress = ProgressTracker::new(WATCHED_THRESHOLD, PROGRESS_DEBOUNCE_SECS);
+        let session_id = PlaybackSessionId(self.next_session_id);
+        self.next_session_id = self.next_session_id.wrapping_add(1).max(1);
         let session = PlaybackSession {
+            id: session_id,
             addon_id: addon_id.to_string(),
             item_id: item_id.to_string(),
-            source,
+            source: source.clone(),
+            resume_position_secs: start_at,
+            lifecycle: PlaybackLifecycleEvent::Preparing,
         };
         self.session = Some(session.clone());
-        Ok(session)
+        Ok(PreparedPlayback {
+            session_id,
+            subtitles: source.subtitles.clone(),
+            source,
+            resume_position_secs: start_at,
+            display: PlaybackDisplayMetadata {
+                title: item_id.to_string(),
+                subtitle: Some(addon_id.to_string()),
+            },
+        })
+    }
+
+    /// Desktop adapter: load a prepared source into the configured backend.
+    pub fn start_prepared_playback(
+        &mut self,
+        prepared: &PreparedPlayback,
+    ) -> Result<(), CoreError> {
+        if self.session.as_ref().map(|s| s.id) != Some(prepared.session_id) {
+            return Ok(());
+        }
+        self.player
+            .load_source(&prepared.source, prepared.resume_position_secs)
+            .map_err(CoreError::Player)
+    }
+
+    /// Compatibility adapter used by the desktop CLI and egui service.
+    pub fn resolve_and_play(
+        &mut self,
+        addon_id: &str,
+        item_id: &str,
+    ) -> Result<PlaybackSession, CoreError> {
+        let caps = PlaybackCapabilities::for_backend(self.player.backend());
+        let prepared = self.prepare_playback(addon_id, item_id, caps)?;
+        self.start_prepared_playback(&prepared)?;
+        Ok(self.session.clone().expect("prepared session exists"))
+    }
+
+    /// Record one native-player callback. Returns `false` for a stale session
+    /// and intentionally performs no state or persistence mutation.
+    pub fn report_playback_event(
+        &mut self,
+        session_id: PlaybackSessionId,
+        event: PlaybackLifecycleEvent,
+    ) -> Result<bool, CoreError> {
+        let Some(session) = self.session.as_mut() else {
+            return Ok(false);
+        };
+        if session.id != session_id {
+            return Ok(false);
+        }
+
+        let (position, duration, ended) = match &event {
+            PlaybackLifecycleEvent::Playing {
+                position_secs,
+                duration_secs,
+            }
+            | PlaybackLifecycleEvent::Paused {
+                position_secs,
+                duration_secs,
+            } => (Some(*position_secs), *duration_secs, false),
+            PlaybackLifecycleEvent::Ended {
+                position_secs,
+                duration_secs,
+            } => (Some(*position_secs), *duration_secs, true),
+            PlaybackLifecycleEvent::Error { message } => {
+                let message = Redactor::new().redact(message);
+                self.db.log_event(&DiagnosticEvent {
+                    level: "error".into(),
+                    addon_id: Some(session.addon_id.clone()),
+                    code: "player".into(),
+                    message,
+                })?;
+                (None, None, false)
+            }
+            PlaybackLifecycleEvent::Preparing | PlaybackLifecycleEvent::Buffering => {
+                (None, None, false)
+            }
+        };
+
+        session.lifecycle = event;
+        if let Some(position_secs) = position {
+            let duration_secs = duration.unwrap_or(0.0);
+            let update = if ended {
+                Some(rvah_player::ProgressUpdate {
+                    position_secs: duration.unwrap_or(position_secs),
+                    duration_secs,
+                    watched: true,
+                })
+            } else {
+                self.progress
+                    .on_progress(position_secs, duration_secs, position_secs)
+            };
+            if let Some(update) = update {
+                self.db.set_watch_state(&WatchState {
+                    addon_id: session.addon_id.clone(),
+                    item_id: session.item_id.clone(),
+                    position_secs: update.position_secs,
+                    duration_secs: update.duration_secs,
+                    watched: update.watched,
+                    last_played_at: unix_now(),
+                })?;
+            }
+        }
+        if ended {
+            self.session = None;
+        }
+        Ok(true)
     }
 
     /// Pump player events and persist debounced watch state (FR-065). Playback
     /// position doubles as the debounce clock so tests stay deterministic.
     pub fn tick_playback(&mut self) -> Result<Vec<PlayerEvent>, CoreError> {
         let events = self.player.handle_events();
-        let Some(session) = self.session.clone() else {
+        let Some(session_id) = self.session.as_ref().map(|session| session.id) else {
             return Ok(events);
         };
         let duration = self.player.duration_secs().unwrap_or(0.0);
         for event in &events {
-            match event {
-                PlayerEvent::Progress { position_secs } => {
-                    if let Some(update) =
-                        self.progress
-                            .on_progress(*position_secs, duration, *position_secs)
-                    {
-                        self.db.set_watch_state(&WatchState {
-                            addon_id: session.addon_id.clone(),
-                            item_id: session.item_id.clone(),
-                            position_secs: update.position_secs,
-                            duration_secs: update.duration_secs,
-                            watched: update.watched,
-                            last_played_at: unix_now(),
-                        })?;
-                    }
-                }
-                PlayerEvent::Ended => {
-                    self.db.set_watch_state(&WatchState {
-                        addon_id: session.addon_id.clone(),
-                        item_id: session.item_id.clone(),
-                        position_secs: duration,
-                        duration_secs: duration,
-                        watched: true,
-                        last_played_at: unix_now(),
-                    })?;
-                    self.session = None;
-                }
-                _ => {}
-            }
+            let lifecycle = match event {
+                PlayerEvent::Loaded { .. } => PlaybackLifecycleEvent::Paused {
+                    position_secs: self.player.position_secs(),
+                    duration_secs: self.player.duration_secs(),
+                },
+                PlayerEvent::Buffering => PlaybackLifecycleEvent::Buffering,
+                PlayerEvent::Progress { position_secs } => PlaybackLifecycleEvent::Playing {
+                    position_secs: *position_secs,
+                    duration_secs: Some(duration),
+                },
+                PlayerEvent::Ended => PlaybackLifecycleEvent::Ended {
+                    position_secs: duration,
+                    duration_secs: Some(duration),
+                },
+                PlayerEvent::Error(error) => PlaybackLifecycleEvent::Error {
+                    message: error.message.clone(),
+                },
+            };
+            let _ = self.report_playback_event(session_id, lifecycle)?;
         }
         Ok(events)
     }
 
-    pub fn stop_playback(&mut self) -> Result<(), CoreError> {
-        self.player.stop().map_err(CoreError::Player)?;
+    pub fn stop_playback(&mut self, session_id: PlaybackSessionId) -> Result<bool, CoreError> {
+        if self.session.as_ref().map(|session| session.id) != Some(session_id) {
+            return Ok(false);
+        }
         self.session = None;
+        Ok(true)
+    }
+
+    pub fn stop_desktop_playback(&mut self) -> Result<(), CoreError> {
+        let session_id = self.session.as_ref().map(|session| session.id);
+        self.player.stop().map_err(CoreError::Player)?;
+        if let Some(session_id) = session_id {
+            let _ = self.stop_playback(session_id)?;
+        }
         Ok(())
     }
 

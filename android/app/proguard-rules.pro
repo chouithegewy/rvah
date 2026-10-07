@@ -1,0 +1,1 @@
+-keep class uniffi.rvah_android.** { *; }

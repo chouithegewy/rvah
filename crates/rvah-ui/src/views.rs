@@ -20,6 +20,16 @@ pub struct RvahApp {
     /// Shown when the app fell back to the mock player (mpv not found).
     pub backend_note: Option<String>,
     last_auth_poll: Instant,
+    video_surface: Option<Box<dyn VideoSurface>>,
+}
+
+/// Platform adapter for a native child window that mpv paints into.
+///
+/// Keeping this tiny boundary here lets the UI reserve and position the video
+/// rectangle without making `rvah-ui` depend on X11 or another window system.
+pub trait VideoSurface {
+    fn place(&mut self, rect: egui::Rect, pixels_per_point: f32);
+    fn hide(&mut self);
 }
 
 impl RvahApp {
@@ -34,7 +44,12 @@ impl RvahApp {
             handle,
             backend_note: None,
             last_auth_poll: Instant::now(),
+            video_surface: None,
         }
+    }
+
+    pub fn set_video_surface(&mut self, surface: Box<dyn VideoSurface>) {
+        self.video_surface = Some(surface);
     }
 
     fn dispatch(&mut self, intents: Vec<UiIntent>) {
@@ -52,11 +67,19 @@ impl eframe::App for RvahApp {
             reduce(&mut self.state, event);
         }
 
+        // Work completes on the core thread, which does not itself wake egui.
+        // Poll while a request is pending so a remote user does not need to
+        // wiggle a mouse or press another key to see the result of Play.
+        if ui_is_waiting(&self.state) {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+
         // Keep playback position/state fresh while a session is active.
         if self.state.screen == Screen::Player
             && matches!(
                 self.state.player.state,
                 Some(PlayerState::Playing | PlayerState::Buffering | PlayerState::Seeking)
+                    | Some(PlayerState::Loading)
             )
         {
             let _ = self.handle.requests.send(CoreRequest::TickPlayback);
@@ -124,23 +147,28 @@ impl eframe::App for RvahApp {
 
         egui::TopBottomPanel::top("nav").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("⌂ Home").clicked() {
+                if ui
+                    .add_sized([120.0, 44.0], egui::Button::new("Home"))
+                    .clicked()
+                {
                     intents.push(UiIntent::OpenHome);
                 }
-                if ui.button("← Back").clicked() {
-                    intents.push(UiIntent::NavBack);
+                if self.state.screen != Screen::Home
+                    && ui
+                        .add_sized([120.0, 44.0], egui::Button::new("Back"))
+                        .clicked()
+                {
+                    intents.push(if self.state.screen == Screen::Browse {
+                        UiIntent::NavBack
+                    } else {
+                        UiIntent::OpenHome
+                    });
                 }
-                if ui.button("→ Forward").clicked() {
-                    intents.push(UiIntent::NavForward);
-                }
-                if ui.button("🔍 Search").clicked() {
+                if ui
+                    .add_sized([120.0, 44.0], egui::Button::new("Search"))
+                    .clicked()
+                {
                     intents.push(UiIntent::OpenSearch { addon_id: None });
-                }
-                if ui.button("🛠 Diagnostics").clicked() {
-                    intents.push(UiIntent::OpenDiagnostics);
-                }
-                if ui.button("📦 Install").clicked() {
-                    intents.push(UiIntent::OpenInstall);
                 }
                 if let Some(note) = &self.backend_note {
                     ui.separator();
@@ -160,17 +188,26 @@ impl eframe::App for RvahApp {
             });
         }
 
+        let mut video_rect = None;
         egui::CentralPanel::default().show(ctx, |ui| match self.state.screen {
             Screen::Home => home_view(ui, &self.state, &mut intents),
             Screen::Browse => browse_view(ui, &self.state, &mut intents),
             Screen::Search => search_view(ui, &mut self.state, &mut intents),
-            Screen::Player => player_view(ui, &self.state, &mut intents),
+            Screen::Player => video_rect = Some(player_view(ui, &self.state, &mut intents)),
             Screen::Permissions => permissions_view(ui, &self.state, &mut intents),
             Screen::Settings => settings_view(ui, &self.state, &mut intents),
             Screen::Diagnostics => diagnostics_view(ui, &self.state, &mut intents),
             Screen::Auth => auth_view(ui, &self.state, &mut intents),
             Screen::Install => install_view(ui, &mut self.state, &mut intents),
         });
+
+        if let Some(surface) = &mut self.video_surface {
+            if let Some(rect) = video_rect {
+                surface.place(rect, ctx.pixels_per_point());
+            } else {
+                surface.hide();
+            }
+        }
 
         self.dispatch(intents);
     }
@@ -210,7 +247,7 @@ fn nav_button(
     focused: &Option<UiIntent>,
     this: &UiIntent,
 ) -> bool {
-    let mut resp = ui.button(text);
+    let mut resp = ui.add(egui::Button::new(text).min_size(egui::vec2(140.0, 44.0)));
     if focused.as_ref() == Some(this) {
         resp = resp.highlight();
         resp.scroll_to_me(Some(egui::Align::Center));
@@ -336,6 +373,16 @@ fn home_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) {
             intents.push(play);
         }
     }
+    ui.separator();
+    ui.heading("Tools");
+    ui.horizontal(|ui| {
+        if nav_button(ui, "Install add-on", &focused, &UiIntent::OpenInstall) {
+            intents.push(UiIntent::OpenInstall);
+        }
+        if nav_button(ui, "Diagnostics", &focused, &UiIntent::OpenDiagnostics) {
+            intents.push(UiIntent::OpenDiagnostics);
+        }
+    });
 }
 
 fn browse_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) {
@@ -451,13 +498,30 @@ fn search_view(ui: &mut egui::Ui, state: &mut UiState, intents: &mut Vec<UiInten
     }
 }
 
-fn player_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) {
-    ui.heading("Player");
+fn player_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) -> egui::Rect {
+    let focused = focused_intent(state);
+    ui.heading("Now playing");
     if let Some(now_playing) = &state.player.now_playing {
-        ui.label(now_playing);
+        ui.weak(now_playing);
     }
     let player_state = state.player.state;
-    ui.label(format!("state: {player_state:?}"));
+    if state.player.resolving {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label("Resolving video…");
+        });
+    } else {
+        ui.label(player_status_text(player_state));
+    }
+
+    let available = ui.available_size();
+    let width = available.x.max(1.0);
+    let height = (width * 9.0 / 16.0)
+        .min((available.y - 120.0).max(180.0))
+        .max(1.0);
+    let (video_rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    ui.painter()
+        .rect_filled(video_rect, 4.0, egui::Color32::BLACK);
 
     let duration = state.player.duration_secs.unwrap_or(0.0);
     let mut position = state.player.position_secs;
@@ -471,20 +535,17 @@ fn player_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) 
         }
     });
     ui.horizontal(|ui| {
-        match player_state {
-            Some(PlayerState::Playing) => {
-                if ui.button("⏸ Pause").clicked() {
-                    intents.push(UiIntent::Player(PlayerCommand::Pause));
-                }
-            }
-            _ => {
-                if ui.button("▶ Play").clicked() {
-                    intents.push(UiIntent::Player(PlayerCommand::Play));
-                }
+        if let Some((label, command)) = player_primary_action(player_state) {
+            let primary = UiIntent::Player(command);
+            if nav_button(ui, label, &focused, &primary) {
+                intents.push(primary);
             }
         }
-        if ui.button("⏹ Stop").clicked() {
-            intents.push(UiIntent::Player(PlayerCommand::Stop));
+        if player_can_stop(player_state) {
+            let stop = UiIntent::Player(PlayerCommand::Stop);
+            if nav_button(ui, "Stop", &focused, &stop) {
+                intents.push(stop);
+            }
         }
         let mut volume = state.player.volume;
         if ui
@@ -509,6 +570,59 @@ fn player_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) 
             }
         });
     }
+    video_rect
+}
+
+fn ui_is_waiting(state: &UiState) -> bool {
+    state.player.resolving
+        || state.loading_more
+        || matches!(&state.home, Load::Loading)
+        || matches!(&state.browse, Load::Loading)
+        || matches!(&state.search, Load::Loading)
+        || matches!(&state.permissions, Load::Loading)
+        || matches!(&state.settings, Load::Loading)
+        || matches!(&state.diagnostics, Load::Loading)
+        || matches!(&state.auth, Load::Loading)
+        || matches!(&state.install, Load::Loading)
+}
+
+fn player_status_text(state: Option<PlayerState>) -> &'static str {
+    match state {
+        Some(PlayerState::Loading | PlayerState::Buffering | PlayerState::Seeking) => {
+            "Opening stream"
+        }
+        Some(PlayerState::Playing) => "Playing",
+        Some(PlayerState::Paused) => "Paused",
+        Some(PlayerState::Ended) => "Ended",
+        Some(PlayerState::Error) => "Playback error",
+        Some(PlayerState::Idle) => "Stopped",
+        None => "Preparing player",
+    }
+}
+
+fn player_primary_action(state: Option<PlayerState>) -> Option<(&'static str, PlayerCommand)> {
+    match state {
+        Some(PlayerState::Playing | PlayerState::Buffering | PlayerState::Seeking) => {
+            Some(("Pause", PlayerCommand::Pause))
+        }
+        Some(PlayerState::Loading | PlayerState::Paused) => Some(("Play", PlayerCommand::Play)),
+        _ => None,
+    }
+}
+
+fn player_can_stop(state: Option<PlayerState>) -> bool {
+    matches!(
+        state,
+        Some(
+            PlayerState::Loading
+                | PlayerState::Buffering
+                | PlayerState::Playing
+                | PlayerState::Paused
+                | PlayerState::Seeking
+                | PlayerState::Ended
+                | PlayerState::Error
+        )
+    )
 }
 
 fn permissions_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) {

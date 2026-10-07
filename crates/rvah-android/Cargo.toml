@@ -1,0 +1,32 @@
+[package]
+name = "rvah-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "UniFFI boundary for the native Android TV application"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rvah-addon-host = { workspace = true, features = ["wasm-wasmi"] }
+rvah-addon-sdk.workspace = true
+rvah-auth.workspace = true
+rvah-core.workspace = true
+rvah-data.workspace = true
+rvah-net.workspace = true
+rvah-player.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uniffi = { workspace = true, features = ["cli"] }
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[dev-dependencies]
+rvah-testkit.workspace = true
+tempfile.workspace = true

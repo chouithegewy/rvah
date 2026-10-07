@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 rvah-addon-sdk = { workspace = true }
+rvah-auth = { workspace = true }
 rvah-player = { workspace = true }
 serde_json = { workspace = true }
 

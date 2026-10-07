@@ -212,7 +212,7 @@ fn resolve_direct_mp4_and_full_playback_with_resume() {
     assert_eq!(ws.position_secs, 50.0);
     assert!(!ws.watched);
 
-    w.core.stop_playback().unwrap();
+    w.core.stop_desktop_playback().unwrap();
 
     // Second session resumes from the stored position (TC-PLY-008).
     w.core.resolve_and_play(ECHO_FIXTURE_ID, "m1").unwrap();
@@ -309,6 +309,85 @@ fn dash_source_gated_by_backend_capability() {
         .resolve_and_play("com.rvah.fixtures.dash", "x")
         .unwrap();
     assert!(session.source.url.ends_with(".mpd"));
+}
+
+#[test]
+fn prepare_playback_is_platform_neutral_and_stale_events_are_ignored() {
+    let mut w = World::new();
+    let first = w
+        .core
+        .prepare_playback(
+            ECHO_FIXTURE_ID,
+            "m1",
+            rvah_core::PlaybackCapabilities::media3(),
+        )
+        .unwrap();
+    assert_eq!(first.resume_position_secs, 0.0);
+    assert_eq!(first.display.title, "m1");
+    assert!(
+        w.core.player.backend_mut().commands.is_empty(),
+        "native preparation must not touch a desktop backend"
+    );
+
+    let second = w
+        .core
+        .prepare_playback(
+            ECHO_FIXTURE_ID,
+            "m1",
+            rvah_core::PlaybackCapabilities::media3(),
+        )
+        .unwrap();
+    assert_ne!(first.session_id, second.session_id);
+    assert!(!w
+        .core
+        .report_playback_event(
+            first.session_id,
+            rvah_core::PlaybackLifecycleEvent::Ended {
+                position_secs: 100.0,
+                duration_secs: Some(100.0),
+            },
+        )
+        .unwrap());
+    assert_eq!(w.core.session().unwrap().id, second.session_id);
+    assert!(w
+        .core
+        .report_playback_event(
+            second.session_id,
+            rvah_core::PlaybackLifecycleEvent::Playing {
+                position_secs: 10.0,
+                duration_secs: Some(100.0),
+            },
+        )
+        .unwrap());
+}
+
+#[test]
+fn protected_sources_fail_closed_before_reaching_player() {
+    let mut protected = rvah_testkit::mp4_source("https://cdn.example.com/protected.mpd");
+    protected.protocol = rvah_addon_sdk::Protocol::Dash;
+    protected.drm = Some(rvah_addon_sdk::DrmScheme::Widevine);
+    let mut w = World::with_player(MockPlayer::with_dash());
+    w.add_addon(
+        "com.rvah.fixtures.drm",
+        &["resolve"],
+        Arc::new(ResolverStaticProvider {
+            sources: vec![protected],
+        }),
+        vec![Capability::Resolve],
+    );
+    let error = w
+        .core
+        .prepare_playback(
+            "com.rvah.fixtures.drm",
+            "x",
+            rvah_core::PlaybackCapabilities::media3(),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        CoreError::SourceRejected(rvah_player::SourceRejection::UnsupportedDrm(_))
+    ));
+    assert!(w.core.player.backend_mut().commands.is_empty());
 }
 
 #[test]

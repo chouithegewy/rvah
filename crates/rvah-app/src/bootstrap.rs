@@ -14,6 +14,13 @@ use rvah_player_mpv::MpvBackend;
 use rvah_testkit::{CatalogEchoProvider, NoopHost};
 use rvah_ui::{CoreHandle, CoreService};
 
+enum PlayerLaunch {
+    #[cfg(test)]
+    Standalone,
+    Embedded(u64),
+    Disabled(String),
+}
+
 pub struct Bootstrapped {
     pub handle: CoreHandle,
     /// Set when the app fell back to the mock player.
@@ -106,13 +113,30 @@ fn capability_from_str(s: &str) -> Option<Capability> {
 /// Pick mpv when available, otherwise fall back to the mock player so the UI
 /// stays usable on machines without mpv. The IPC endpoint is a Unix socket
 /// on unix and a named pipe on Windows (`MpvIpc::default_endpoint`).
-fn select_backend(data_dir: &Path) -> (Box<dyn PlayerBackend + Send>, Option<String>) {
+fn select_backend(
+    data_dir: &Path,
+    launch: PlayerLaunch,
+) -> (Box<dyn PlayerBackend + Send>, Option<String>) {
+    if let PlayerLaunch::Disabled(reason) = &launch {
+        return (
+            Box::new(MockPlayer::new()),
+            Some(format!(
+                "embedded video unavailable ({reason}); playback disabled"
+            )),
+        );
+    }
     if MpvBackend::find_mpv().is_some() {
         let endpoint = rvah_player_mpv::MpvIpc::default_endpoint(data_dir);
         if cfg!(unix) {
             let _ = std::fs::remove_file(&endpoint);
         }
-        match MpvBackend::spawn(&endpoint) {
+        let spawned = match launch {
+            PlayerLaunch::Embedded(window_id) => MpvBackend::spawn_embedded(&endpoint, window_id),
+            #[cfg(test)]
+            PlayerLaunch::Standalone => MpvBackend::spawn(&endpoint),
+            PlayerLaunch::Disabled(_) => unreachable!(),
+        };
+        match spawned {
             Ok(backend) => return (Box::new(backend), None),
             Err(e) => {
                 return (
@@ -144,13 +168,27 @@ fn select_vault(data_dir: &Path) -> Result<Arc<dyn SecretVault>, String> {
     ))
 }
 
+#[cfg(test)]
 pub fn bootstrap(data_dir: &Path) -> Result<Bootstrapped, String> {
+    bootstrap_with_player(data_dir, PlayerLaunch::Standalone)
+}
+
+/// Bootstrap the desktop product path with mpv attached to `window_id`.
+pub fn bootstrap_embedded(data_dir: &Path, window_id: u64) -> Result<Bootstrapped, String> {
+    bootstrap_with_player(data_dir, PlayerLaunch::Embedded(window_id))
+}
+
+pub fn bootstrap_without_video(data_dir: &Path, reason: String) -> Result<Bootstrapped, String> {
+    bootstrap_with_player(data_dir, PlayerLaunch::Disabled(reason))
+}
+
+fn bootstrap_with_player(data_dir: &Path, launch: PlayerLaunch) -> Result<Bootstrapped, String> {
     std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
     let db = Arc::new(Database::open(&data_dir.join("rvah.sqlite")).map_err(|e| e.to_string())?);
     let manager = AddonManager::new(Arc::clone(&db), data_dir.join("addons"));
     let vault = select_vault(data_dir)?;
 
-    let (backend, backend_note) = select_backend(data_dir);
+    let (backend, backend_note) = select_backend(data_dir, launch);
     let mut core = AppCore::new(manager, Arc::clone(&db), Arc::clone(&vault), backend);
 
     // Installed add-ons with a wasm entry run in the sandbox against the

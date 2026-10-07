@@ -15,7 +15,7 @@ manifest as the security boundary.
 | Crate | Role |
 |---|---|
 | `rvah-addon-sdk` | Typed data model (`Page`, `MediaItem`, `PlayableSource`, …), `AddonProvider` and `HostApi` traits |
-| `rvah-addon-host` | Manifest parsing/validation, signed `.rvah` packaging, install/update/uninstall lifecycle, runtime boundary (`AddonRuntime`) with in-process and Wasmtime (`--features wasm`) implementations, capability-checked `HostApi` bridge |
+| `rvah-addon-host` | Manifest parsing/validation, signed `.rvah` packaging, install/update/uninstall lifecycle, runtime boundary (`AddonRuntime`) with in-process, Wasmtime desktop, and Wasmi Android implementations, capability-checked `HostApi` bridge |
 | `rvah-net` | Allowlisted, quota'd HTTP client — add-ons never get raw sockets |
 | `rvah-data` | SQLite persistence: transactional migrations, add-on registry, per-add-on quota'd storage, favorites, watch state, diagnostics |
 | `rvah-auth` | Encrypted secret vault (AES-256-GCM), log redaction, device-code auth flow |
@@ -23,9 +23,10 @@ manifest as the security boundary.
 | `rvah-core` | Use-case orchestration: browse/search/resolve→play, quarantine, navigation, resume |
 | `rvah-testkit` | Fixture providers and package builders for tests and the simulator |
 | `rvah-cli` | `rvah` binary: developer tooling, simulator, and repository publish/consume commands |
-| `rvah-player-mpv` | mpv `PlayerBackend` over JSON IPC (Unix; no libmpv linkage) |
+| `rvah-player-mpv` | mpv `PlayerBackend` over JSON IPC with app-embedded video |
 | `rvah-ui` | egui presentation adapter: core-service thread, pure view-model reducers, thin views |
 | `rvah-app` | `rvah-app` binary: desktop application bootstrap and backend selection |
+| `rvah-android` | Typed UniFFI boundary for native Android catalog, playback, settings, diagnostics, and Keystore callbacks |
 | `rvah-repo` | Signed repository indexes, update checks with channels, deprecation notices (FR-008) |
 
 ## Quickstart (fixture add-on)
@@ -98,7 +99,8 @@ real permission bridge (allowlisted + DNS-pinned HTTP, quota'd storage,
 declared secrets, capability gating); `examples/addons/real-debrid` is a
 complete real-service add-on. Playback
 uses system `mpv` over JSON IPC when present (a Unix socket on unix, a named
-pipe on Windows; video in mpv's own window), falling back to the mock player
+pipe on Windows). On Linux, video is embedded into the app's X11/Xwayland
+player view; unsupported native window backends fall back to the mock player
 with an on-screen note. Built with `--features keychain`, add-on secrets go
 to the OS keychain (freedesktop Secret Service) instead of the encrypted
 file vault when a daemon is available. Diagnostics can be
@@ -107,6 +109,17 @@ D-pad focus across rows, Left/Right across a row's actions, Enter activates;
 Escape goes home, Backspace goes back, Alt+arrows walk browse history, Space
 toggles play/pause, S stops. Paginated catalogs load further pages via the
 Load-more row (FR-024).
+
+## Android TV
+
+`android/` is the primary native product shell: Kotlin, Compose for TV,
+Media3 ExoPlayer, `PlayerSurface`, and an activity-scoped `MediaSession`.
+Rust prepares a validated `PreparedPlayback`; Kotlin applies its headers to a
+resolving data source, submits the `MediaItem`, calls `prepare` and `play` in
+one operation, and reports session-scoped state/progress back to Rust. Android
+add-ons run through Wasmi with the same `.rvah` JSON ABI, fuel budget, memory
+ceiling, permission bridge, and signed-package policy as desktop. See
+`android/README.md` for prerequisites and build commands.
 
 ## Repositories
 
@@ -118,8 +131,9 @@ Consume: `rvah repo-check` / `rvah repo-install … --approve` with `--index`
 
 ## Deferred (post-MVP)
 
-- DRM is out of scope entirely (DASH and resolver-provided subtitle tracks
-  play on capable backends such as mpv)
+- DRM is out of scope; protected sources fail with an explicit unsupported-DRM
+  error. Clear DASH and resolver-provided subtitle tracks play on capable
+  native backends.
 - Telemetry: deliberately none (see docs/developer-guide.md)
 
 ## Development
