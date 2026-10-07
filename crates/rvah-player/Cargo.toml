@@ -9,3 +9,4 @@ rust-version.workspace = true
 rvah-addon-sdk = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+url = { workspace = true }

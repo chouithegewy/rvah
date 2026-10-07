@@ -61,6 +61,14 @@ the mitigation as built, the tests that pin it, and known gaps.
 - **Tests:** `runtime_times_out_slow_provider`,
   `wasm_infinite_loop_trapped_by_fuel`, `wasm_memory_hog_capped`,
   `repeated_failures_quarantine_addon`.
+- **Android (Wasmi):** `WasmiRuntime` has the same memory cap and fuel, and
+  enforces the wall-clock budget (`min(limits.timeout, ctx.timeout)`) at
+  every host-call boundary, before and after the call, since Wasmi has no
+  epoch interruption. Pure compute between host calls is bounded by fuel.
+  Both runtimes share one ABI module (`abi.rs`: host-call dispatch and
+  overflow-checked guest pointer ranges).
+- **Tests:** `rvah-addon-host/tests/wasmi_limits.rs`,
+  `hostile_host_call_pointers_do_not_panic_the_host` (both runtimes).
 - **Gap:** the in-process runtime cannot bound memory (native code); only the
   wasm runtime provides real containment. Timed-out native provider threads
   are stranded, not killed.
@@ -73,6 +81,31 @@ the mitigation as built, the tests that pin it, and known gaps.
   downloads hash-checked against the index.
 - **Tests:** `tampered_package_rejected`, `install_rejects_tampered_package`
   (CLI), `tampered_index_rejected`, `download_hash_mismatch_rejected`.
+- **Consent/runtime manifest mismatch (fixed):** a signed archive could carry
+  `manifest.toml` twice; the install preview and recorded permissions read the
+  first entry while extraction left the last one on disk for the runtime's
+  allowlist and capabilities. Every package read now walks the whole archive
+  first and refuses duplicate paths (case-insensitively, for macOS/Windows
+  extraction), `..`/absolute paths, and anything but regular files and
+  directories (symlinks, hard links, devices); extraction validates before
+  writing anything.
+- **Tests:** `duplicate_manifest_is_refused_by_preview_and_extraction`,
+  `dot_prefixed_duplicate_is_refused`, `case_colliding_entries_are_refused`,
+  `symlink_entries_are_refused` (`rvah-addon-host/tests/package_adversarial.rs`).
+
+### Resolver output reaching native players
+- **Built:** `validate_source_opts` gates every `PlayableSource` before mpv or
+  Media3 sees it: the URL must be an absolute `http`/`https` URL with a host
+  regardless of the declared protocol (bare paths, drive letters, `file:`,
+  and mpv/ffmpeg pseudo-protocols such as `edl://`, `av://`, `lavf://` are
+  refused), subtitle URLs obey the same rule, header names are limited to
+  `User-Agent`/`Referer`, and header values may not contain control
+  characters (no CRLF request-line smuggling). DRM-flagged sources fail
+  closed.
+- **Tests:** `rvah-player/tests/source_adversarial.rs`.
+- **Accepted:** loopback and private-network hosts stay playable — local
+  media servers are a legitimate add-on use, and the player only streams the
+  response, it never hands it back to the add-on.
 
 ### Insecure update
 - **Built:** updates re-verify signatures; a changed permission hash requires

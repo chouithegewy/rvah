@@ -3,3 +3,13 @@ target/
 .~lock*
 *.cdx.json
 examples/addons/*/dist/
+android/.gradle/
+android/build/
+android/app/build/
+android/app/src/main/jniLibs/
+android/local.properties
+android/app/src/main/generated/
+# Local signing material and locally built packages — never commit.
+keys/
+/*.rvah
+/*.rvah.sig

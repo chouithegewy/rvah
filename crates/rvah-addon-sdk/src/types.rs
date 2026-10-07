@@ -94,6 +94,43 @@ pub enum Protocol {
     File,
 }
 
+/// Subtitle container/codec hint. Existing add-ons may omit this and hosts
+/// will infer the format from the URL extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtitleFormat {
+    WebVtt,
+    SubRip,
+    Ttml,
+    Ssa,
+    Ass,
+}
+
+impl SubtitleFormat {
+    pub fn infer(url: &str) -> Option<Self> {
+        let path = url.split(['?', '#']).next().unwrap_or(url);
+        match path.rsplit_once('.')?.1.to_ascii_lowercase().as_str() {
+            "vtt" => Some(Self::WebVtt),
+            "srt" => Some(Self::SubRip),
+            "ttml" | "xml" | "dfxp" => Some(Self::Ttml),
+            "ssa" => Some(Self::Ssa),
+            "ass" => Some(Self::Ass),
+            _ => None,
+        }
+    }
+}
+
+/// Protected sources are represented explicitly so the clear-stream
+/// milestone fails closed instead of passing DRM material to a player.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DrmScheme {
+    Widevine,
+    PlayReady,
+    FairPlay,
+    Other,
+}
+
 impl Protocol {
     /// Classify a URL by scheme and well-known manifest extensions.
     pub fn from_url(url: &str) -> Option<Protocol> {
@@ -123,6 +160,14 @@ pub struct SubtitleTrack {
     pub lang: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<SubtitleFormat>,
+}
+
+impl SubtitleTrack {
+    pub fn effective_format(&self) -> Option<SubtitleFormat> {
+        self.format.or_else(|| SubtitleFormat::infer(&self.url))
+    }
 }
 
 /// A fully resolved, host-validated candidate the player can load (FR-060).
@@ -142,6 +187,10 @@ pub struct PlayableSource {
     /// Unix seconds after which the URL is no longer valid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
+    /// Present only for protected streams. RVAH currently rejects every DRM
+    /// scheme with a clear unsupported-DRM error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drm: Option<DrmScheme>,
 }
 
 /// Outcome of resolving a media item.
@@ -223,10 +272,12 @@ mod tests {
                 url: "https://cdn.example/v.srt".into(),
                 lang: "en".into(),
                 label: None,
+                format: None,
             }],
             quality: Some("1080p".into()),
             audio_lang: Some("en".into()),
             expires_at: Some(1_800_000_000),
+            drm: None,
         }]);
         let json = serde_json::to_string(&rr).unwrap();
         assert_eq!(rr, serde_json::from_str::<ResolveResult>(&json).unwrap());

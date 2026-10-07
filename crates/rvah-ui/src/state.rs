@@ -65,6 +65,9 @@ pub struct BrowseLoc {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PlayerView {
+    /// The selected item is still being resolved by the add-on, before a
+    /// backend player state exists.
+    pub resolving: bool,
     pub state: Option<PlayerState>,
     pub position_secs: f64,
     pub duration_secs: Option<f64>,
@@ -276,6 +279,8 @@ pub fn intent(state: &mut UiState, intent: UiIntent) -> Option<CoreRequest> {
         }
         UiIntent::PlayItem { addon_id, item_id } => {
             state.screen = Screen::Player;
+            state.player.resolving = true;
+            state.player.state = None;
             state.player.now_playing = Some(format!("{addon_id}:{item_id}"));
             Some(CoreRequest::Play { addon_id, item_id })
         }
@@ -462,6 +467,36 @@ pub struct FocusEntry {
 
 /// The focusable actions of the current screen: outer index is the row in
 /// render order, inner index the row's actions left-to-right.
+/// The play/pause control offered in a player state: Play while paused or
+/// still opening, Pause while playing, none once idle, ended, or failed.
+pub(crate) fn player_primary_action(
+    state: Option<PlayerState>,
+) -> Option<(&'static str, PlayerCommand)> {
+    match state {
+        Some(PlayerState::Playing | PlayerState::Buffering | PlayerState::Seeking) => {
+            Some(("Pause", PlayerCommand::Pause))
+        }
+        Some(PlayerState::Loading | PlayerState::Paused) => Some(("Play", PlayerCommand::Play)),
+        _ => None,
+    }
+}
+
+/// Stop applies whenever a source is open.
+pub(crate) fn player_can_stop(state: Option<PlayerState>) -> bool {
+    matches!(
+        state,
+        Some(
+            PlayerState::Loading
+                | PlayerState::Buffering
+                | PlayerState::Playing
+                | PlayerState::Paused
+                | PlayerState::Seeking
+                | PlayerState::Ended
+                | PlayerState::Error
+        )
+    )
+}
+
 pub fn focus_grid(state: &UiState) -> Vec<Vec<FocusEntry>> {
     let mut out = Vec::new();
     let entry = |label: &str, intent: UiIntent| FocusEntry {
@@ -544,6 +579,10 @@ pub fn focus_grid(state: &UiState) -> Vec<Vec<FocusEntry>> {
                         },
                     )]);
                 }
+                out.push(vec![
+                    entry("Install add-on", UiIntent::OpenInstall),
+                    entry("Diagnostics", UiIntent::OpenDiagnostics),
+                ]);
             }
         }
         Screen::Browse => {
@@ -599,6 +638,18 @@ pub fn focus_grid(state: &UiState) -> Vec<Vec<FocusEntry>> {
                 }
             }
         }
+        Screen::Player => {
+            let mut row = Vec::new();
+            if let Some((label, command)) = player_primary_action(state.player.state) {
+                row.push(entry(label, UiIntent::Player(command)));
+            }
+            if player_can_stop(state.player.state) {
+                row.push(entry("Stop", UiIntent::Player(PlayerCommand::Stop)));
+            }
+            if !row.is_empty() {
+                out.push(row);
+            }
+        }
         _ => {}
     }
     out
@@ -646,14 +697,10 @@ pub fn key_intent(state: &UiState, key: NavKey) -> Option<UiIntent> {
             if state.screen != Screen::Player {
                 return None;
             }
-            match state.player.state? {
-                PlayerState::Playing => Some(UiIntent::Player(PlayerCommand::Pause)),
-                _ => Some(UiIntent::Player(PlayerCommand::Play)),
-            }
+            player_primary_action(state.player.state).map(|(_, command)| UiIntent::Player(command))
         }
-        NavKey::Stop => {
-            (state.screen == Screen::Player).then_some(UiIntent::Player(PlayerCommand::Stop))
-        }
+        NavKey::Stop => (state.screen == Screen::Player && player_can_stop(state.player.state))
+            .then_some(UiIntent::Player(PlayerCommand::Stop)),
         NavKey::Up => (!focus_grid(state).is_empty()).then_some(UiIntent::FocusPrev),
         NavKey::Down => (!focus_grid(state).is_empty()).then_some(UiIntent::FocusNext),
         NavKey::Left => (!focus_grid(state).is_empty()).then_some(UiIntent::FocusLeft),
@@ -717,6 +764,7 @@ pub fn reduce(state: &mut UiState, event: CoreEvent) {
         }
         CoreEvent::PlaybackStarted { url, subtitles, .. } => {
             state.screen = Screen::Player;
+            state.player.resolving = false;
             state.player.now_playing = Some(url);
             state.player.subtitles = subtitles;
             state.player.subtitle_selected = None;
@@ -729,6 +777,12 @@ pub fn reduce(state: &mut UiState, event: CoreEvent) {
             state.player.state = Some(player_state);
             state.player.position_secs = position_secs;
             state.player.duration_secs = duration_secs;
+            if state.screen == Screen::Player
+                && state.focus.is_none()
+                && !focus_grid(state).is_empty()
+            {
+                state.focus = Some((0, 0));
+            }
         }
         CoreEvent::Permissions {
             addon_id,
@@ -786,6 +840,9 @@ pub fn reduce(state: &mut UiState, event: CoreEvent) {
             class,
             retryable,
         } => {
+            if context == "play" {
+                state.player.resolving = false;
+            }
             let error = ErrorView {
                 context: context.clone(),
                 message,
@@ -1085,8 +1142,8 @@ mod tests {
             },
         );
         let grid = focus_grid(&state);
-        // Two add-on rows, one favorite row, one recent row.
-        assert_eq!(grid.len(), 4);
+        // Two add-on rows, one favorite row, one recent row, one tools row.
+        assert_eq!(grid.len(), 5);
         // Enabled add-on: Open, Disable, Permissions, Settings, Sign in.
         assert_eq!(grid[0].len(), 5);
         assert!(matches!(
@@ -1117,6 +1174,8 @@ mod tests {
             &grid[3][0].intent,
             UiIntent::PlayItem { item_id, .. } if item_id == "r1"
         ));
+        assert_eq!(grid[4][0].intent, UiIntent::OpenInstall);
+        assert_eq!(grid[4][1].intent, UiIntent::OpenDiagnostics);
     }
 
     #[test]
@@ -1160,6 +1219,36 @@ mod tests {
             },
         );
         assert_eq!(state.focus, None);
+    }
+
+    #[test]
+    fn player_controls_are_focusable_for_remote_select() {
+        let mut state = UiState {
+            screen: Screen::Player,
+            ..Default::default()
+        };
+        reduce(
+            &mut state,
+            CoreEvent::Playback(PlaybackSnapshot {
+                state: PlayerState::Buffering,
+                position_secs: 0.0,
+                duration_secs: None,
+            }),
+        );
+        assert_eq!(state.focus, Some((0, 0)));
+
+        let grid = focus_grid(&state);
+        assert_eq!(grid.len(), 1);
+        assert_eq!(grid[0].len(), 2);
+        assert_eq!(grid[0][0].label, "Pause");
+        assert_eq!(grid[0][1].label, "Stop");
+        assert_eq!(key_intent(&state, NavKey::Select), Some(UiIntent::Activate));
+
+        let req = intent(&mut state, UiIntent::Activate);
+        assert_eq!(req, Some(CoreRequest::Player(PlayerCommand::Pause)));
+
+        state.player.state = Some(PlayerState::Paused);
+        assert_eq!(focus_grid(&state)[0][0].label, "Play");
     }
 
     fn browse_intent(state: &mut UiState, addon: &str, path: Option<&str>) -> CoreRequest {
@@ -1303,6 +1392,11 @@ mod tests {
             key_intent(&state, NavKey::PlayPause),
             Some(UiIntent::Player(PlayerCommand::Pause))
         );
+        state.player.state = Some(rvah_player::PlayerState::Buffering);
+        assert_eq!(
+            key_intent(&state, NavKey::PlayPause),
+            Some(UiIntent::Player(PlayerCommand::Pause))
+        );
         state.player.state = Some(rvah_player::PlayerState::Paused);
         assert_eq!(
             key_intent(&state, NavKey::PlayPause),
@@ -1312,6 +1406,9 @@ mod tests {
             key_intent(&state, NavKey::Stop),
             Some(UiIntent::Player(PlayerCommand::Stop))
         );
+        state.player.state = Some(rvah_player::PlayerState::Idle);
+        assert_eq!(key_intent(&state, NavKey::PlayPause), None);
+        assert_eq!(key_intent(&state, NavKey::Stop), None);
         // Back from a non-browse screen returns home.
         assert_eq!(key_intent(&state, NavKey::Back), Some(UiIntent::OpenHome));
 
@@ -1329,6 +1426,7 @@ mod tests {
         reduce(
             &mut state,
             CoreEvent::PlaybackStarted {
+                session_id: 1,
                 addon_id: "a".into(),
                 item_id: "m1".into(),
                 url: "https://cdn.example.com/m1.mp4".into(),

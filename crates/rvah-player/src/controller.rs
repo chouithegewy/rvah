@@ -24,9 +24,6 @@ pub struct PlayerController<B: PlayerBackend> {
     position_secs: f64,
     duration_secs: Option<f64>,
     last_error: Option<PlayerError>,
-    /// Play was requested while the source was still loading; honor it on
-    /// `Loaded` (real backends load asynchronously).
-    autoplay_pending: bool,
 }
 
 impl<B: PlayerBackend> PlayerController<B> {
@@ -37,7 +34,6 @@ impl<B: PlayerBackend> PlayerController<B> {
             position_secs: 0.0,
             duration_secs: None,
             last_error: None,
-            autoplay_pending: false,
         }
     }
 
@@ -80,7 +76,6 @@ impl<B: PlayerBackend> PlayerController<B> {
         self.position_secs = start_at;
         self.duration_secs = None;
         self.last_error = None;
-        self.autoplay_pending = false;
         Ok(())
     }
 
@@ -91,9 +86,12 @@ impl<B: PlayerBackend> PlayerController<B> {
                 self.state = PlayerState::Playing;
                 Ok(())
             }
-            // The source is still opening: queue the intent for `Loaded`.
+            // The source is still opening: unpause now and keep polling while
+            // the backend buffers. mpv accepts this before the stream is fully
+            // opened, and it avoids "Play" meaning "load paused".
             PlayerState::Loading => {
-                self.autoplay_pending = true;
+                self.backend.play()?;
+                self.state = PlayerState::Buffering;
                 Ok(())
             }
             _ => Err(self.illegal("play")),
@@ -107,11 +105,8 @@ impl<B: PlayerBackend> PlayerController<B> {
                 self.state = PlayerState::Paused;
                 Ok(())
             }
-            // Backends load paused; pausing here just cancels a queued play.
-            PlayerState::Loading => {
-                self.autoplay_pending = false;
-                Ok(())
-            }
+            // Backends load paused; pausing here is already satisfied.
+            PlayerState::Loading => Ok(()),
             _ => Err(self.illegal("pause")),
         }
     }
@@ -160,13 +155,8 @@ impl<B: PlayerBackend> PlayerController<B> {
                 PlayerEvent::Loaded { duration_secs } => {
                     self.duration_secs = Some(*duration_secs);
                     if self.state == PlayerState::Loading {
-                        if self.autoplay_pending && self.backend.play().is_ok() {
-                            self.state = PlayerState::Playing;
-                        } else {
-                            self.state = PlayerState::Paused;
-                        }
+                        self.state = PlayerState::Paused;
                     }
-                    self.autoplay_pending = false;
                 }
                 PlayerEvent::Buffering => {
                     if !matches!(self.state, PlayerState::Idle | PlayerState::Error) {
@@ -210,6 +200,7 @@ mod tests {
             quality: None,
             audio_lang: None,
             expires_at: None,
+            drm: None,
         }
     }
 
@@ -272,31 +263,26 @@ mod tests {
     }
 
     #[test]
-    fn play_during_loading_queues_autoplay() {
+    fn play_during_loading_unpauses_backend_and_buffers() {
         // Real backends load asynchronously (mpv opening a network stream),
         // so play during Loading is legitimate intent, not an error.
         let mut c = PlayerController::new(MockPlayer::new());
         c.load_source(&source(), 0.0).unwrap();
         c.play().unwrap();
-        assert_eq!(c.state(), PlayerState::Loading, "still waiting on load");
-        assert!(
-            !c.backend_mut().commands.contains(&"play".to_string()),
-            "backend must not play before the source is ready"
-        );
+        assert_eq!(c.state(), PlayerState::Buffering);
+        assert!(c.backend_mut().commands.contains(&"play".to_string()));
 
         c.backend_mut().script_events([PlayerEvent::Loaded {
             duration_secs: 100.0,
         }]);
         c.handle_events();
-        assert_eq!(c.state(), PlayerState::Playing);
-        assert!(c.backend_mut().commands.contains(&"play".to_string()));
+        assert_eq!(c.state(), PlayerState::Buffering);
     }
 
     #[test]
-    fn pause_during_loading_cancels_queued_autoplay() {
+    fn pause_during_loading_or_buffering_keeps_backend_paused() {
         let mut c = PlayerController::new(MockPlayer::new());
         c.load_source(&source(), 0.0).unwrap();
-        c.play().unwrap();
         c.pause().unwrap();
         c.backend_mut().script_events([PlayerEvent::Loaded {
             duration_secs: 100.0,
@@ -305,14 +291,14 @@ mod tests {
         assert_eq!(c.state(), PlayerState::Paused);
         assert!(!c.backend_mut().commands.contains(&"play".to_string()));
 
-        // A fresh load never inherits a stale autoplay.
+        // Once play has unpaused an opening source, pause reaches the backend.
         c.play().unwrap();
+        assert_eq!(c.state(), PlayerState::Playing);
         c.load_source(&source(), 0.0).unwrap();
-        c.backend_mut().script_events([PlayerEvent::Loaded {
-            duration_secs: 100.0,
-        }]);
-        c.handle_events();
+        c.play().unwrap();
+        c.pause().unwrap();
         assert_eq!(c.state(), PlayerState::Paused);
+        assert!(c.backend_mut().commands.contains(&"pause".to_string()));
     }
 
     #[test]

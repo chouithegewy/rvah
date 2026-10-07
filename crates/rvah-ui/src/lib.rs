@@ -13,4 +13,4 @@ pub mod views;
 
 pub use service::{CoreEvent, CoreHandle, CoreRequest, CoreService, PlayerCommand, RuntimeFactory};
 pub use state::{intent, key_intent, reduce, ErrorView, Load, NavKey, Screen, UiIntent, UiState};
-pub use views::RvahApp;
+pub use views::{RvahApp, VideoSurface};

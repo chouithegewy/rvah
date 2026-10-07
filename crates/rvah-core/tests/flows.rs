@@ -212,7 +212,7 @@ fn resolve_direct_mp4_and_full_playback_with_resume() {
     assert_eq!(ws.position_secs, 50.0);
     assert!(!ws.watched);
 
-    w.core.stop_playback().unwrap();
+    w.core.stop_desktop_playback().unwrap();
 
     // Second session resumes from the stored position (TC-PLY-008).
     w.core.resolve_and_play(ECHO_FIXTURE_ID, "m1").unwrap();
@@ -312,6 +312,85 @@ fn dash_source_gated_by_backend_capability() {
 }
 
 #[test]
+fn prepare_playback_is_platform_neutral_and_stale_events_are_ignored() {
+    let mut w = World::new();
+    let first = w
+        .core
+        .prepare_playback(
+            ECHO_FIXTURE_ID,
+            "m1",
+            rvah_core::PlaybackCapabilities::media3(),
+        )
+        .unwrap();
+    assert_eq!(first.resume_position_secs, 0.0);
+    assert_eq!(first.display.title, "m1");
+    assert!(
+        w.core.player.backend_mut().commands.is_empty(),
+        "native preparation must not touch a desktop backend"
+    );
+
+    let second = w
+        .core
+        .prepare_playback(
+            ECHO_FIXTURE_ID,
+            "m1",
+            rvah_core::PlaybackCapabilities::media3(),
+        )
+        .unwrap();
+    assert_ne!(first.session_id, second.session_id);
+    assert!(!w
+        .core
+        .report_playback_event(
+            first.session_id,
+            rvah_core::PlaybackLifecycleEvent::Ended {
+                position_secs: 100.0,
+                duration_secs: Some(100.0),
+            },
+        )
+        .unwrap());
+    assert_eq!(w.core.session().unwrap().id, second.session_id);
+    assert!(w
+        .core
+        .report_playback_event(
+            second.session_id,
+            rvah_core::PlaybackLifecycleEvent::Playing {
+                position_secs: 10.0,
+                duration_secs: Some(100.0),
+            },
+        )
+        .unwrap());
+}
+
+#[test]
+fn protected_sources_fail_closed_before_reaching_player() {
+    let mut protected = rvah_testkit::mp4_source("https://cdn.example.com/protected.mpd");
+    protected.protocol = rvah_addon_sdk::Protocol::Dash;
+    protected.drm = Some(rvah_addon_sdk::DrmScheme::Widevine);
+    let mut w = World::with_player(MockPlayer::with_dash());
+    w.add_addon(
+        "com.rvah.fixtures.drm",
+        &["resolve"],
+        Arc::new(ResolverStaticProvider {
+            sources: vec![protected],
+        }),
+        vec![Capability::Resolve],
+    );
+    let error = w
+        .core
+        .prepare_playback(
+            "com.rvah.fixtures.drm",
+            "x",
+            rvah_core::PlaybackCapabilities::media3(),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        CoreError::SourceRejected(rvah_player::SourceRejection::UnsupportedDrm(_))
+    ));
+    assert!(w.core.player.backend_mut().commands.is_empty());
+}
+
+#[test]
 fn search_single_addon() {
     let mut w = World::new();
     let page = w.core.search(ECHO_FIXTURE_ID, "naruto").unwrap();
@@ -351,4 +430,115 @@ fn favorites_roundtrip() {
     assert_eq!(favs[0].title, "First Movie");
     w.core.favorites_remove(ECHO_FIXTURE_ID, "m1").unwrap();
     assert!(w.core.favorites_list().unwrap().is_empty());
+}
+
+#[test]
+fn failed_load_does_not_leave_a_session_behind() {
+    let mut w = World::new();
+    w.core.player.backend_mut().fail_next =
+        Some(rvah_player::PlayerError::internal("load refused"));
+    assert!(w.core.resolve_and_play(ECHO_FIXTURE_ID, "m1").is_err());
+    assert_eq!(w.core.session(), None);
+}
+
+#[test]
+fn loaded_after_play_reports_buffering_not_paused() {
+    // Play during Loading unpauses the backend; the load completing must not
+    // be reported to native-player observers as a pause.
+    let mut w = World::new();
+    w.core.resolve_and_play(ECHO_FIXTURE_ID, "m1").unwrap();
+    w.core.player.play().unwrap();
+    w.core
+        .player
+        .backend_mut()
+        .script_events([PlayerEvent::Loaded {
+            duration_secs: 100.0,
+        }]);
+    w.core.tick_playback().unwrap();
+    assert_eq!(
+        w.core.session().unwrap().lifecycle,
+        rvah_core::PlaybackLifecycleEvent::Buffering
+    );
+}
+
+/// Blocks inside `list` until released, standing in for a slow network call.
+struct BlockingProvider {
+    entered: std::sync::Mutex<std::sync::mpsc::Sender<()>>,
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl AddonProvider for BlockingProvider {
+    fn list(
+        &self,
+        _ctx: &dyn rvah_addon_sdk::HostApi,
+        _path: Option<&str>,
+        _cursor: Option<&str>,
+    ) -> Result<rvah_addon_sdk::Page, rvah_addon_sdk::AddonError> {
+        let _ = self.entered.lock().unwrap().send(());
+        let _ = self.release.lock().unwrap().recv();
+        Ok(rvah_addon_sdk::Page::default())
+    }
+}
+
+#[test]
+fn playback_events_do_not_wait_for_an_addon_invocation() {
+    use std::sync::{mpsc, Mutex};
+    use std::time::Duration;
+
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let mut w = World::new();
+    w.add_addon(
+        "com.rvah.fixtures.slow",
+        &["catalog"],
+        Arc::new(BlockingProvider {
+            entered: Mutex::new(entered_tx),
+            release: Mutex::new(release_rx),
+        }),
+        vec![Capability::Catalog],
+    );
+    w.core.invoke_timeout = Duration::from_secs(10);
+    let prepared = w
+        .core
+        .prepare_playback(
+            ECHO_FIXTURE_ID,
+            "m1",
+            rvah_core::PlaybackCapabilities::media3(),
+        )
+        .unwrap();
+    let tracker = w.core.playback_tracker();
+    let core = Arc::new(Mutex::new(w.core));
+
+    // An add-on call holds the core lock for its whole duration.
+    let browsing = {
+        let core = Arc::clone(&core);
+        std::thread::spawn(move || {
+            let _ = core
+                .lock()
+                .unwrap()
+                .browse("com.rvah.fixtures.slow", None, None);
+        })
+    };
+    entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("slow add-on entered");
+
+    let (done_tx, done_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let recorded = tracker.lock().unwrap().report(
+            prepared.session_id,
+            rvah_core::PlaybackLifecycleEvent::Playing {
+                position_secs: 30.0,
+                duration_secs: Some(100.0),
+            },
+        );
+        let _ = done_tx.send(recorded.map_err(|e| e.to_string()));
+    });
+    let recorded = done_rx.recv_timeout(Duration::from_secs(2));
+    release_tx.send(()).unwrap();
+    browsing.join().unwrap();
+    assert_eq!(
+        recorded.expect("playback report blocked behind the add-on call"),
+        Ok(true)
+    );
 }

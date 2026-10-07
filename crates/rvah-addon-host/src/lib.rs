@@ -2,6 +2,8 @@
 //! runtime invocation with quotas, capability-checked host API bridge, and the
 //! install/update/disable/uninstall lifecycle.
 
+#[cfg(any(feature = "wasm", feature = "wasm-wasmi"))]
+mod abi;
 pub mod host_api;
 pub mod install;
 pub mod manifest;
@@ -9,6 +11,8 @@ pub mod package;
 pub mod runtime;
 #[cfg(feature = "wasm")]
 pub mod wasm_runtime;
+#[cfg(feature = "wasm-wasmi")]
+mod wasmi_runtime;
 
 pub use host_api::BridgedHostApi;
 pub use install::{AddonManager, InstallDecision, InstallError, InstalledAddon};
@@ -25,3 +29,5 @@ pub use runtime::{
 };
 #[cfg(feature = "wasm")]
 pub use wasm_runtime::{WasmLimits, WasmRuntime};
+#[cfg(feature = "wasm-wasmi")]
+pub use wasmi_runtime::{WasmiLimits, WasmiRuntime};

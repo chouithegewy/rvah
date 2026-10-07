@@ -52,5 +52,10 @@ rvah-testkit = { workspace = true }
 rvah-ui = { workspace = true }
 eframe = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+raw-window-handle = { workspace = true }
+winit = { workspace = true }
+x11-dl = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }

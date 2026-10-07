@@ -22,9 +22,11 @@ tar.workspace = true
 flate2.workspace = true
 hex.workspace = true
 wasmtime = { workspace = true, optional = true }
+wasmi = { workspace = true, optional = true }
 
 [features]
 wasm = ["dep:wasmtime"]
+wasm-wasmi = ["dep:wasmi"]
 
 [dev-dependencies]
 tempfile.workspace = true

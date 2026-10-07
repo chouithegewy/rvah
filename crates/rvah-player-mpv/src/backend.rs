@@ -1,8 +1,12 @@
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStderr, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rvah_addon_sdk::PlayableSource;
+use rvah_auth::Redactor;
 use rvah_player::{PlayerBackend, PlayerError, PlayerErrorCode, PlayerEvent};
 use serde_json::{json, Value};
 
@@ -10,6 +14,24 @@ use crate::ipc::MpvIpc;
 
 const OBS_PLAYBACK_TIME: u64 = 1;
 const OBS_DURATION: u64 = 2;
+const MAX_LOG_LINES: usize = 200;
+type LogBuffer = Arc<Mutex<VecDeque<String>>>;
+
+fn launch_args(socket_path: &Path, window_id: Option<u64>) -> Vec<String> {
+    let mut args = vec![
+        "--idle=yes".into(),
+        "--force-window=yes".into(),
+        "--no-terminal".into(),
+        "--msg-level=all=warn".into(),
+        "--input-default-bindings=no".into(),
+        "--input-cursor=no".into(),
+        format!("--input-ipc-server={}", socket_path.display()),
+    ];
+    if let Some(window_id) = window_id {
+        args.push(format!("--wid={window_id}"));
+    }
+    args
+}
 
 /// [`PlayerBackend`] driving an external mpv process over JSON IPC.
 pub struct MpvBackend {
@@ -17,6 +39,36 @@ pub struct MpvBackend {
     child: Option<Child>,
     /// `Loaded` is emitted once per `load`, on the first duration report.
     loaded_emitted: bool,
+    logs: LogBuffer,
+}
+
+fn capture_stderr(stderr: ChildStderr, logs: LogBuffer) {
+    std::thread::spawn(move || {
+        let redactor = Redactor::new();
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            let mut logs = logs.lock().unwrap();
+            if logs.len() == MAX_LOG_LINES {
+                logs.pop_front();
+            }
+            logs.push_back(redactor.redact(&line));
+        }
+    });
+}
+
+fn actionable_mpv_error(file_error: Option<&str>, last_log: Option<&str>) -> String {
+    let raw = file_error.unwrap_or("mpv failed to play the source");
+    let lower = format!("{raw} {}", last_log.unwrap_or_default()).to_ascii_lowercase();
+    if lower.contains("http error 401") || lower.contains("http error 403") {
+        "video server rejected the request (HTTP authorization failed)".into()
+    } else if lower.contains("http error 404") {
+        "video source is unavailable or expired (HTTP 404)".into()
+    } else if lower.contains("protocol not found") || lower.contains("unsupported protocol") {
+        "unsupported video protocol".into()
+    } else if lower.contains("decoder") || lower.contains("codec") {
+        "video decoder failed or the codec is unsupported".into()
+    } else {
+        Redactor::new().redact(raw)
+    }
 }
 
 fn io_error(e: impl std::fmt::Display, fatal: bool) -> PlayerError {
@@ -30,33 +82,60 @@ fn io_error(e: impl std::fmt::Display, fatal: bool) -> PlayerError {
 impl MpvBackend {
     /// Launch the system `mpv` binary and connect to its IPC socket.
     pub fn spawn(socket_path: &Path) -> Result<Self, PlayerError> {
-        Self::spawn_binary("mpv", socket_path)
+        Self::spawn_binary_with_window("mpv", socket_path, None)
+    }
+
+    /// Launch mpv with its video output attached to an application-owned
+    /// native child window instead of creating a separate top-level window.
+    pub fn spawn_embedded(socket_path: &Path, window_id: u64) -> Result<Self, PlayerError> {
+        Self::spawn_binary_with_window("mpv", socket_path, Some(window_id))
     }
 
     pub fn spawn_binary(mpv: &str, socket_path: &Path) -> Result<Self, PlayerError> {
-        let child = Command::new(mpv)
-            .arg("--idle=yes")
-            .arg("--force-window=yes")
-            .arg("--no-terminal")
-            .arg(format!("--input-ipc-server={}", socket_path.display()))
+        Self::spawn_binary_with_window(mpv, socket_path, None)
+    }
+
+    fn spawn_binary_with_window(
+        mpv: &str,
+        socket_path: &Path,
+        window_id: Option<u64>,
+    ) -> Result<Self, PlayerError> {
+        let mut command = Command::new(mpv);
+        command.args(launch_args(socket_path, window_id));
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| PlayerError {
                 code: PlayerErrorCode::BackendMissing,
                 message: format!("failed to launch mpv: {e}"),
                 fatal: true,
             })?;
+        let logs = Arc::new(Mutex::new(VecDeque::new()));
+        if let Some(stderr) = child.stderr.take() {
+            capture_stderr(stderr, Arc::clone(&logs));
+        }
         // The socket appears once mpv is up; poll briefly.
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             match MpvIpc::connect(socket_path) {
-                Ok(ipc) => return Self::from_parts(ipc, Some(child)),
+                Ok(ipc) => return Self::from_parts_with_logs(ipc, Some(child), logs),
                 Err(_) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(100))
                 }
-                Err(e) => return Err(io_error(format!("mpv IPC socket: {e}"), true)),
+                Err(e) => {
+                    let detail = logs.lock().unwrap().back().cloned();
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(io_error(
+                        format!(
+                            "mpv IPC socket: {e}{}",
+                            detail.map(|line| format!("; {line}")).unwrap_or_default()
+                        ),
+                        true,
+                    ));
+                }
             }
         }
     }
@@ -73,6 +152,14 @@ impl MpvBackend {
     }
 
     fn from_parts(ipc: MpvIpc, child: Option<Child>) -> Result<Self, PlayerError> {
+        Self::from_parts_with_logs(ipc, child, Arc::new(Mutex::new(VecDeque::new())))
+    }
+
+    fn from_parts_with_logs(
+        ipc: MpvIpc,
+        child: Option<Child>,
+        logs: LogBuffer,
+    ) -> Result<Self, PlayerError> {
         ipc.observe_property(OBS_PLAYBACK_TIME, "playback-time")
             .and_then(|()| ipc.observe_property(OBS_DURATION, "duration"))
             .map_err(|e| io_error(e, true))?;
@@ -80,7 +167,13 @@ impl MpvBackend {
             ipc,
             child,
             loaded_emitted: false,
+            logs,
         })
+    }
+
+    /// Redacted, bounded stderr tail for diagnostics.
+    pub fn recent_logs(&self) -> Vec<String> {
+        self.logs.lock().unwrap().iter().cloned().collect()
     }
 
     /// Locate mpv on PATH, if present.
@@ -113,10 +206,10 @@ impl MpvBackend {
                 Some("eof") => Some(PlayerEvent::Ended),
                 Some("error") => Some(PlayerEvent::Error(PlayerError {
                     code: PlayerErrorCode::UnsupportedMedia,
-                    message: value["file_error"]
-                        .as_str()
-                        .unwrap_or("mpv failed to play the file")
-                        .to_string(),
+                    message: actionable_mpv_error(
+                        value["file_error"].as_str(),
+                        self.logs.lock().unwrap().back().map(String::as_str),
+                    ),
                     fatal: true,
                 })),
                 // stop/quit/redirect: the controller initiated it or mpv moved on.
@@ -131,6 +224,7 @@ impl MpvBackend {
 impl PlayerBackend for MpvBackend {
     fn load(&mut self, source: &PlayableSource, start_at: f64) -> Result<(), PlayerError> {
         self.loaded_emitted = false;
+        self.logs.lock().unwrap().clear();
         // Header policy: only user-agent/referer ever reach mpv (FR-063);
         // the source was already validated upstream.
         let mut header_fields = Vec::new();
@@ -315,6 +409,7 @@ mod tests {
             quality: None,
             audio_lang: None,
             expires_at: None,
+            drm: None,
         }
     }
 
@@ -326,6 +421,23 @@ mod tests {
         let reader = stream.try_clone().unwrap();
         let backend = MpvBackend::from_ipc(MpvIpc::from_stream(stream, reader)).unwrap();
         (fake, backend)
+    }
+
+    #[test]
+    fn embedded_launch_targets_app_window_without_own_input_bindings() {
+        let args = launch_args(Path::new("/tmp/rvah-mpv.sock"), Some(4242));
+        assert!(args.iter().any(|arg| arg == "--wid=4242"));
+        assert!(args.iter().any(|arg| arg == "--input-default-bindings=no"));
+        assert!(args.iter().any(|arg| arg == "--input-cursor=no"));
+    }
+
+    #[test]
+    fn player_errors_are_actionable_and_redacted() {
+        assert!(actionable_mpv_error(Some("HTTP error 403"), None).contains("rejected"));
+        assert!(actionable_mpv_error(Some("decoder failed"), None).contains("decoder"));
+        let message =
+            actionable_mpv_error(Some("GET /video?access_token=secret-token failed"), None);
+        assert!(!message.contains("secret-token"));
     }
 
     /// The real transport still works end-to-end on unix: same suite entry
@@ -410,6 +522,7 @@ mod tests {
             url: "https://cdn.example.com/en.srt".into(),
             lang: "en".into(),
             label: Some("English".into()),
+            format: None,
         });
         backend.load(&src, 0.0).unwrap();
         backend.select_subtitle(Some(0)).unwrap();
@@ -470,6 +583,6 @@ mod tests {
         };
         assert!(err.fatal);
         assert_eq!(err.code, PlayerErrorCode::UnsupportedMedia);
-        assert!(err.message.contains("unsupported codec"));
+        assert!(err.message.contains("decoder") && err.message.contains("unsupported"));
     }
 }

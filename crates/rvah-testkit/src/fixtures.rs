@@ -105,6 +105,7 @@ pub fn mp4_source(url: &str) -> PlayableSource {
         quality: Some("1080p".into()),
         audio_lang: None,
         expires_at: None,
+        drm: None,
     }
 }
 

@@ -8,6 +8,7 @@ use rvah_addon_host::{AddonManager, Capability, InProcessRuntime, InstallDecisio
 use rvah_auth::{MemoryVault, SecretVault};
 use rvah_core::AppCore;
 use rvah_data::Database;
+use rvah_player::PlayerState;
 use rvah_testkit::{
     write_fixture_package, CatalogEchoProvider, MockPlayer, NoopHost, ECHO_FIXTURE_ID,
 };
@@ -82,6 +83,14 @@ impl World {
             reduce(&mut self.state, more);
         }
     }
+
+    /// Pump until `done` holds. A request may answer with several events
+    /// sent back to back; `pump` alone can return between them.
+    fn pump_until(&mut self, done: impl Fn(&UiState) -> bool) {
+        while !done(&self.state) {
+            self.pump();
+        }
+    }
 }
 
 #[test]
@@ -141,8 +150,10 @@ fn play_starts_session_and_playback_updates() {
         addon_id: ECHO_FIXTURE_ID.into(),
         item_id: "m1".into(),
     });
-    w.pump();
+    assert!(w.state.player.resolving);
+    w.pump_until(|s| s.player.state.is_some());
     assert_eq!(w.state.screen, Screen::Player);
+    assert!(!w.state.player.resolving);
     assert!(w
         .state
         .player
@@ -150,8 +161,8 @@ fn play_starts_session_and_playback_updates() {
         .as_deref()
         .unwrap()
         .contains("m1.mp4"));
-    // Loading state reported via playback snapshot.
-    assert!(w.state.player.state.is_some());
+    // The UI-level Play request starts playback instead of only loading paused.
+    assert_eq!(w.state.player.state, Some(PlayerState::Buffering));
 }
 
 #[test]

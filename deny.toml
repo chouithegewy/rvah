@@ -33,6 +33,9 @@ allow = [
     "LicenseRef-UFL-1.0",
     # webpki-roots CA bundle data.
     "CDLA-Permissive-2.0",
+    # UniFFI (rvah-android's Kotlin boundary); file-level copyleft only,
+    # we ship it unmodified.
+    "MPL-2.0",
 ]
 
 [bans]

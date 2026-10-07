@@ -11,9 +11,32 @@ pub enum SourceRejection {
     ForbiddenHeader(String),
     #[error("local paths are not playable: {0}")]
     LocalPathDenied(String),
+    #[error("DRM is not supported: {0}")]
+    UnsupportedDrm(String),
+    #[error("subtitle URL is not an http(s) URL: {0}")]
+    UnsafeSubtitle(String),
+    #[error("header value contains control characters: {0}")]
+    InvalidHeaderValue(String),
 }
 
 const ALLOWED_HEADERS: [&str; 2] = ["user-agent", "referer"];
+
+/// Accept only absolute http(s) URLs with a host. Everything a native player
+/// could otherwise open (bare paths, `file:`, ffmpeg/mpv pseudo-protocols
+/// such as `edl://` or `lavf://`) is refused; bare paths and drive letters
+/// are reported as local paths.
+fn check_network_url(raw: &str) -> Result<(), SourceRejection> {
+    let local = || SourceRejection::LocalPathDenied(raw.to_string());
+    let url = url::Url::parse(raw.trim()).map_err(|_| local())?;
+    match url.scheme() {
+        // The URL parser already requires a host for http(s).
+        "http" | "https" => Ok(()),
+        "file" => Err(local()),
+        // `C:\path` parses as scheme "c".
+        scheme if scheme.len() == 1 => Err(local()),
+        scheme => Err(SourceRejection::UnsupportedProtocol(scheme.to_string())),
+    }
+}
 
 /// Gate every resolver output before it reaches a player backend.
 ///
@@ -25,15 +48,13 @@ pub fn validate_source_opts(
     now_unix: u64,
     allow_dash: bool,
 ) -> Result<(), SourceRejection> {
-    // Distrust the declared protocol: classify from the URL as well.
-    if source
-        .url
-        .trim_start()
-        .to_ascii_lowercase()
-        .starts_with("file:")
-    {
-        return Err(SourceRejection::LocalPathDenied(source.url.clone()));
+    if let Some(drm) = source.drm {
+        return Err(SourceRejection::UnsupportedDrm(
+            format!("{drm:?}").to_ascii_lowercase(),
+        ));
     }
+    // Distrust the declared protocol: the URL itself must be http(s).
+    check_network_url(&source.url)?;
     match source.protocol {
         Protocol::Http | Protocol::Https | Protocol::Hls => {}
         Protocol::Dash if allow_dash => {}
@@ -45,9 +66,17 @@ pub fn validate_source_opts(
             return Err(SourceRejection::Expired);
         }
     }
-    for header in source.headers.keys() {
+    for (header, value) in &source.headers {
         if !ALLOWED_HEADERS.contains(&header.to_ascii_lowercase().as_str()) {
             return Err(SourceRejection::ForbiddenHeader(header.clone()));
+        }
+        if value.chars().any(char::is_control) {
+            return Err(SourceRejection::InvalidHeaderValue(header.clone()));
+        }
+    }
+    for track in &source.subtitles {
+        if check_network_url(&track.url).is_err() {
+            return Err(SourceRejection::UnsafeSubtitle(track.url.clone()));
         }
     }
     Ok(())
@@ -72,6 +101,7 @@ mod tests {
             quality: None,
             audio_lang: None,
             expires_at: None,
+            drm: None,
         }
     }
 

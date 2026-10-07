@@ -6,6 +6,7 @@
 |---|---|---|
 | `rvah` | `rvah-cli` | Developer tooling + simulator |
 | `rvah-app` | `rvah-app` | Desktop application |
+| `librvah_android.so` | `rvah-android` | UniFFI core for the Android TV APK |
 
 ## Release build
 
@@ -19,15 +20,33 @@ symbol stripping for small distributable binaries.
 
 ## Runtime requirements
 
-- **rvah-app playback:** `mpv` on `PATH` (Unix). Without it the app runs with
-  the mock player and says so in the toolbar. Windows always uses the mock
-  player for now (mpv IPC is Unix-socket based).
+- **rvah-app playback:** `mpv` on `PATH` and X11/Xwayland on Linux. Video is
+  embedded in the app's player view. Without an embeddable native surface the
+  app stays usable with the mock player and never opens a separate mpv window
+  unless started with `--mpv-window` (the way to get real playback on
+  Windows, macOS, or Wayland-only sessions).
 - **Data directory:** `$XDG_DATA_HOME/rvah` or `~/.local/share/rvah` by
   default; override with `--data-dir`.
+
+## Android TV APK
+
+The Android build targets API 36, supports API 23+, and packages `arm64-v8a`,
+`armeabi-v7a`, and `x86_64` Rust libraries. Build it with JDK 17, Android SDK
+36, the NDK, and:
+
+```sh
+sh android/build-rust.sh
+cd android
+./gradlew :app:assembleDebug
+```
+
+The first command builds the Wasmi/UniFFI core and generates Kotlin bindings.
+The APK uses Media3 rather than the desktop egui/mpv adapter.
 
 ## Feature flags
 
 - `rvah-addon-host/wasm` — Wasmtime sandbox runtime (heavier build).
+- `rvah-addon-host/wasm-wasmi` — portable Wasmi runtime used on Android.
 
 ## CI
 

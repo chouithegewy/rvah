@@ -14,6 +14,35 @@ use rvah_player_mpv::MpvBackend;
 use rvah_testkit::{CatalogEchoProvider, NoopHost};
 use rvah_ui::{CoreHandle, CoreService};
 
+/// Where mpv's video goes.
+pub enum PlayerLaunch {
+    /// Into the app's native child window (`--wid`).
+    Embedded(u64),
+    /// mpv's own top-level window; `note` is shown in the toolbar.
+    Standalone { note: Option<String> },
+    /// No embeddable surface and no opt-in: mock player only.
+    Disabled(String),
+}
+
+/// Decide playback from the outcome of creating the embedded video surface.
+/// A separate mpv window is used only when embedding failed *and* the user
+/// opted in with `--mpv-window` (Windows, macOS, Wayland-only sessions).
+pub fn player_launch(embedded: Result<u64, String>, allow_mpv_window: bool) -> PlayerLaunch {
+    match embedded {
+        Ok(window_id) => PlayerLaunch::Embedded(window_id),
+        Err(reason) if allow_mpv_window => PlayerLaunch::Standalone {
+            note: Some(format!(
+                "embedded video unavailable ({reason}); video opens in a separate mpv window"
+            )),
+        },
+        Err(reason) => PlayerLaunch::Disabled(reason),
+    }
+}
+
+pub fn wants_mpv_window(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--mpv-window")
+}
+
 pub struct Bootstrapped {
     pub handle: CoreHandle,
     /// Set when the app fell back to the mock player.
@@ -106,14 +135,33 @@ fn capability_from_str(s: &str) -> Option<Capability> {
 /// Pick mpv when available, otherwise fall back to the mock player so the UI
 /// stays usable on machines without mpv. The IPC endpoint is a Unix socket
 /// on unix and a named pipe on Windows (`MpvIpc::default_endpoint`).
-fn select_backend(data_dir: &Path) -> (Box<dyn PlayerBackend + Send>, Option<String>) {
+fn select_backend(
+    data_dir: &Path,
+    launch: PlayerLaunch,
+) -> (Box<dyn PlayerBackend + Send>, Option<String>) {
+    if let PlayerLaunch::Disabled(reason) = &launch {
+        return (
+            Box::new(MockPlayer::new()),
+            Some(format!(
+                "embedded video unavailable ({reason}); playback disabled \
+                 (run with --mpv-window to use a separate mpv window)"
+            )),
+        );
+    }
     if MpvBackend::find_mpv().is_some() {
         let endpoint = rvah_player_mpv::MpvIpc::default_endpoint(data_dir);
         if cfg!(unix) {
             let _ = std::fs::remove_file(&endpoint);
         }
-        match MpvBackend::spawn(&endpoint) {
-            Ok(backend) => return (Box::new(backend), None),
+        let (spawned, note) = match launch {
+            PlayerLaunch::Embedded(window_id) => {
+                (MpvBackend::spawn_embedded(&endpoint, window_id), None)
+            }
+            PlayerLaunch::Standalone { note } => (MpvBackend::spawn(&endpoint), note),
+            PlayerLaunch::Disabled(_) => unreachable!(),
+        };
+        match spawned {
+            Ok(backend) => return (Box::new(backend), note),
             Err(e) => {
                 return (
                     Box::new(MockPlayer::new()),
@@ -144,13 +192,21 @@ fn select_vault(data_dir: &Path) -> Result<Arc<dyn SecretVault>, String> {
     ))
 }
 
+#[cfg(test)]
 pub fn bootstrap(data_dir: &Path) -> Result<Bootstrapped, String> {
+    bootstrap_with_player(data_dir, PlayerLaunch::Standalone { note: None })
+}
+
+pub fn bootstrap_with_player(
+    data_dir: &Path,
+    launch: PlayerLaunch,
+) -> Result<Bootstrapped, String> {
     std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
     let db = Arc::new(Database::open(&data_dir.join("rvah.sqlite")).map_err(|e| e.to_string())?);
     let manager = AddonManager::new(Arc::clone(&db), data_dir.join("addons"));
     let vault = select_vault(data_dir)?;
 
-    let (backend, backend_note) = select_backend(data_dir);
+    let (backend, backend_note) = select_backend(data_dir, launch);
     let mut core = AppCore::new(manager, Arc::clone(&db), Arc::clone(&vault), backend);
 
     // Installed add-ons with a wasm entry run in the sandbox against the
@@ -227,6 +283,35 @@ mod tests {
     use super::*;
     use rvah_ui::{CoreEvent, CoreRequest};
     use std::time::Duration;
+
+    #[test]
+    fn separate_mpv_window_only_when_embedding_fails_and_opted_in() {
+        assert!(matches!(
+            player_launch(Ok(7), false),
+            PlayerLaunch::Embedded(7)
+        ));
+        assert!(matches!(
+            player_launch(Ok(7), true),
+            PlayerLaunch::Embedded(7)
+        ));
+        assert!(matches!(
+            player_launch(Err("no X11".into()), false),
+            PlayerLaunch::Disabled(reason) if reason == "no X11"
+        ));
+        match player_launch(Err("no X11".into()), true) {
+            PlayerLaunch::Standalone { note: Some(note) } => {
+                assert!(note.contains("no X11"), "{note}");
+                assert!(note.contains("separate mpv window"), "{note}");
+            }
+            _ => panic!("opt-in must fall back to a separate mpv window"),
+        }
+    }
+
+    #[test]
+    fn mpv_window_flag_is_parsed() {
+        assert!(wants_mpv_window(&["--mpv-window".to_string()]));
+        assert!(!wants_mpv_window(&["--data-dir".into(), "/x".into()]));
+    }
 
     #[test]
     fn bootstrap_headless_serves_home() {

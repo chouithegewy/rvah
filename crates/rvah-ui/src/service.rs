@@ -122,6 +122,7 @@ pub enum CoreEvent {
         results: Vec<(String, Result<Page, String>)>,
     },
     PlaybackStarted {
+        session_id: u64,
         addon_id: String,
         item_id: String,
         url: String,
@@ -286,6 +287,9 @@ impl<B: PlayerBackend + Send + 'static> CoreService<B> {
             CoreRequest::Play { addon_id, item_id } => {
                 match self.core.resolve_and_play(&addon_id, &item_id) {
                     Ok(session) => {
+                        if let Err(e) = self.core.player.play() {
+                            return self.fail("play", CoreError::Player(e));
+                        }
                         let subtitles = session
                             .source
                             .subtitles
@@ -293,6 +297,7 @@ impl<B: PlayerBackend + Send + 'static> CoreService<B> {
                             .map(|t| t.label.clone().unwrap_or_else(|| t.lang.clone()))
                             .collect();
                         self.send(CoreEvent::PlaybackStarted {
+                            session_id: session.id.0,
                             addon_id: session.addon_id,
                             item_id: session.item_id,
                             url: session.source.url,
@@ -308,7 +313,7 @@ impl<B: PlayerBackend + Send + 'static> CoreService<B> {
                     PlayerCommand::Play => self.core.player.play(),
                     PlayerCommand::Pause => self.core.player.pause(),
                     PlayerCommand::Stop => {
-                        return match self.core.stop_playback() {
+                        return match self.core.stop_desktop_playback() {
                             Ok(()) => self.send(CoreEvent::Playback(self.snapshot())),
                             Err(e) => self.fail("player", e),
                         };
