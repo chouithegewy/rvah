@@ -63,57 +63,88 @@ pub fn verify_package(
         .map_err(|_| PackageError::BadSignature)
 }
 
-/// Extract a verified package into `dest`, refusing entries that would
-/// escape it (absolute paths or `..` traversal).
-pub fn extract_package(pkg_path: &Path, dest: &Path) -> Result<(), PackageError> {
+/// Walk every archive entry, refusing anything ambiguous before the visitor
+/// sees it: only regular files and directories, only relative paths without
+/// `..`, and no path twice (compared case-insensitively, since extraction on
+/// macOS/Windows would let a later entry overwrite an earlier one). This is
+/// what keeps the manifest approved at preview identical to the one the
+/// runtime later reads from the extracted directory.
+fn for_each_entry(
+    pkg_path: &Path,
+    mut visit: impl FnMut(
+        &Path,
+        &mut tar::Entry<'_, flate2::read::GzDecoder<std::fs::File>>,
+    ) -> Result<(), PackageError>,
+) -> Result<(), PackageError> {
     let file = std::fs::File::open(pkg_path)?;
     let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
-    std::fs::create_dir_all(dest)?;
+    let mut seen = std::collections::HashSet::new();
     for entry in archive.entries()? {
         let mut entry = entry?;
         let path = entry
             .path()
-            .map_err(|e| PackageError::Malformed(e.to_string()))?;
-        let ok = path.components().all(|c| {
+            .map_err(|e| PackageError::Malformed(e.to_string()))?
+            .into_owned();
+        let safe = path.components().all(|c| {
             matches!(
                 c,
                 std::path::Component::Normal(_) | std::path::Component::CurDir
             )
         });
-        if !ok {
+        if !safe {
             return Err(PackageError::Malformed(format!(
                 "unsafe entry path: {}",
                 path.display()
             )));
         }
-        entry.unpack_in(dest)?;
-    }
-    Ok(())
-}
-
-/// Read a file out of a package without extracting the rest (e.g. the
-/// manifest during install preview).
-pub fn read_package_file(pkg_path: &Path, name: &str) -> Result<Vec<u8>, PackageError> {
-    let file = std::fs::File::open(pkg_path)?;
-    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let path = entry
-            .path()
-            .map_err(|e| PackageError::Malformed(e.to_string()))?;
+        let kind = entry.header().entry_type();
+        if !(kind.is_file() || kind.is_dir()) {
+            return Err(PackageError::Malformed(format!(
+                "unsupported entry type {kind:?}: {}",
+                path.display()
+            )));
+        }
         let normalized = path
             .components()
             .filter(|c| matches!(c, std::path::Component::Normal(_)))
             .collect::<std::path::PathBuf>();
-        if normalized == Path::new(name) {
+        let key = normalized.to_string_lossy().to_lowercase();
+        if !key.is_empty() && !seen.insert(key) {
+            return Err(PackageError::Malformed(format!(
+                "duplicate entry: {}",
+                normalized.display()
+            )));
+        }
+        visit(&normalized, &mut entry)?;
+    }
+    Ok(())
+}
+
+/// Extract a verified package into `dest`. The whole archive is validated
+/// (see [`for_each_entry`]) before anything is written.
+pub fn extract_package(pkg_path: &Path, dest: &Path) -> Result<(), PackageError> {
+    for_each_entry(pkg_path, |_, _| Ok(()))?;
+    std::fs::create_dir_all(dest)?;
+    for_each_entry(pkg_path, |_, entry| {
+        entry.unpack_in(dest)?;
+        Ok(())
+    })
+}
+
+/// Read a file out of a package without extracting the rest (e.g. the
+/// manifest during install preview). The whole archive is validated, so an
+/// ambiguous package fails here exactly as it would at extraction.
+pub fn read_package_file(pkg_path: &Path, name: &str) -> Result<Vec<u8>, PackageError> {
+    let mut found = None;
+    for_each_entry(pkg_path, |path, entry| {
+        if path == Path::new(name) {
             let mut buf = Vec::new();
             entry.read_to_end(&mut buf)?;
-            return Ok(buf);
+            found = Some(buf);
         }
-    }
-    Err(PackageError::Malformed(format!(
-        "{name} not found in package"
-    )))
+        Ok(())
+    })?;
+    found.ok_or_else(|| PackageError::Malformed(format!("{name} not found in package")))
 }
 
 #[cfg(test)]

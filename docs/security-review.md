@@ -73,6 +73,31 @@ the mitigation as built, the tests that pin it, and known gaps.
   downloads hash-checked against the index.
 - **Tests:** `tampered_package_rejected`, `install_rejects_tampered_package`
   (CLI), `tampered_index_rejected`, `download_hash_mismatch_rejected`.
+- **Consent/runtime manifest mismatch (fixed):** a signed archive could carry
+  `manifest.toml` twice; the install preview and recorded permissions read the
+  first entry while extraction left the last one on disk for the runtime's
+  allowlist and capabilities. Every package read now walks the whole archive
+  first and refuses duplicate paths (case-insensitively, for macOS/Windows
+  extraction), `..`/absolute paths, and anything but regular files and
+  directories (symlinks, hard links, devices); extraction validates before
+  writing anything.
+- **Tests:** `duplicate_manifest_is_refused_by_preview_and_extraction`,
+  `dot_prefixed_duplicate_is_refused`, `case_colliding_entries_are_refused`,
+  `symlink_entries_are_refused` (`rvah-addon-host/tests/package_adversarial.rs`).
+
+### Resolver output reaching native players
+- **Built:** `validate_source_opts` gates every `PlayableSource` before mpv or
+  Media3 sees it: the URL must be an absolute `http`/`https` URL with a host
+  regardless of the declared protocol (bare paths, drive letters, `file:`,
+  and mpv/ffmpeg pseudo-protocols such as `edl://`, `av://`, `lavf://` are
+  refused), subtitle URLs obey the same rule, header names are limited to
+  `User-Agent`/`Referer`, and header values may not contain control
+  characters (no CRLF request-line smuggling). DRM-flagged sources fail
+  closed.
+- **Tests:** `rvah-player/tests/source_adversarial.rs`.
+- **Accepted:** loopback and private-network hosts stay playable — local
+  media servers are a legitimate add-on use, and the player only streams the
+  response, it never hands it back to the add-on.
 
 ### Insecure update
 - **Built:** updates re-verify signatures; a changed permission hash requires
