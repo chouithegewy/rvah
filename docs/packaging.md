@@ -22,7 +22,9 @@ symbol stripping for small distributable binaries.
 
 - **rvah-app playback:** `mpv` on `PATH` and X11/Xwayland on Linux. Video is
   embedded in the app's player view. Without an embeddable native surface the
-  app stays usable with the mock player and never opens a separate mpv window.
+  app stays usable with the mock player and never opens a separate mpv window
+  unless started with `--mpv-window` (the way to get real playback on
+  Windows, macOS, or Wayland-only sessions).
 - **Data directory:** `$XDG_DATA_HOME/rvah` or `~/.local/share/rvah` by
   default; override with `--data-dir`.
 

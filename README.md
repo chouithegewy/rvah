@@ -100,8 +100,9 @@ declared secrets, capability gating); `examples/addons/real-debrid` is a
 complete real-service add-on. Playback
 uses system `mpv` over JSON IPC when present (a Unix socket on unix, a named
 pipe on Windows). On Linux, video is embedded into the app's X11/Xwayland
-player view; unsupported native window backends fall back to the mock player
-with an on-screen note. Built with `--features keychain`, add-on secrets go
+player view; where that is not possible (Windows, macOS, Wayland without
+Xwayland) the app falls back to the mock player with an on-screen note, or,
+when started with `rvah-app --mpv-window`, to mpv in its own window. Built with `--features keychain`, add-on secrets go
 to the OS keychain (freedesktop Secret Service) instead of the encrypted
 file vault when a daemon is available. Diagnostics can be
 exported as a redacted JSON bundle. Remote-friendly keys: Up/Down move a

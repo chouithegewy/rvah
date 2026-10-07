@@ -3,7 +3,7 @@
 mod bootstrap;
 mod embedded_video;
 
-use bootstrap::{bootstrap_embedded, bootstrap_without_video, default_data_dir};
+use bootstrap::{bootstrap_with_player, default_data_dir, player_launch, wants_mpv_window};
 use embedded_video::EmbeddedVideo;
 use rvah_ui::RvahApp;
 
@@ -18,6 +18,7 @@ fn main() -> Result<(), String> {
     if args.iter().any(|a| a == "--debug") {
         rvah_core::debug::set_enabled(true);
     }
+    let mpv_window = wants_mpv_window(&args);
 
     let mut options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
@@ -41,10 +42,11 @@ fn main() -> Result<(), String> {
         options,
         Box::new(move |cc| {
             let video = EmbeddedVideo::create(cc);
-            let booted = match &video {
-                Ok(video) => bootstrap_embedded(&data_dir, video.window_id())?,
-                Err(reason) => bootstrap_without_video(&data_dir, reason.clone())?,
-            };
+            let embedded = video
+                .as_ref()
+                .map(EmbeddedVideo::window_id)
+                .map_err(Clone::clone);
+            let booted = bootstrap_with_player(&data_dir, player_launch(embedded, mpv_window))?;
             let mut app = RvahApp::new(booted.handle);
             app.backend_note = booted.backend_note;
             if let Ok(video) = video {
