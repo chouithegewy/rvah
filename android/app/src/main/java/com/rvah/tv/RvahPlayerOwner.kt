@@ -48,7 +48,7 @@ class RvahPlayerOwner(
     private val httpFactory = DefaultHttpDataSource.Factory().setAllowCrossProtocolRedirects(true)
     private val dataSourceFactory = ResolvingDataSource.Factory(
         DefaultDataSource.Factory(context, httpFactory),
-    ) { dataSpec -> dataSpec.withAdditionalHttpRequestHeaders(requestHeaders.get()) }
+    ) { dataSpec -> dataSpec.withAdditionalHeaders(requestHeaders.get()) }
     val player: ExoPlayer = ExoPlayer.Builder(context)
         .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
         .build()

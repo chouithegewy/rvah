@@ -18,21 +18,4 @@ class PlaybackMediaTest {
         assertEquals(MimeTypes.TEXT_SSA, inferSubtitleMimeType("https://x/en.ass"))
         assertEquals(MimeTypes.APPLICATION_SUBRIP, inferSubtitleMimeType("https://x/en.srt"))
     }
-
-    @Test fun mediaItemCarriesResumeSeparatelyAndIncludesSubtitles() {
-        val spec = PlaybackSpec(
-            sessionId = 7u,
-            url = "https://x/master.m3u8",
-            protocol = StreamProtocol.Hls,
-            headers = mapOf("Referer" to "https://x"),
-            resumePositionMs = 12_500,
-            subtitles = listOf(SubtitleSpec("https://x/en.vtt", "en", "English", MimeTypes.TEXT_VTT)),
-            title = "Fixture",
-        )
-        val item = spec.toMediaItem()
-        assertEquals(MimeTypes.APPLICATION_M3U8, item.localConfiguration?.mimeType)
-        assertEquals(1, item.localConfiguration?.subtitleConfigurations?.size)
-        assertEquals(12_500, spec.resumePositionMs)
-        assertEquals("https://x", spec.headers["Referer"])
-    }
 }

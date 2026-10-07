@@ -54,8 +54,13 @@ catalog.
 ## Verification status
 
 Rust side: `cargo test -p rvah-android` covers install preview and consent,
-trusted-signer checks, secrets, setting validation, and quarantine recovery.
-The Kotlin side has JVM unit tests (`./gradlew :app:testDebugUnitTest`), but
-first-frame rendering, D-pad focus, hardware decode, and audio sync still
+trusted-signer checks, secrets, setting validation, and quarantine recovery;
+the crate cross-compiles for `arm64-v8a` and `armeabi-v7a` with NDK 27.
+Kotlin side: `./gradlew :app:testDebugUnitTest` runs the JVM tests;
+`assembleDebug`, `assembleDebugAndroidTest`, and the R8-minified
+`assembleRelease` build (JNA and UniFFI classes survive shrinking).
+`PlaybackMediaInstrumentedTest` needs a device or emulator
+(`connectedDebugAndroidTest`), since `MediaItem` uses `android.net.Uri`.
+First-frame rendering, D-pad focus, hardware decode, and audio sync still
 need a physical Android TV smoke test. Catalog pagination ("load more") is
 not wired on Android yet; only the first page of a directory is shown.
