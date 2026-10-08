@@ -536,6 +536,7 @@ private fun PlayerScreen(
                 else -> ui.status
             }
             if (status.isNotEmpty()) Text(status, color = if (failure != null) ErrorText else Secondary)
+            if (BuildConfig.DEBUG && started) Text(bufferLine(ui.bufferedAheadMs, owner.bufferPlan), color = Secondary)
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
                 Button(onClick = { owner.seekBy(-10_000) }) { Text("−10s") }

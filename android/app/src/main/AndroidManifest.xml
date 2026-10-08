@@ -4,8 +4,11 @@
     <uses-feature android:name="android.software.leanback" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
+    <!-- largeHeap: ExoPlayer's read-ahead lives on the Java heap; BufferPlan
+         takes half of it (at most 256 MiB) for high-bitrate streams. -->
     <application
         android:allowBackup="false"
+        android:largeHeap="true"
         android:banner="@drawable/tv_banner"
         android:label="RVAH"
         android:theme="@style/Theme.RvahTv"
