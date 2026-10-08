@@ -1,6 +1,7 @@
 //! Process-wide debug logging, enabled by `rvah-app --debug` (or any caller
-//! of [`set_enabled`]). Lines go to stderr, stamped with time since enable so
-//! slow add-on invocations are visible at a glance.
+//! of [`set_enabled`]). Lines go to stderr, or to the [`set_sink`] function
+//! where stderr goes nowhere (logcat on Android), stamped with time since
+//! enable so slow add-on invocations are visible at a glance.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -8,6 +9,7 @@ use std::time::{Duration, Instant};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static STARTED: Mutex<Option<Instant>> = Mutex::new(None);
+static SINK: Mutex<Option<fn(&str)>> = Mutex::new(None);
 
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
@@ -21,6 +23,11 @@ pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::Relaxed);
 }
 
+/// Send lines to `sink` instead of stderr; `None` restores stderr.
+pub fn set_sink(sink: Option<fn(&str)>) {
+    *SINK.lock().unwrap_or_else(|e| e.into_inner()) = sink;
+}
+
 pub fn format_line(elapsed: Duration, args: std::fmt::Arguments<'_>) -> String {
     format!("[rvah +{:.3}s] {args}", elapsed.as_secs_f64())
 }
@@ -29,7 +36,11 @@ pub fn format_line(elapsed: Duration, args: std::fmt::Arguments<'_>) -> String {
 pub fn write_line(args: std::fmt::Arguments<'_>) {
     let started = *STARTED.lock().unwrap_or_else(|e| e.into_inner());
     let elapsed = started.map(|s| s.elapsed()).unwrap_or_default();
-    eprintln!("{}", format_line(elapsed, args));
+    let line = format_line(elapsed, args);
+    match *SINK.lock().unwrap_or_else(|e| e.into_inner()) {
+        Some(sink) => sink(&line),
+        None => eprintln!("{line}"),
+    }
 }
 
 /// `format!`-style debug line on stderr; free when logging is disabled.
@@ -58,6 +69,25 @@ mod tests {
         set_enabled(false);
         assert!(!enabled());
         crate::debug_log!("macro is a no-op while disabled");
+    }
+
+    static CAPTURED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    fn capture(line: &str) {
+        CAPTURED.lock().unwrap().push(line.to_string());
+    }
+
+    #[test]
+    fn lines_go_to_the_installed_sink() {
+        set_sink(Some(capture));
+        write_line(format_args!("to the sink {}", 7));
+        set_sink(None);
+        write_line(format_args!("back on stderr"));
+        let captured = CAPTURED.lock().unwrap();
+        assert!(captured
+            .iter()
+            .any(|l| l.starts_with("[rvah +") && l.ends_with("to the sink 7")));
+        assert!(!captured.iter().any(|l| l.contains("back on stderr")));
     }
 
     #[test]
