@@ -58,6 +58,21 @@ play/pause button has focus first; media keys (play/pause, fast-forward,
 rewind) work regardless of focus; Back stops playback and returns to the
 catalog.
 
+## Playback buffer
+
+Media is never cached to disk; ExoPlayer reads ahead in memory (`BufferPlan.kt`).
+The read-ahead stops at 120 s or at a byte budget: half the Java heap
+(`largeHeap` is on), at most an eighth of RAM, between 16 and 256 MiB, and
+a quarter-size budget on low-RAM devices. On a typical 2 GB TV that is
+256 MiB, about 27 s of an 80 Mbps 4K remux and the full 120 s below
+about 18 Mbps. ExoPlayer's defaults were 50 s or about 138 MiB.
+
+Playback starts after 1 s of buffer and resumes 5 s after a stall. Nothing
+is kept behind the playhead. ExoPlayer would count that against the same
+budget, so rewinding re-fetches instead, which takes about a second. Debug
+builds show the live read-ahead and budget under the player controls and log
+the plan as `buffer plan:` under the tag `rvah`.
+
 ## Emulator
 
 `android/tv-emulator.sh` runs the app on an Android TV emulator (API 36,

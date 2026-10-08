@@ -1,6 +1,8 @@
 package com.rvah.tv
 
+import android.app.ActivityManager
 import android.content.Context
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -10,6 +12,7 @@ import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
@@ -28,6 +31,8 @@ data class PlayerUi(
     val isPlaying: Boolean = false,
     val status: String = "",
     val failure: String? = null,
+    /** Media buffered ahead of the playhead; only tracked in debug builds. */
+    val bufferedAheadMs: Long = 0,
 )
 
 /**
@@ -49,8 +54,27 @@ class RvahPlayerOwner(
     private val dataSourceFactory = ResolvingDataSource.Factory(
         DefaultDataSource.Factory(context, httpFactory),
     ) { dataSpec -> dataSpec.withAdditionalHeaders(requestHeaders.get()) }
+
+    /** This device's read-ahead budget; see [BufferPlan]. */
+    val bufferPlan: BufferPlan = run {
+        val activities = context.getSystemService(ActivityManager::class.java)
+        val memory = ActivityManager.MemoryInfo().also { activities.getMemoryInfo(it) }
+        bufferPlan(Runtime.getRuntime().maxMemory(), memory.totalMem, activities.isLowRamDevice)
+            .also { if (BuildConfig.DEBUG) Log.d("rvah", "buffer plan: $it") }
+    }
     val player: ExoPlayer = ExoPlayer.Builder(context)
         .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+        .setLoadControl(
+            DefaultLoadControl.Builder()
+                .setBufferDurationsMs(
+                    bufferPlan.minBufferMs,
+                    bufferPlan.maxBufferMs,
+                    bufferPlan.startMs,
+                    bufferPlan.restartMs,
+                )
+                .setTargetBufferBytes(bufferPlan.targetBytes)
+                .build(),
+        )
         .build()
         .also { it.addListener(this) }
     private val mediaSession = MediaSession.Builder(context, player).build()
@@ -69,6 +93,7 @@ class RvahPlayerOwner(
         progressJob = scope.launch {
             while (isActive) {
                 delay(1_000)
+                if (BuildConfig.DEBUG) ui = ui.copy(bufferedAheadMs = player.totalBufferedDuration)
                 if (player.isPlaying) reportPlaying()
             }
         }
