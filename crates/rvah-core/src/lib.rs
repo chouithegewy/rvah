@@ -9,7 +9,7 @@ mod errors;
 mod nav;
 mod playback;
 
-pub use app::{AppCore, DEFAULT_INVOKE_TIMEOUT, QUARANTINE_THRESHOLD};
+pub use app::{AppCore, AuthPrompt, DEFAULT_INVOKE_TIMEOUT, QUARANTINE_THRESHOLD};
 pub use errors::{CoreError, ErrorClass};
 pub use nav::NavHistory;
 pub use playback::{

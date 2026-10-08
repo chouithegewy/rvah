@@ -10,7 +10,8 @@ use rvah_core::AppCore;
 use rvah_data::Database;
 use rvah_player::PlayerState;
 use rvah_testkit::{
-    write_fixture_package, CatalogEchoProvider, MockPlayer, NoopHost, ECHO_FIXTURE_ID,
+    write_fixture_package, write_fixture_package_with_secrets, CatalogEchoProvider,
+    DeviceAuthProvider, MockPlayer, NoopHost, ECHO_FIXTURE_ID,
 };
 use rvah_ui::{intent, reduce, CoreHandle, CoreService, Load, Screen, UiIntent, UiState};
 
@@ -20,8 +21,20 @@ struct World {
     state: UiState,
 }
 
+const LINK_ID: &str = "com.rvah.fixtures.link";
+
 impl World {
     fn new() -> Self {
+        Self::build(false)
+    }
+
+    /// Also installs an add-on that signs in by device code, approving on
+    /// the second poll.
+    fn with_link_addon() -> Self {
+        Self::build(true)
+    }
+
+    fn build(link_addon: bool) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open_in_memory().unwrap());
         let manager = AddonManager::new(Arc::clone(&db), tmp.path().join("addons"));
@@ -39,6 +52,25 @@ impl World {
             )),
             Arc::new(NoopHost::default()),
         );
+        if link_addon {
+            let (pkg, sig, pubkey) = write_fixture_package_with_secrets(
+                tmp.path(),
+                LINK_ID,
+                &["catalog", "auth"],
+                &["api_token"],
+            );
+            core.manager
+                .install(&pkg, &sig, &pubkey, InstallDecision::Approve)
+                .unwrap();
+            core.register_runtime(
+                LINK_ID,
+                Box::new(InProcessRuntime::new(
+                    Arc::new(DeviceAuthProvider::new(2, &[("api_token", "tok-1")])),
+                    vec![Capability::Catalog, Capability::Auth],
+                )),
+                Arc::new(NoopHost::default()),
+            );
+        }
         // Same factory shape rvah-app uses: fresh installs get the simulator
         // runtime immediately.
         let factory: rvah_ui::RuntimeFactory = Box::new(|_id, caps| {
@@ -300,23 +332,41 @@ fn gui_install_rejects_tampered_package() {
 
 #[test]
 fn auth_flow_reaches_authorized_via_polling() {
+    let mut w = World::with_link_addon();
+    w.send(UiIntent::OpenAuth {
+        addon_id: LINK_ID.into(),
+    });
+    w.pump();
+    let Load::Loaded(auth) = &w.state.auth else {
+        panic!("auth not loaded: {:?}", w.state.auth);
+    };
+    assert_eq!(auth.status, "pending");
+    assert_eq!(auth.user_code.as_deref(), Some("WXYZ-1234"));
+    assert_eq!(
+        auth.verification_url.as_deref(),
+        Some("https://example.com/device")
+    );
+
+    for _ in 0..2 {
+        w.send(UiIntent::PollAuth);
+        w.pump();
+    }
+    let Load::Loaded(auth) = &w.state.auth else {
+        panic!("auth not loaded: {:?}", w.state.auth);
+    };
+    assert_eq!(auth.status, "authorized");
+}
+
+#[test]
+fn sign_in_for_an_add_on_without_auth_fails_visibly() {
     let mut w = World::new();
     w.send(UiIntent::OpenAuth {
         addon_id: ECHO_FIXTURE_ID.into(),
     });
     w.pump();
-    let Load::Loaded(auth) = &w.state.auth else {
-        panic!("auth not loaded");
-    };
-    assert_eq!(auth.status, "pending");
-    assert_eq!(auth.user_code.as_deref(), Some("RVAH-1234"));
-
-    for _ in 0..3 {
-        w.send(UiIntent::PollAuth);
-        w.pump();
-    }
-    let Load::Loaded(auth) = &w.state.auth else {
-        panic!("auth not loaded");
-    };
-    assert_eq!(auth.status, "authorized");
+    assert!(
+        matches!(&w.state.auth, Load::Failed(_)),
+        "{:?}",
+        w.state.auth
+    );
 }

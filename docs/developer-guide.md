@@ -6,7 +6,7 @@ settings, and playback.
 
 ## The provider model
 
-An add-on implements up to four operations (`rvah-addon-sdk::AddonProvider`):
+An add-on implements up to seven operations (`rvah-addon-sdk::AddonProvider`):
 
 | Operation | Capability required | Purpose |
 |---|---|---|
@@ -14,6 +14,9 @@ An add-on implements up to four operations (`rvah-addon-sdk::AddonProvider`):
 | `search(query, filters, cursor)` | `search` | Normalized search results |
 | `resolve(item_id, source_id)` | `resolve` | Turn an item into playable sources (or `AuthRequired`/`Unavailable`) |
 | `account_status()` | `account_status` | Signed-in state for the UI |
+| `auth_begin()` | `auth` | Start a device-code sign-in: user code, verification URL, poll interval |
+| `auth_poll(device_code)` | `auth` | `Pending`, `Denied`, or `Authorized(credentials)` |
+| `auth_refresh()` | `auth` | Trade stored refresh material for fresh credentials |
 
 Pages contain `DirectoryItem`s (navigation) and `MediaItem`s (playable).
 Pagination is cursor-based: return `cursor_next` until the last page.
@@ -22,6 +25,24 @@ Host services come through the `HostApi` context handed to every call:
 `http_fetch` (allowlisted domains only), `setting_get`, `secret_get`
 (declared secrets only), `storage_get/set/delete` (quota'd), `log`
 (redacted). There is no other I/O: no sockets, no filesystem, no processes.
+
+## Signing in (`auth`)
+
+Device-code sign-in is host-managed (UC-04). The host calls `auth_begin`,
+shows the user code and verification URL (which must be `https`), and calls
+`auth_poll` no faster than the interval you return, until the code expires.
+When `auth_poll` returns `Authorized(credentials)`, the host writes each
+entry to the vault under its name. Every name must be declared in
+`permissions.secrets`, or the whole result is refused. Credentials never
+reach the UI. Read them later with `secret_get`.
+
+Refresh is central too. When any operation fails with `AddonErrorCode::Auth`
+and your add-on declares `auth`, the host calls `auth_refresh` once, stores
+the returned credentials the same way, and retries the operation once. So
+map an expired token to an `Auth` error and keep whatever `auth_refresh`
+needs (a refresh token, a per-user client) in a declared secret. The
+Real-Debrid example stores its access token as `api_token` and its refresh
+material as `oauth_client`.
 
 ## The manifest (`manifest.toml`)
 

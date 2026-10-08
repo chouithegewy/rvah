@@ -1,17 +1,19 @@
 //! End-to-end flows over real install + runtime + player wiring (STP §6):
-//! browse, pagination, quarantine, playback with resume, search, favorites.
+//! browse, pagination, quarantine, playback with resume, search, favorites,
+//! device-code sign-in and credential refresh.
 
 use std::sync::Arc;
 
 use rvah_addon_host::{AddonManager, Capability, InProcessRuntime, InstallDecision};
 use rvah_addon_sdk::{AddonErrorCode, AddonProvider, PageItem};
+use rvah_auth::DeviceCodeState;
 use rvah_auth::MemoryVault;
 use rvah_core::{AppCore, CoreError, ErrorClass};
 use rvah_data::{AddonStatus, Database};
 use rvah_player::{PlayerEvent, PlayerState};
 use rvah_testkit::{
-    write_fixture_package, CatalogEchoProvider, FailingProvider, LargeCatalogProvider, MockPlayer,
-    NoopHost, ResolverStaticProvider, ECHO_FIXTURE_ID,
+    write_fixture_package, CatalogEchoProvider, DeviceAuthProvider, FailingProvider,
+    LargeCatalogProvider, MockPlayer, NoopHost, ResolverStaticProvider, ECHO_FIXTURE_ID,
 };
 
 struct World {
@@ -54,8 +56,19 @@ impl World {
         provider: Arc<dyn AddonProvider + Send + Sync>,
         runtime_caps: Vec<Capability>,
     ) {
+        self.add_addon_with_secrets(id, caps, &[], provider, runtime_caps);
+    }
+
+    fn add_addon_with_secrets(
+        &mut self,
+        id: &str,
+        caps: &[&str],
+        secrets: &[&str],
+        provider: Arc<dyn AddonProvider + Send + Sync>,
+        runtime_caps: Vec<Capability>,
+    ) {
         let (pkg, sig, pubkey) =
-            rvah_testkit::write_named_fixture_package(self._tmp.path(), id, caps);
+            rvah_testkit::write_fixture_package_with_secrets(self._tmp.path(), id, caps, secrets);
         self.core
             .manager
             .install(&pkg, &sig, &pubkey, InstallDecision::Approve)
@@ -591,4 +604,172 @@ fn playback_events_do_not_wait_for_an_addon_invocation() {
         recorded.expect("playback report blocked behind the add-on call"),
         Ok(true)
     );
+}
+
+const LINK_ID: &str = "com.rvah.fixtures.link";
+
+/// A catalog add-on that signs in by device code and declares two secrets.
+fn linked_world(provider: &Arc<DeviceAuthProvider>) -> World {
+    let mut w = World::new();
+    w.add_addon_with_secrets(
+        LINK_ID,
+        &["catalog", "auth"],
+        &["api_token", "oauth_client"],
+        Arc::clone(provider) as Arc<dyn AddonProvider + Send + Sync>,
+        vec![Capability::Catalog, Capability::Auth],
+    );
+    w
+}
+
+fn stored(w: &World, name: &str) -> Option<String> {
+    w.core.vault().get(LINK_ID, name).unwrap()
+}
+
+#[test]
+fn device_code_sign_in_stores_credentials_only_in_the_vault() {
+    // UC-04: the user sees a code and URL; approval lands in the vault.
+    let provider = Arc::new(DeviceAuthProvider::new(
+        2,
+        &[("api_token", "tok-1"), ("oauth_client", "refresh-1")],
+    ));
+    let mut w = linked_world(&provider);
+
+    let prompt = w.core.auth_begin(LINK_ID).unwrap();
+    assert_eq!(prompt.user_code, "WXYZ-1234");
+    assert_eq!(prompt.verification_url, "https://example.com/device");
+
+    assert!(matches!(
+        w.core.auth_poll(LINK_ID).unwrap(),
+        DeviceCodeState::Pending { .. }
+    ));
+    assert_eq!(stored(&w, "api_token"), None);
+    assert_eq!(
+        w.core.auth_poll(LINK_ID).unwrap(),
+        DeviceCodeState::Authorized
+    );
+    assert_eq!(stored(&w, "api_token").as_deref(), Some("tok-1"));
+    assert_eq!(stored(&w, "oauth_client").as_deref(), Some("refresh-1"));
+
+    // The flow is over; another poll has nothing to advance.
+    assert!(matches!(
+        w.core.auth_poll(LINK_ID),
+        Err(CoreError::NoSignIn(_))
+    ));
+}
+
+#[test]
+fn sign_in_refuses_secret_names_the_manifest_does_not_declare() {
+    let provider = Arc::new(DeviceAuthProvider::new(
+        1,
+        &[("api_token", "tok-1"), ("someone_elses", "x")],
+    ));
+    let mut w = linked_world(&provider);
+    w.core.auth_begin(LINK_ID).unwrap();
+    let err = w.core.auth_poll(LINK_ID).unwrap_err();
+    assert!(
+        matches!(&err, CoreError::Provider(e) if e.code == AddonErrorCode::PermissionDenied),
+        "{err}"
+    );
+    assert!(w.core.vault().list(LINK_ID).unwrap().is_empty());
+}
+
+#[test]
+fn polls_sooner_than_the_interval_never_reach_the_provider() {
+    let provider = Arc::new(DeviceAuthProvider::new(1, &[("api_token", "t")]).with_interval(60));
+    let mut w = linked_world(&provider);
+    w.core.auth_begin(LINK_ID).unwrap();
+    for _ in 0..3 {
+        assert!(matches!(
+            w.core.auth_poll(LINK_ID).unwrap(),
+            DeviceCodeState::Pending { .. }
+        ));
+    }
+    assert_eq!(provider.polls(), 0);
+    w.core.auth_cancel(LINK_ID);
+    assert!(matches!(
+        w.core.auth_poll(LINK_ID),
+        Err(CoreError::NoSignIn(_))
+    ));
+}
+
+#[test]
+fn an_expired_token_is_refreshed_once_and_the_call_retried() {
+    // SDD §7.3: refresh is handled centrally, invisibly to the user.
+    let provider = Arc::new(
+        DeviceAuthProvider::new(1, &[("api_token", "tok-1")])
+            .refreshing_to(&[("api_token", "tok-2")]),
+    );
+    let mut w = linked_world(&provider);
+    let page = w.core.browse(LINK_ID, None, None).unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(provider.refreshes(), 1);
+    assert_eq!(stored(&w, "api_token").as_deref(), Some("tok-2"));
+    let events = w.core.db().recent_events(10).unwrap();
+    assert!(events
+        .iter()
+        .any(|e| e.code == "auth_refresh" && e.level == "info"));
+    assert!(
+        !events.iter().any(|e| e.level == "error"),
+        "a recovered call is not a failure: {events:?}"
+    );
+}
+
+#[test]
+fn a_failed_refresh_surfaces_the_original_auth_error() {
+    let provider = Arc::new(DeviceAuthProvider::new(1, &[("api_token", "tok-1")]));
+    let mut w = linked_world(&provider);
+    let err = w.core.browse(LINK_ID, None, None).unwrap_err();
+    assert!(
+        matches!(&err, CoreError::Provider(e) if e.code == AddonErrorCode::Auth && e.message == "token expired"),
+        "{err}"
+    );
+    assert_eq!(err.class(), ErrorClass::UserActionable);
+    assert_eq!(provider.refreshes(), 1);
+}
+
+#[test]
+fn add_ons_without_the_auth_capability_are_never_refreshed() {
+    // The runtime could serve a refresh, but the manifest never declared
+    // `auth`, so the core must not ask.
+    let provider = Arc::new(
+        DeviceAuthProvider::new(1, &[("api_token", "t")]).refreshing_to(&[("api_token", "t2")]),
+    );
+    let mut w = World::new();
+    w.add_addon_with_secrets(
+        LINK_ID,
+        &["catalog"],
+        &["api_token"],
+        Arc::clone(&provider) as Arc<dyn AddonProvider + Send + Sync>,
+        vec![Capability::Catalog, Capability::Auth],
+    );
+    assert!(w.core.browse(LINK_ID, None, None).is_err());
+    assert_eq!(provider.refreshes(), 0);
+}
+
+#[test]
+fn account_status_reports_the_linked_account_after_a_refresh() {
+    // FR-085: the settings screen can say who is signed in.
+    let provider = Arc::new(
+        DeviceAuthProvider::new(1, &[("api_token", "tok-1")])
+            .refreshing_to(&[("api_token", "tok-2")]),
+    );
+    let mut w = World::new();
+    w.add_addon_with_secrets(
+        LINK_ID,
+        &["catalog", "auth", "account_status"],
+        &["api_token", "oauth_client"],
+        Arc::clone(&provider) as Arc<dyn AddonProvider + Send + Sync>,
+        vec![
+            Capability::Catalog,
+            Capability::Auth,
+            Capability::AccountStatus,
+        ],
+    );
+    assert_eq!(
+        w.core.account_status(LINK_ID).unwrap(),
+        rvah_addon_sdk::AccountStatus::SignedIn {
+            display_name: Some("fixture-user".into())
+        }
+    );
+    assert_eq!(provider.refreshes(), 1);
 }

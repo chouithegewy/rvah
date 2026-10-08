@@ -27,6 +27,46 @@ pub fn http_get(
     serde_json::from_value(resp).map_err(|e| internal(&format!("bad http response: {e}")))
 }
 
+/// POST `fields` as `application/x-www-form-urlencoded`.
+pub fn http_post_form(
+    host: &dyn Host,
+    url: &str,
+    fields: &[(&str, &str)],
+) -> Result<HttpResponse, AddonError> {
+    let body = form_encode(fields).into_bytes();
+    let resp = host.call(json!({
+        "fn": "http_fetch",
+        "req": {
+            "method": "POST",
+            "url": url,
+            "headers": { "content-type": "application/x-www-form-urlencoded" },
+            "body": body,
+        },
+    }))?;
+    serde_json::from_value(resp).map_err(|e| internal(&format!("bad http response: {e}")))
+}
+
+/// `k=v&k=v` with RFC 3986 unreserved characters kept and everything else
+/// percent-encoded; also safe for query strings.
+pub fn form_encode(fields: &[(&str, &str)]) -> String {
+    fn encode(value: &str) -> String {
+        value
+            .bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect()
+    }
+    fields
+        .iter()
+        .map(|(k, v)| format!("{}={}", encode(k), encode(v)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
 pub fn secret_get(host: &dyn Host, name: &str) -> Result<Option<String>, AddonError> {
     let resp = host.call(json!({ "fn": "secret_get", "name": name }))?;
     Ok(resp["value"].as_str().map(str::to_string))

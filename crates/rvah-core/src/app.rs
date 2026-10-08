@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rvah_addon_host::{
-    AddonManager, AddonOp, AddonResponse, AddonRuntime, InvocationCtx, Manifest,
+    AddonManager, AddonOp, AddonResponse, AddonRuntime, Capability, InvocationCtx, Manifest,
 };
-use rvah_addon_sdk::{AddonError, AddonErrorCode, Filter, HostApi, Page, ResolveResult};
-use rvah_auth::SecretVault;
+use rvah_addon_sdk::{
+    AccountStatus, AddonError, AddonErrorCode, AuthPoll, Credentials, Filter, HostApi, Page,
+    ResolveResult,
+};
+use rvah_auth::{DeviceCodeFlow, DeviceCodeState, PollOutcome, SecretVault};
 use rvah_data::{AddonStatus, Database, DiagnosticEvent, FavoriteRecord};
 use rvah_player::{
     validate_source_opts, PlayerBackend, PlayerController, PlayerEvent, PlayerState,
@@ -29,6 +32,26 @@ struct RegisteredAddon {
     host: Arc<dyn HostApi>,
 }
 
+/// What the user needs to finish a device-code sign-in (UC-04).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthPrompt {
+    pub user_code: String,
+    pub verification_url: String,
+    /// The provider's minimum wait between polls.
+    pub interval_secs: u32,
+    /// Unix seconds after which the code is no longer accepted.
+    pub expires_at: u64,
+}
+
+/// A device-code sign-in in progress. The device code stays in the core;
+/// callers only ever see the user code and URL.
+struct PendingAuth {
+    flow: DeviceCodeFlow,
+    device_code: String,
+    interval: Duration,
+    next_poll: Instant,
+}
+
 /// The application core: owns the add-on manager, per-add-on runtimes, the
 /// player, and persistence. This is the entire UI-facing surface for Phase 1;
 /// the CLI (mock UI) and later GUIs sit directly on top of it.
@@ -42,6 +65,7 @@ pub struct AppCore<B: PlayerBackend> {
     pub invoke_timeout: Duration,
     failures: HashMap<String, u32>,
     playback: Arc<Mutex<PlaybackTracker>>,
+    sign_ins: HashMap<String, PendingAuth>,
 }
 
 impl<B: PlayerBackend> AppCore<B> {
@@ -62,6 +86,7 @@ impl<B: PlayerBackend> AppCore<B> {
             invoke_timeout: DEFAULT_INVOKE_TIMEOUT,
             failures: HashMap::new(),
             playback,
+            sign_ins: HashMap::new(),
         }
     }
 
@@ -106,9 +131,36 @@ impl<B: PlayerBackend> AppCore<B> {
 
     /// Invoke through the runtime with failure accounting: any provider error
     /// is logged, and `QUARANTINE_THRESHOLD` consecutive failures quarantine
-    /// the add-on (TC-NFR-005). The host always survives (FR-023).
+    /// the add-on. An auth failure first gets one credential refresh and
+    /// retry (SDD §7.3), so an expired access token never reaches the user.
     fn invoke(&mut self, addon_id: &str, op: AddonOp) -> Result<AddonResponse, CoreError> {
         self.ensure_enabled(addon_id)?;
+        let auth_op = op.required_capability() == Capability::Auth;
+        let mut result = self.call(addon_id, op.clone())?;
+        if matches!(&result, Err(e) if e.code == AddonErrorCode::Auth)
+            && !auth_op
+            && self.refresh_credentials(addon_id)
+        {
+            result = self.call(addon_id, op)?;
+        }
+        match result {
+            Ok(resp) => {
+                self.failures.remove(addon_id);
+                Ok(resp)
+            }
+            Err(err) => {
+                self.record_failure(addon_id, &err);
+                Err(CoreError::Provider(err))
+            }
+        }
+    }
+
+    /// One runtime call, without failure accounting.
+    fn call(
+        &self,
+        addon_id: &str,
+        op: AddonOp,
+    ) -> Result<Result<AddonResponse, AddonError>, CoreError> {
         let addon = self
             .addons
             .get(addon_id)
@@ -122,6 +174,9 @@ impl<B: PlayerBackend> AppCore<B> {
             AddonOp::Search { .. } => "search",
             AddonOp::Resolve { .. } => "resolve",
             AddonOp::AccountStatus => "account_status",
+            AddonOp::AuthBegin => "auth_begin",
+            AddonOp::AuthPoll { .. } => "auth_poll",
+            AddonOp::AuthRefresh => "auth_refresh",
         };
         let started = std::time::Instant::now();
         let result = addon.runtime.invoke(op, &ctx);
@@ -130,16 +185,58 @@ impl<B: PlayerBackend> AppCore<B> {
             if result.is_ok() { "ok" } else { "error" },
             started.elapsed().as_secs_f64()
         );
-        match result {
-            Ok(resp) => {
-                self.failures.remove(addon_id);
-                Ok(resp)
+        Ok(result)
+    }
+
+    /// After an auth failure, let an add-on that declares `auth` trade its
+    /// stored refresh material for fresh credentials. True when new ones
+    /// were stored and the failed call is worth one retry.
+    fn refresh_credentials(&mut self, addon_id: &str) -> bool {
+        let Ok(manifest) = self.installed_manifest(addon_id) else {
+            return false;
+        };
+        if !manifest.addon.capabilities.contains(&Capability::Auth) {
+            return false;
+        }
+        let outcome = match self.call(addon_id, AddonOp::AuthRefresh) {
+            Ok(Ok(AddonResponse::Credentials(credentials))) => {
+                self.store_credentials(addon_id, &manifest, &credentials)
             }
-            Err(err) => {
-                self.record_failure(addon_id, &err);
-                Err(CoreError::Provider(err))
+            Ok(Ok(other)) => Err(unexpected_response(&other)),
+            Ok(Err(e)) => Err(CoreError::Provider(e)),
+            Err(e) => Err(e),
+        };
+        match outcome {
+            Ok(()) => {
+                let _ = self.db.log_event(&DiagnosticEvent {
+                    level: "info".into(),
+                    addon_id: Some(addon_id.to_string()),
+                    code: "auth_refresh".into(),
+                    message: "credentials refreshed".into(),
+                });
+                true
+            }
+            // The original auth error is what gets recorded and shown.
+            Err(e) => {
+                crate::debug_log!("{addon_id} credential refresh failed: {e}");
+                false
             }
         }
+    }
+
+    /// Store add-on supplied credentials, all or nothing on the names: every
+    /// one must be a secret the manifest declares (FR-083).
+    fn store_credentials(
+        &self,
+        addon_id: &str,
+        manifest: &Manifest,
+        credentials: &Credentials,
+    ) -> Result<(), CoreError> {
+        check_declared(manifest, credentials)?;
+        for (name, value) in &credentials.0 {
+            self.vault.set(addon_id, name, value)?;
+        }
+        Ok(())
     }
 
     fn record_failure(&mut self, addon_id: &str, err: &AddonError) {
@@ -166,10 +263,7 @@ impl<B: PlayerBackend> AppCore<B> {
     fn expect_page(resp: AddonResponse) -> Result<Page, CoreError> {
         match resp {
             AddonResponse::Page(page) => Ok(page),
-            other => Err(CoreError::Provider(AddonError::new(
-                AddonErrorCode::Malformed,
-                format!("provider returned unexpected response: {other:?}"),
-            ))),
+            other => Err(unexpected_response(&other)),
         }
     }
 
@@ -409,9 +503,7 @@ impl<B: PlayerBackend> AppCore<B> {
         Ok(())
     }
 
-    /// Re-approve the permissions currently declared by the installed
-    /// manifest (FR-046).
-    pub fn grant_permissions(&mut self, addon_id: &str) -> Result<(), CoreError> {
+    fn installed_manifest(&self, addon_id: &str) -> Result<Manifest, CoreError> {
         let rec = self
             .db
             .get_addon(addon_id)?
@@ -422,8 +514,115 @@ impl<B: PlayerBackend> AppCore<B> {
             .join("manifest.toml");
         let text = std::fs::read_to_string(&manifest_path)
             .map_err(|e| CoreError::Data(format!("read {}: {e}", manifest_path.display())))?;
-        let manifest =
-            Manifest::parse(&text).map_err(|e| CoreError::Data(format!("manifest: {e}")))?;
+        Manifest::parse(&text).map_err(|e| CoreError::Data(format!("manifest: {e}")))
+    }
+
+    /// Start a device-code sign-in with the add-on's provider (UC-04),
+    /// replacing any earlier attempt for the same add-on.
+    pub fn auth_begin(&mut self, addon_id: &str) -> Result<AuthPrompt, CoreError> {
+        self.sign_ins.remove(addon_id);
+        let device = match self.invoke(addon_id, AddonOp::AuthBegin)? {
+            AddonResponse::DeviceAuth(device) => device,
+            other => return Err(unexpected_response(&other)),
+        };
+        // The user is sent to this address, so it must at least be https.
+        if !device.verification_url.starts_with("https://") {
+            return Err(CoreError::Provider(AddonError::new(
+                AddonErrorCode::Malformed,
+                "sign-in verification URL must be https",
+            )));
+        }
+        let prompt = AuthPrompt {
+            user_code: device.user_code.clone(),
+            verification_url: device.verification_url.clone(),
+            interval_secs: device.interval_secs,
+            expires_at: unix_now() + u64::from(device.expires_in_secs),
+        };
+        let interval = Duration::from_secs(device.interval_secs.into());
+        self.sign_ins.insert(
+            addon_id.to_string(),
+            PendingAuth {
+                flow: DeviceCodeFlow::new(
+                    device.user_code,
+                    device.verification_url,
+                    prompt.expires_at,
+                    addon_id,
+                ),
+                device_code: device.device_code,
+                interval,
+                next_poll: Instant::now() + interval,
+            },
+        );
+        Ok(prompt)
+    }
+
+    /// Ask the provider once whether the user approved the code. Credentials
+    /// go straight to the vault. A poll sooner than the provider's interval
+    /// reports `Pending` without calling it, so no UI can trip a rate limit.
+    /// A terminal state ends the sign-in; an error leaves it pending.
+    pub fn auth_poll(&mut self, addon_id: &str) -> Result<DeviceCodeState, CoreError> {
+        let mut pending = self
+            .sign_ins
+            .remove(addon_id)
+            .ok_or_else(|| CoreError::NoSignIn(addon_id.to_string()))?;
+        let result = self.advance_sign_in(addon_id, &mut pending);
+        if matches!(result, Ok(DeviceCodeState::Pending { .. }) | Err(_)) {
+            self.sign_ins.insert(addon_id.to_string(), pending);
+        }
+        result
+    }
+
+    fn advance_sign_in(
+        &mut self,
+        addon_id: &str,
+        pending: &mut PendingAuth,
+    ) -> Result<DeviceCodeState, CoreError> {
+        if Instant::now() < pending.next_poll {
+            return Ok(pending.flow.state().clone());
+        }
+        pending.next_poll = Instant::now() + pending.interval;
+        let manifest = self.installed_manifest(addon_id)?;
+        let op = AddonOp::AuthPoll {
+            device_code: pending.device_code.clone(),
+        };
+        let vault = Arc::clone(&self.vault);
+        let mut poller = || -> Result<PollOutcome, CoreError> {
+            match self.invoke(addon_id, op.clone())? {
+                AddonResponse::AuthPoll(AuthPoll::Pending) => Ok(PollOutcome::Pending),
+                AddonResponse::AuthPoll(AuthPoll::Denied) => Ok(PollOutcome::Denied),
+                AddonResponse::AuthPoll(AuthPoll::Authorized(credentials)) => {
+                    check_declared(&manifest, &credentials)?;
+                    Ok(PollOutcome::Authorized {
+                        secrets: credentials.0,
+                    })
+                }
+                other => Err(unexpected_response(&other)),
+            }
+        };
+        pending
+            .flow
+            .poll(unix_now(), &mut poller, vault.as_ref())
+            .cloned()
+    }
+
+    /// Abandon a sign-in, e.g. when the user leaves the screen.
+    pub fn auth_cancel(&mut self, addon_id: &str) {
+        self.sign_ins.remove(addon_id);
+    }
+
+    /// The add-on's view of its account (FR-085), after a refresh if the
+    /// stored token had expired.
+    pub fn account_status(&mut self, addon_id: &str) -> Result<AccountStatus, CoreError> {
+        match self.invoke(addon_id, AddonOp::AccountStatus)? {
+            AddonResponse::Account(status) => Ok(status),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    /// Re-approve the permissions currently declared by the installed
+    /// manifest (FR-046).
+    pub fn grant_permissions(&mut self, addon_id: &str) -> Result<(), CoreError> {
+        let manifest = self.installed_manifest(addon_id)?;
         let json = serde_json::to_string(&manifest.permissions)
             .map_err(|e| CoreError::Data(e.to_string()))?;
         self.db
@@ -463,6 +662,34 @@ impl<B: PlayerBackend> AppCore<B> {
 
     pub fn vault(&self) -> &Arc<dyn SecretVault> {
         &self.vault
+    }
+}
+
+fn unexpected_response(response: &AddonResponse) -> CoreError {
+    // `Debug` of every response type omits secret values (FR-084).
+    CoreError::Provider(AddonError::new(
+        AddonErrorCode::Malformed,
+        format!("provider returned unexpected response: {response:?}"),
+    ))
+}
+
+fn check_declared(manifest: &Manifest, credentials: &Credentials) -> Result<(), CoreError> {
+    if credentials.0.is_empty() {
+        return Err(CoreError::Provider(AddonError::new(
+            AddonErrorCode::Malformed,
+            "sign-in returned no credentials",
+        )));
+    }
+    match credentials
+        .0
+        .keys()
+        .find(|name| !manifest.permissions.secrets.contains(name))
+    {
+        Some(name) => Err(CoreError::Provider(AddonError::new(
+            AddonErrorCode::PermissionDenied,
+            format!("secret {name:?} not declared in manifest"),
+        ))),
+        None => Ok(()),
     }
 }
 

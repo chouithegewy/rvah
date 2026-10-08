@@ -11,8 +11,9 @@ mod types;
 pub use error::{AddonError, AddonErrorCode};
 pub use provider::{AddonProvider, HostApi, HttpRequest, HttpResponse, LogLevel};
 pub use types::{
-    AccountStatus, Artwork, ContentType, DirectoryItem, DrmScheme, Filter, MediaItem, Page,
-    PageItem, PlayableSource, Protocol, ResolveResult, SubtitleFormat, SubtitleTrack,
+    AccountStatus, Artwork, AuthPoll, ContentType, Credentials, DeviceAuth, DirectoryItem,
+    DrmScheme, Filter, MediaItem, Page, PageItem, PlayableSource, Protocol, ResolveResult,
+    SubtitleFormat, SubtitleTrack,
 };
 
 /// SDK version implemented by this crate. Hosts check manifests' `sdk` range

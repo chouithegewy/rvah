@@ -49,8 +49,10 @@ import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import uniffi.rvah_android.AccountState
 import uniffi.rvah_android.AddonRecord
 import uniffi.rvah_android.AndroidCore
 import uniffi.rvah_android.CatalogEntry
@@ -58,6 +60,8 @@ import uniffi.rvah_android.DiagnosticRecord
 import uniffi.rvah_android.InstallPreview
 import uniffi.rvah_android.SecretStatus
 import uniffi.rvah_android.SettingRecord
+import uniffi.rvah_android.SignInPrompt
+import uniffi.rvah_android.SignInState
 
 private val Background = Color(0xFF0B0F14)
 private val Primary = Color.White
@@ -72,6 +76,7 @@ private sealed interface Screen {
     data class Player(val addonId: String, val itemId: String, val title: String, val returnTo: Screen) : Screen
     data object Settings : Screen
     data class AddonSettings(val addon: AddonRecord) : Screen
+    data class LinkAccount(val addon: AddonRecord) : Screen
     data object Install : Screen
     data object Diagnostics : Screen
 }
@@ -230,7 +235,17 @@ private fun AppNavigation(
             core = core,
             addon = current.addon,
             onChanged = { refresh++ },
+            onLinkAccount = { screen = Screen.LinkAccount(current.addon) },
             onExit = { screen = Screen.Settings },
+        )
+        is Screen.LinkAccount -> LinkAccountScreen(
+            core = core,
+            addon = current.addon,
+            scope = scope,
+            onExit = {
+                refresh++
+                screen = Screen.AddonSettings(current.addon)
+            },
         )
         Screen.Install -> InstallScreen(
             core = core,
@@ -539,10 +554,13 @@ private fun AddonSettingsScreen(
     core: AndroidCore,
     addon: AddonRecord,
     onChanged: () -> Unit,
+    onLinkAccount: () -> Unit,
     onExit: () -> Unit,
 ) {
     BackHandler(onBack = onExit)
+    val canLink = "auth" in addon.capabilities
     var status by remember { mutableStateOf(addon.status) }
+    var account by remember { mutableStateOf<String?>(null) }
     var settings by remember { mutableStateOf<List<SettingRecord>>(emptyList()) }
     var secrets by remember { mutableStateOf<List<SecretStatus>>(emptyList()) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -554,6 +572,10 @@ private fun AddonSettingsScreen(
             settings = loadedSettings
             secrets = loadedSecrets
         }.onFailure { error = it.userMessage() }
+        if ("account_status" in addon.capabilities && status == "enabled") {
+            account = onIo { core.accountStatus(addon.id) }
+                .fold(::accountLine) { "Account status unavailable: ${it.userMessage()}" }
+        }
     }
     fun act(done: String, afterSuccess: () -> Unit = {}, call: () -> Unit) {
         message = null
@@ -579,9 +601,14 @@ private fun AddonSettingsScreen(
                 modifier = Modifier.focusRequester(first),
             ) { Text("Enable add-on") }
         }
+        account?.let { Body(it, Secondary) }
+        if (canLink && status == "enabled") {
+            Button(onClick = onLinkAccount, modifier = Modifier.focusRequester(first)) { Text("Link account") }
+        }
         message?.let { Body(it) }
         error?.let { Body(it, ErrorText) }
         if (secrets.isEmpty() && settings.isEmpty()) Body("This add-on has no settings.")
+        if (canLink && secrets.isNotEmpty()) Body("Or enter credentials by hand:", Secondary)
         LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             items(secrets, key = { "secret:" + it.name }) { secret ->
                 var value by remember { mutableStateOf("") }
@@ -632,6 +659,109 @@ private fun AddonSettingsScreen(
             }
         }
     }
+}
+
+private fun accountLine(state: AccountState): String = when (state) {
+    is AccountState.SignedIn -> state.displayName?.let { "Signed in as $it." } ?: "Signed in."
+    AccountState.SignedOut -> "Not signed in."
+    AccountState.Expired -> "Sign-in expired. Link the account again."
+}
+
+private sealed interface LinkStep {
+    data object Starting : LinkStep
+    data class Waiting(val prompt: SignInPrompt) : LinkStep
+    data class Linked(val account: String) : LinkStep
+    data object Expired : LinkStep
+    data object Denied : LinkStep
+    data class Failed(val message: String) : LinkStep
+}
+
+/**
+ * Device-code sign-in (UC-04): show the code and where to enter it, then
+ * poll until the provider approves or the code expires. The credentials go
+ * straight into the vault in Rust; this screen never sees them. Back or
+ * Cancel abandons the code; starting again replaces it in any case.
+ */
+@Composable
+private fun LinkAccountScreen(
+    core: AndroidCore,
+    addon: AddonRecord,
+    scope: CoroutineScope,
+    onExit: () -> Unit,
+) {
+    val leave = {
+        // On IO: the core lock may be held by an add-on call for a while.
+        scope.launch { onIo { core.cancelSignIn(addon.id) } }
+        onExit()
+    }
+    BackHandler(onBack = leave)
+    var attempt by remember { mutableStateOf(0) }
+    var step by remember { mutableStateOf<LinkStep>(LinkStep.Starting) }
+    LaunchedEffect(attempt) {
+        step = LinkStep.Starting
+        val prompt = onIo { core.beginSignIn(addon.id) }.getOrElse {
+            step = LinkStep.Failed(it.userMessage())
+            return@LaunchedEffect
+        }
+        step = LinkStep.Waiting(prompt)
+        val interval = prompt.intervalSecs.toLong().coerceAtLeast(1) * 1000
+        while (true) {
+            delay(interval)
+            val state = onIo { core.pollSignIn(addon.id) }.getOrElse {
+                step = LinkStep.Failed(it.userMessage())
+                return@LaunchedEffect
+            }
+            step = when (state) {
+                SignInState.WAITING -> continue
+                SignInState.LINKED -> LinkStep.Linked(
+                    if ("account_status" in addon.capabilities) {
+                        onIo { core.accountStatus(addon.id) }.fold(::accountLine) { "Account linked." }
+                    } else {
+                        "Account linked."
+                    },
+                )
+                SignInState.EXPIRED -> LinkStep.Expired
+                SignInState.DENIED -> LinkStep.Denied
+            }
+            return@LaunchedEffect
+        }
+    }
+    Page("Link ${addon.name}") {
+        val action = rememberInitialFocus(step::class)
+        when (val current = step) {
+            LinkStep.Starting -> Body("Getting a sign-in code…")
+            is LinkStep.Waiting -> {
+                val prompt = current.prompt
+                var now by remember(prompt) { mutableStateOf(System.currentTimeMillis() / 1000) }
+                LaunchedEffect(prompt) {
+                    while (true) {
+                        delay(1_000)
+                        now = System.currentTimeMillis() / 1000
+                    }
+                }
+                Body("On your phone or computer, open", Secondary)
+                Text(displayUrl(prompt.verificationUrl), fontSize = 40.sp, color = Primary)
+                Body("and enter this code:", Secondary)
+                Text(prompt.userCode, fontSize = 64.sp, letterSpacing = 6.sp, color = Primary)
+                val left = prompt.expiresAtUnix.toLong() - now
+                Body("Waiting for approval… the code expires in ${formatRemaining(left)}.", Secondary)
+                Button(onClick = leave, modifier = Modifier.focusRequester(action)) { Text("Cancel") }
+            }
+            is LinkStep.Linked -> {
+                Body(current.account)
+                Button(onClick = onExit, modifier = Modifier.focusRequester(action)) { Text("Done") }
+            }
+            LinkStep.Expired -> Retry("The code expired before it was entered.", action) { attempt++ }
+            LinkStep.Denied -> Retry("The sign-in was declined.", action) { attempt++ }
+            is LinkStep.Failed -> Retry(current.message, action) { attempt++ }
+        }
+    }
+}
+
+@Composable
+private fun Retry(problem: String, focus: FocusRequester, onRetry: () -> Unit) {
+    Body(problem, ErrorText)
+    Button(onClick = onRetry, modifier = Modifier.focusRequester(focus)) { Text("Get a new code") }
 }
 
 @Composable

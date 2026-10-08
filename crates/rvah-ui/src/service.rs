@@ -3,7 +3,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 
 use rvah_addon_host::Manifest;
 use rvah_addon_sdk::Page;
-use rvah_auth::{DeviceCodeFlow, DeviceCodeState, PollOutcome, Redactor};
+use rvah_auth::{DeviceCodeState, Redactor};
 use rvah_core::{AppCore, CoreError, ErrorClass};
 use rvah_data::{AddonRecord, DiagnosticEvent, FavoriteRecord, WatchState};
 use rvah_player::{PlayerBackend, PlayerState};
@@ -191,8 +191,8 @@ pub type RuntimeFactory = Box<
 /// add-on invocations, or player IPC.
 pub struct CoreService<B: PlayerBackend> {
     core: AppCore<B>,
-    auth: Option<(String, DeviceCodeFlow)>,
-    auth_polls: u32,
+    /// Add-on whose device-code sign-in the Sign-in screen is showing.
+    auth: Option<String>,
     events: Sender<CoreEvent>,
     runtime_factory: Option<RuntimeFactory>,
 }
@@ -216,7 +216,6 @@ impl<B: PlayerBackend + Send + 'static> CoreService<B> {
             let mut service = CoreService {
                 core,
                 auth: None,
-                auth_polls: 0,
                 events: event_tx,
                 runtime_factory,
             };
@@ -387,41 +386,26 @@ impl<B: PlayerBackend + Send + 'static> CoreService<B> {
                     Err(e) => self.fail("favorites", e),
                 }
             }
-            CoreRequest::StartAuth { addon_id } => {
-                // Simulated device-code issuance (UC-04); a real provider
-                // integration supplies these values from its auth endpoint.
-                let flow = DeviceCodeFlow::new(
-                    "RVAH-1234",
-                    "https://example.com/activate",
-                    unix_now() + 300,
-                    addon_id.clone(),
-                    "oauth_token",
-                );
-                self.auth = Some((addon_id, flow));
-                self.auth_polls = 0;
-                self.send_auth_state();
-            }
+            CoreRequest::StartAuth { addon_id } => match self.core.auth_begin(&addon_id) {
+                Ok(prompt) => {
+                    self.auth = Some(addon_id);
+                    self.send(CoreEvent::Auth {
+                        status: "pending".into(),
+                        user_code: Some(prompt.user_code),
+                        verification_url: Some(prompt.verification_url),
+                    });
+                }
+                Err(e) => self.fail("auth", e),
+            },
             CoreRequest::PollAuth => {
-                let Some((_, flow)) = self.auth.as_mut() else {
+                let Some(addon_id) = self.auth.clone() else {
                     return;
                 };
-                self.auth_polls += 1;
-                // Simulated poller: authorize on the third poll.
-                let authorize = self.auth_polls >= 3;
-                let mut poller = move || {
-                    if authorize {
-                        PollOutcome::Authorized {
-                            token: "simulated-token".into(),
-                        }
-                    } else {
-                        PollOutcome::Pending
-                    }
-                };
-                let vault = std::sync::Arc::clone(self.core.vault());
-                if let Err(e) = flow.poll(unix_now(), &mut poller, vault.as_ref()) {
-                    return self.fail("auth", CoreError::Data(e.to_string()));
+                // The core paces polls to the provider's interval.
+                match self.core.auth_poll(&addon_id) {
+                    Ok(state) => self.send_auth_state(&state),
+                    Err(e) => self.fail("auth", e),
                 }
-                self.send_auth_state();
             }
             CoreRequest::PreviewInstall { pkg, pubkey } => self.preview_install(&pkg, &pubkey),
             CoreRequest::ConfirmInstall { pkg, pubkey } => self.confirm_install(&pkg, &pubkey),
@@ -517,9 +501,8 @@ impl<B: PlayerBackend + Send + 'static> CoreService<B> {
         }
     }
 
-    fn send_auth_state(&self) {
-        let Some((_, flow)) = &self.auth else { return };
-        let event = match flow.state() {
+    fn send_auth_state(&self, state: &DeviceCodeState) {
+        let event = match state {
             DeviceCodeState::Pending {
                 user_code,
                 verification_url,

@@ -10,8 +10,14 @@ crate compiled to `wasm32-unknown-unknown`, speaking ABI v0.1
 - **resolve** — the cached direct URL (RD download entries are already
   unrestricted), with a history re-scan fallback.
 - **account_status** — `GET /rest/1.0/user`.
-- **secret** — `api_token`, your token from
-  <https://real-debrid.com/apitoken>. Missing/rejected tokens surface as
+- **auth** — device-code sign-in with Real-Debrid's open-source client id:
+  the app shows a code, you enter it at <https://real-debrid.com/device>,
+  and the host stores the access token as `api_token` and the refresh
+  material as `oauth_client`. When the access token expires (401), the host
+  refreshes it and retries, so you only link once.
+- **secrets** — `api_token` and `oauth_client`. Instead of linking, you can
+  set `api_token` to your private token from
+  <https://real-debrid.com/apitoken>. Missing or rejected tokens surface as
   user-visible auth errors.
 
 ## Build & install
@@ -23,13 +29,24 @@ rustup target add wasm32-unknown-unknown   # once
 rvah keygen -o keys                        # once
 rvah package dist -o real-debrid.rvah --key keys/signing.key
 rvah install real-debrid.rvah --pubkey keys/verify.pub --data-dir <DIR> --approve
+```
+
+Then run `rvah-app` with the same data dir and choose **Sign in** next to the
+add-on, or **Link account** in its settings on Android TV. To use a private
+token instead:
+
+```sh
 printf '%s' "$YOUR_TOKEN" | rvah secret-set com.real-debrid.downloads api_token --data-dir <DIR>
 ```
 
-Then run `rvah-app` with the same data dir. The permission grant covers
-exactly `api.real-debrid.com`, 64 KiB of storage, and the one named secret.
+The permission grant covers exactly `api.real-debrid.com`, 64 KiB of
+storage, and the two named secrets. Version 0.2.0 adds `auth` and
+`oauth_client`, so updating from 0.1.0 asks for approval again.
 
 ## Tests
 
 `cargo test` in this directory runs the logic natively against a scripted
-host (no network, no wasm toolchain needed).
+host (no network, no wasm toolchain needed). After `./build.sh`,
+`cargo test -p rvah-android --test real_debrid_guest -- --ignored` in the
+repository root runs the built module under the Android sandbox through
+sign-in, token expiry and refresh.

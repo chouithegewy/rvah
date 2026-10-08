@@ -4,8 +4,9 @@
 mod fixtures;
 
 pub use fixtures::{
-    fixture_manifest, mp4_source, write_fixture_package, write_named_fixture_package,
-    BadPermissionsProvider, CatalogEchoProvider, FailingProvider, LargeCatalogProvider, NoopHost,
-    ResolverStaticProvider, SlowProvider, ECHO_FIXTURE_ID,
+    fixture_manifest, mp4_source, write_fixture_package, write_fixture_package_with_secrets,
+    write_named_fixture_package, BadPermissionsProvider, CatalogEchoProvider, DeviceAuthProvider,
+    FailingProvider, LargeCatalogProvider, NoopHost, ResolverStaticProvider, SlowProvider,
+    ECHO_FIXTURE_ID,
 };
 pub use rvah_player::MockPlayer;

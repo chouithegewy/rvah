@@ -1,12 +1,14 @@
 [addon]
 id = "com.real-debrid.downloads"
 name = "Real-Debrid Downloads"
-version = "0.1.0"
+version = "0.2.0"
 sdk = ">=0.1, <0.2"
 entry = "module.wasm"
-capabilities = ["catalog", "resolve", "account_status"]
+capabilities = ["catalog", "resolve", "account_status", "auth"]
 
 [permissions]
 network = ["api.real-debrid.com"]
 storage = "64KiB"
-secrets = ["api_token"]
+# api_token: the bearer token, from Link account or real-debrid.com/apitoken.
+# oauth_client: device-link refresh material, written by the host.
+secrets = ["api_token", "oauth_client"]

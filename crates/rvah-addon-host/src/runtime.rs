@@ -3,7 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rvah_addon_sdk::{
-    AccountStatus, AddonError, AddonErrorCode, AddonProvider, Filter, HostApi, Page, ResolveResult,
+    AccountStatus, AddonError, AddonErrorCode, AddonProvider, AuthPoll, Credentials, DeviceAuth,
+    Filter, HostApi, Page, ResolveResult,
 };
 
 use crate::manifest::Capability;
@@ -26,6 +27,13 @@ pub enum AddonOp {
         source_id: Option<String>,
     },
     AccountStatus,
+    /// Start a device-code sign-in (UC-04).
+    AuthBegin,
+    AuthPoll {
+        device_code: String,
+    },
+    /// Trade stored refresh material for fresh credentials.
+    AuthRefresh,
 }
 
 impl AddonOp {
@@ -36,6 +44,9 @@ impl AddonOp {
             AddonOp::Search { .. } => Capability::Search,
             AddonOp::Resolve { .. } => Capability::Resolve,
             AddonOp::AccountStatus => Capability::AccountStatus,
+            AddonOp::AuthBegin | AddonOp::AuthPoll { .. } | AddonOp::AuthRefresh => {
+                Capability::Auth
+            }
         }
     }
 }
@@ -46,6 +57,9 @@ pub enum AddonResponse {
     Page(Page),
     Resolve(ResolveResult),
     Account(AccountStatus),
+    DeviceAuth(DeviceAuth),
+    AuthPoll(AuthPoll),
+    Credentials(Credentials),
 }
 
 /// Per-invocation environment: deadline plus the capability-checked host API.
@@ -140,6 +154,15 @@ impl AddonRuntime for InProcessRuntime {
                 AddonOp::AccountStatus => provider
                     .account_status(host.as_ref())
                     .map(AddonResponse::Account),
+                AddonOp::AuthBegin => provider
+                    .auth_begin(host.as_ref())
+                    .map(AddonResponse::DeviceAuth),
+                AddonOp::AuthPoll { device_code } => provider
+                    .auth_poll(host.as_ref(), &device_code)
+                    .map(AddonResponse::AuthPoll),
+                AddonOp::AuthRefresh => provider
+                    .auth_refresh(host.as_ref())
+                    .map(AddonResponse::Credentials),
             };
             let _ = tx.send(result);
         });
@@ -261,6 +284,57 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code, AddonErrorCode::Timeout);
         assert!(err.retryable);
+    }
+
+    struct LinkProvider;
+    impl AddonProvider for LinkProvider {
+        fn auth_poll(&self, _ctx: &dyn HostApi, device_code: &str) -> Result<AuthPoll, AddonError> {
+            Ok(match device_code {
+                "approved" => AuthPoll::Authorized(Credentials(
+                    [("api_token".to_string(), "tok".to_string())].into(),
+                )),
+                _ => AuthPoll::Pending,
+            })
+        }
+    }
+
+    #[test]
+    fn auth_ops_need_the_auth_capability() {
+        let poll = |code: &str| AddonOp::AuthPoll {
+            device_code: code.into(),
+        };
+        let rt = InProcessRuntime::new(Arc::new(LinkProvider), vec![Capability::Auth]);
+        assert_eq!(
+            rt.invoke(poll("waiting"), &ctx(1_000)).unwrap(),
+            AddonResponse::AuthPoll(AuthPoll::Pending)
+        );
+        assert!(matches!(
+            rt.invoke(poll("approved"), &ctx(1_000)).unwrap(),
+            AddonResponse::AuthPoll(AuthPoll::Authorized(_))
+        ));
+        // Not implemented by the provider: a structured error, not a panic.
+        let err = rt.invoke(AddonOp::AuthRefresh, &ctx(1_000)).unwrap_err();
+        assert_eq!(err.code, AddonErrorCode::Internal);
+
+        let undeclared = InProcessRuntime::new(Arc::new(LinkProvider), vec![Capability::Catalog]);
+        for op in [AddonOp::AuthBegin, poll("approved"), AddonOp::AuthRefresh] {
+            let err = undeclared.invoke(op, &ctx(1_000)).unwrap_err();
+            assert_eq!(err.code, AddonErrorCode::PermissionDenied);
+        }
+    }
+
+    #[test]
+    fn auth_ops_wire_format() {
+        let wire = serde_json::to_value(AddonOp::AuthPoll {
+            device_code: "dc".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({ "op": "auth_poll", "device_code": "dc" })
+        );
+        let begin = serde_json::to_value(AddonOp::AuthBegin).unwrap();
+        assert_eq!(begin, serde_json::json!({ "op": "auth_begin" }));
     }
 
     #[test]

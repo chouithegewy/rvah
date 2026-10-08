@@ -24,6 +24,25 @@ the mitigation as built, the tests that pin it, and known gaps.
 - **Gap:** the keychain item scope is the user session, so any process in
   the session with Secret Service access can read the items — the file
   vault's key-file permission model does not apply there.
+- **Device-code sign-in (UC-04):** credentials an add-on returns from
+  `auth_poll`/`auth_refresh` are written to the vault by the host, only
+  under names declared in `permissions.secrets` (all-or-nothing), and never
+  returned to the UI or across the Android FFI. The device code stays in
+  the core. `Debug` for `Credentials`, `PollOutcome` and `DeviceAuth` prints
+  names only, so an unexpected-response error message cannot carry a token
+  into diagnostics. The verification URL shown to the user must be `https`.
+  Polls are paced to the provider's interval by the core, not the UI.
+  An `Auth` failure triggers at most one refresh and one retry, and only
+  for add-ons that declare `auth`.
+- **Tests:** `device_code_sign_in_stores_credentials_only_in_the_vault`,
+  `sign_in_refuses_secret_names_the_manifest_does_not_declare`,
+  `polls_sooner_than_the_interval_never_reach_the_provider`,
+  `an_expired_token_is_refreshed_once_and_the_call_retried`,
+  `add_ons_without_the_auth_capability_are_never_refreshed` (rvah-core
+  flows), `credentials_never_debug_print_their_values` (SDK),
+  `poll_outcome_debug_hides_secret_values` (rvah-auth), and
+  `real_debrid_guest_links_refreshes_and_retries` (rvah-android, ignored
+  until the guest is built), which also checks no token reaches diagnostics.
 
 ### Broad web scraping / arbitrary hosts
 - **Built:** all add-on HTTP flows through `PermissionedClient`: scheme check

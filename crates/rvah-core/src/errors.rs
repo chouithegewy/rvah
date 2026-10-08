@@ -28,12 +28,16 @@ pub enum CoreError {
     Player(PlayerError),
     #[error("data error: {0}")]
     Data(String),
+    #[error("no sign-in in progress for {0}")]
+    NoSignIn(String),
 }
 
 impl CoreError {
     pub fn class(&self) -> ErrorClass {
         match self {
-            CoreError::AddonNotFound(_) | CoreError::AddonDisabled(_) => ErrorClass::UserActionable,
+            CoreError::AddonNotFound(_) | CoreError::AddonDisabled(_) | CoreError::NoSignIn(_) => {
+                ErrorClass::UserActionable
+            }
             CoreError::Provider(e) => match e.code {
                 AddonErrorCode::Auth
                 | AddonErrorCode::PermissionDenied
@@ -62,6 +66,12 @@ impl CoreError {
 
 impl From<rvah_data::DataError> for CoreError {
     fn from(e: rvah_data::DataError) -> Self {
+        CoreError::Data(e.to_string())
+    }
+}
+
+impl From<rvah_auth::VaultError> for CoreError {
+    fn from(e: rvah_auth::VaultError) -> Self {
         CoreError::Data(e.to_string())
     }
 }
