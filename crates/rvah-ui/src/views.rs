@@ -328,11 +328,13 @@ fn home_view(ui: &mut egui::Ui, state: &UiState, intents: &mut Vec<UiIntent>) {
             if nav_button(ui, "Settings", &focused, &settings) {
                 intents.push(settings);
             }
-            let auth = UiIntent::OpenAuth {
-                addon_id: addon.id.clone(),
-            };
-            if nav_button(ui, "Sign in", &focused, &auth) {
-                intents.push(auth);
+            if addon.capabilities.iter().any(|c| c == "auth") {
+                let auth = UiIntent::OpenAuth {
+                    addon_id: addon.id.clone(),
+                };
+                if nav_button(ui, "Sign in", &focused, &auth) {
+                    intents.push(auth);
+                }
             }
         });
     }

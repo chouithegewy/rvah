@@ -1,14 +1,15 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use ed25519_dalek::VerifyingKey;
 use rvah_addon_host::{keygen, package_dir, sign_package};
 use rvah_addon_sdk::{
-    AccountStatus, AddonError, AddonErrorCode, AddonProvider, Artwork, DirectoryItem, Filter,
-    HostApi, HttpRequest, HttpResponse, LogLevel, MediaItem, Page, PageItem, PlayableSource,
-    Protocol, ResolveResult,
+    AccountStatus, AddonError, AddonErrorCode, AddonProvider, Artwork, AuthPoll, Credentials,
+    DeviceAuth, DirectoryItem, Filter, HostApi, HttpRequest, HttpResponse, LogLevel, MediaItem,
+    Page, PageItem, PlayableSource, Protocol, ResolveResult,
 };
 
 pub const ECHO_FIXTURE_ID: &str = "com.rvah.fixtures.echo";
@@ -54,11 +55,21 @@ pub fn write_named_fixture_package(
     id: &str,
     caps: &[&str],
 ) -> (PathBuf, [u8; 64], VerifyingKey) {
+    write_fixture_package_with_secrets(dir, id, caps, &[])
+}
+
+/// Same as [`write_named_fixture_package`], also declaring `secrets`.
+pub fn write_fixture_package_with_secrets(
+    dir: &Path,
+    id: &str,
+    caps: &[&str],
+    secrets: &[&str],
+) -> (PathBuf, [u8; 64], VerifyingKey) {
     let src = dir.join(format!("{id}-src"));
     std::fs::create_dir_all(&src).expect("fixture src dir");
     std::fs::write(
         src.join("manifest.toml"),
-        fixture_manifest(id, caps, &[], &[]),
+        fixture_manifest(id, caps, &[], secrets),
     )
     .expect("fixture manifest");
     std::fs::write(src.join("main"), "fixture entry").expect("fixture entry");
@@ -283,6 +294,109 @@ impl AddonProvider for LargeCatalogProvider {
         cursor: Option<&str>,
     ) -> Result<Page, AddonError> {
         self.page(cursor)
+    }
+}
+
+/// Device-code sign-in fixture (UC-04). Polls approve from the
+/// `approve_after`-th on; `list` fails with an auth error until a refresh
+/// has happened, like an access token that expired after linking.
+pub struct DeviceAuthProvider {
+    approve_after: u32,
+    interval_secs: u32,
+    credentials: Credentials,
+    refresh: Option<Credentials>,
+    polls: AtomicU32,
+    refreshes: AtomicU32,
+}
+
+fn credentials(pairs: &[(&str, &str)]) -> Credentials {
+    Credentials(
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+    )
+}
+
+impl DeviceAuthProvider {
+    pub fn new(approve_after: u32, approved: &[(&str, &str)]) -> Self {
+        Self {
+            approve_after,
+            interval_secs: 0,
+            credentials: credentials(approved),
+            refresh: None,
+            polls: AtomicU32::new(0),
+            refreshes: AtomicU32::new(0),
+        }
+    }
+
+    /// Refreshes succeed with these credentials (by default they fail).
+    pub fn refreshing_to(mut self, pairs: &[(&str, &str)]) -> Self {
+        self.refresh = Some(credentials(pairs));
+        self
+    }
+
+    pub fn with_interval(mut self, secs: u32) -> Self {
+        self.interval_secs = secs;
+        self
+    }
+
+    /// Polls that reached the provider.
+    pub fn polls(&self) -> u32 {
+        self.polls.load(Ordering::SeqCst)
+    }
+
+    pub fn refreshes(&self) -> u32 {
+        self.refreshes.load(Ordering::SeqCst)
+    }
+}
+
+impl AddonProvider for DeviceAuthProvider {
+    fn list(
+        &self,
+        _ctx: &dyn HostApi,
+        _path: Option<&str>,
+        _cursor: Option<&str>,
+    ) -> Result<Page, AddonError> {
+        if self.refreshes() == 0 {
+            return Err(AddonError::new(AddonErrorCode::Auth, "token expired"));
+        }
+        Ok(Page {
+            items: vec![media("m1", "Linked Movie")],
+            ..Page::default()
+        })
+    }
+
+    fn auth_begin(&self, _ctx: &dyn HostApi) -> Result<DeviceAuth, AddonError> {
+        Ok(DeviceAuth {
+            user_code: "WXYZ-1234".into(),
+            verification_url: "https://example.com/device".into(),
+            device_code: "dev-1".into(),
+            interval_secs: self.interval_secs,
+            expires_in_secs: 600,
+        })
+    }
+
+    fn auth_poll(&self, _ctx: &dyn HostApi, device_code: &str) -> Result<AuthPoll, AddonError> {
+        if device_code != "dev-1" {
+            return Err(AddonError::new(
+                AddonErrorCode::NotFound,
+                "unknown device code",
+            ));
+        }
+        let polls = self.polls.fetch_add(1, Ordering::SeqCst) + 1;
+        Ok(if polls >= self.approve_after {
+            AuthPoll::Authorized(self.credentials.clone())
+        } else {
+            AuthPoll::Pending
+        })
+    }
+
+    fn auth_refresh(&self, _ctx: &dyn HostApi) -> Result<Credentials, AddonError> {
+        self.refreshes.fetch_add(1, Ordering::SeqCst);
+        self.refresh
+            .clone()
+            .ok_or_else(|| AddonError::new(AddonErrorCode::Auth, "not linked"))
     }
 }
 

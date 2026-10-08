@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
@@ -210,6 +211,56 @@ pub enum AccountStatus {
     Expired,
 }
 
+/// A started device-code sign-in (UC-04): the user opens
+/// `verification_url` on another device and enters `user_code`.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceAuth {
+    pub user_code: String,
+    pub verification_url: String,
+    /// Handle the host passes back to `auth_poll`. It stays in the host and
+    /// is never shown, so it is left out of `Debug`.
+    pub device_code: String,
+    /// Minimum wait between polls.
+    pub interval_secs: u32,
+    pub expires_in_secs: u32,
+}
+
+impl fmt::Debug for DeviceAuth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeviceAuth")
+            .field("user_code", &self.user_code)
+            .field("verification_url", &self.verification_url)
+            .field("interval_secs", &self.interval_secs)
+            .field("expires_in_secs", &self.expires_in_secs)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Secret values an add-on hands the host to store in its vault, keyed by
+/// secret names its manifest declares (FR-083). `Debug` lists names only,
+/// so a stray `{:?}` cannot put a token in diagnostics (FR-084).
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Credentials(pub BTreeMap<String, String>);
+
+impl fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Credentials")
+            .field(&self.0.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+/// What one `auth_poll` saw at the provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", content = "credentials", rename_all = "snake_case")]
+pub enum AuthPoll {
+    /// The user has not approved the code yet.
+    Pending,
+    Denied,
+    Authorized(Credentials),
+}
+
 /// A search filter, e.g. `{key: "year", value: "1999"}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Filter {
@@ -252,6 +303,43 @@ mod tests {
             cursor_next: Some("page-2".into()),
             total_hint: Some(42),
         }
+    }
+
+    #[test]
+    fn credentials_never_debug_print_their_values() {
+        let creds = Credentials(BTreeMap::from([("api_token".into(), "tok-secret".into())]));
+        let poll = format!("{:?}", AuthPoll::Authorized(creds));
+        assert!(poll.contains("api_token"));
+        assert!(!poll.contains("tok-secret"));
+
+        let auth = DeviceAuth {
+            user_code: "ABCD".into(),
+            verification_url: "https://example.com/device".into(),
+            device_code: "dev-secret".into(),
+            interval_secs: 5,
+            expires_in_secs: 600,
+        };
+        let shown = format!("{auth:?}");
+        assert!(shown.contains("ABCD"));
+        assert!(!shown.contains("dev-secret"));
+    }
+
+    #[test]
+    fn auth_poll_wire_shape() {
+        let pending = serde_json::to_value(AuthPoll::Pending).unwrap();
+        assert_eq!(pending, serde_json::json!({ "status": "pending" }));
+        let wire = serde_json::json!({
+            "status": "authorized",
+            "credentials": { "api_token": "t" }
+        });
+        let parsed: AuthPoll = serde_json::from_value(wire).unwrap();
+        assert_eq!(
+            parsed,
+            AuthPoll::Authorized(Credentials(BTreeMap::from([(
+                "api_token".into(),
+                "t".into()
+            )])))
+        );
     }
 
     #[test]

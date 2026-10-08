@@ -544,12 +544,14 @@ pub fn focus_grid(state: &UiState) -> Vec<Vec<FocusEntry>> {
                             addon_id: addon.id.clone(),
                         },
                     ));
-                    row.push(entry(
-                        "Sign in",
-                        UiIntent::OpenAuth {
-                            addon_id: addon.id.clone(),
-                        },
-                    ));
+                    if addon.capabilities.iter().any(|c| c == "auth") {
+                        row.push(entry(
+                            "Sign in",
+                            UiIntent::OpenAuth {
+                                addon_id: addon.id.clone(),
+                            },
+                        ));
+                    }
                     out.push(row);
                 }
                 for fav in &home.favorites {
@@ -1113,7 +1115,7 @@ mod tests {
                         status: rvah_data::AddonStatus::Enabled,
                         install_source: String::new(),
                         sdk_range: String::new(),
-                        capabilities: vec![],
+                        capabilities: vec!["catalog".into(), "auth".into()],
                     },
                     rvah_data::AddonRecord {
                         id: "com.example.off".into(),
@@ -1154,8 +1156,8 @@ mod tests {
             &grid[0][1].intent,
             UiIntent::SetEnabled { enabled: false, .. }
         ));
-        // Disabled add-on: Enable, Permissions, Settings, Sign in — no Open.
-        assert_eq!(grid[1].len(), 4);
+        // Disabled add-on without `auth`: Enable, Permissions, Settings.
+        assert_eq!(grid[1].len(), 3);
         assert!(matches!(
             &grid[1][0].intent,
             UiIntent::SetEnabled { addon_id, enabled: true } if addon_id == "com.example.off"

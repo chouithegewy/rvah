@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AccountStatus, AddonError, AddonErrorCode, Filter, Page, ResolveResult};
+use crate::{
+    AccountStatus, AddonError, AddonErrorCode, AuthPoll, Credentials, DeviceAuth, Filter, Page,
+    ResolveResult,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -96,6 +99,24 @@ pub trait AddonProvider {
 
     fn account_status(&self, _ctx: &dyn HostApi) -> Result<AccountStatus, AddonError> {
         Err(unimplemented_capability("account_status"))
+    }
+
+    /// Start a device-code sign-in (UC-04, capability `auth`).
+    fn auth_begin(&self, _ctx: &dyn HostApi) -> Result<DeviceAuth, AddonError> {
+        Err(unimplemented_capability("auth"))
+    }
+
+    /// Ask the provider whether the user approved `device_code` yet. On
+    /// approval, return the credentials for the host to store.
+    fn auth_poll(&self, _ctx: &dyn HostApi, _device_code: &str) -> Result<AuthPoll, AddonError> {
+        Err(unimplemented_capability("auth"))
+    }
+
+    /// Exchange stored refresh material (read via `secret_get`) for fresh
+    /// credentials. The host calls this when an operation fails with
+    /// [`AddonErrorCode::Auth`], stores the result, and retries once.
+    fn auth_refresh(&self, _ctx: &dyn HostApi) -> Result<Credentials, AddonError> {
+        Err(unimplemented_capability("auth"))
     }
 }
 
