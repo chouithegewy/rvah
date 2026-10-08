@@ -29,7 +29,7 @@ struct DownloadEntry {
     filesize: Option<u64>,
 }
 
-fn auth_error(message: &str) -> AddonError {
+pub(crate) fn auth_error(message: &str) -> AddonError {
     let mut err = AddonError::new(AddonErrorCode::Auth, message);
     err.user_visible = true;
     err
@@ -37,7 +37,10 @@ fn auth_error(message: &str) -> AddonError {
 
 fn token(host: &dyn Host) -> Result<String, AddonError> {
     host::secret_get(host, "api_token")?.ok_or_else(|| {
-        auth_error("no Real-Debrid token: set the api_token secret (real-debrid.com/apitoken)")
+        auth_error(
+            "not signed in to Real-Debrid: use Link account, or set the api_token secret \
+             (real-debrid.com/apitoken)",
+        )
     })
 }
 
@@ -50,7 +53,9 @@ fn api_get(host: &dyn Host, path_query: &str) -> Result<HttpResponse, AddonError
     let resp = host::http_get(host, &format!("{API}{path_query}"), headers)?;
     match resp.status {
         200..=299 => Ok(resp),
-        401 => Err(auth_error("Real-Debrid rejected the api_token (401)")),
+        // Also how an expired device-link access token shows up; the host
+        // then asks `auth::refresh` for a new one and retries.
+        401 => Err(auth_error("Real-Debrid rejected the access token (401)")),
         403 => Err(auth_error(
             "Real-Debrid account locked or not premium (403)",
         )),
@@ -134,6 +139,7 @@ fn source_for(url: String) -> PlayableSource {
         quality: None,
         audio_lang: None,
         expires_at: None,
+        drm: None,
     }
 }
 

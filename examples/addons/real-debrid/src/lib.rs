@@ -1,13 +1,18 @@
 //! Real-Debrid downloads add-on for RVAH (ABI v0.1 wasm guest).
 //!
 //! Catalog = your Real-Debrid downloads history; resolving an item plays
-//! its direct (already unrestricted) link. Requires the `api_token` secret
-//! (from <https://real-debrid.com/apitoken>), stored via `rvah secret-set`.
+//! its direct (already unrestricted) link. Sign in with a device code
+//! (Link account, see [`auth`]) or set the `api_token` secret from
+//! <https://real-debrid.com/apitoken> via `rvah secret-set`.
 
+pub mod auth;
 pub mod host;
 pub mod rd;
 
-use rvah_addon_sdk::{AccountStatus, AddonError, AddonErrorCode, Filter, Page, ResolveResult};
+use rvah_addon_sdk::{
+    AccountStatus, AddonError, AddonErrorCode, AuthPoll, Credentials, DeviceAuth, Filter, Page,
+    ResolveResult,
+};
 use serde::{Deserialize, Serialize};
 
 use host::Host;
@@ -38,6 +43,11 @@ enum Op {
         source_id: Option<String>,
     },
     AccountStatus,
+    AuthBegin,
+    AuthPoll {
+        device_code: String,
+    },
+    AuthRefresh,
 }
 
 /// Mirror of the host's `AddonResponse` wire shape.
@@ -48,6 +58,9 @@ enum Response {
     Page(Page),
     Resolve(ResolveResult),
     Account(AccountStatus),
+    DeviceAuth(DeviceAuth),
+    AuthPoll(AuthPoll),
+    Credentials(Credentials),
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -62,6 +75,9 @@ fn dispatch(input: &[u8], host: &dyn Host) -> Result<Response, AddonError> {
         )),
         Op::Resolve { item_id, .. } => rd::resolve(host, &item_id).map(Response::Resolve),
         Op::AccountStatus => rd::account(host).map(Response::Account),
+        Op::AuthBegin => auth::begin(host).map(Response::DeviceAuth),
+        Op::AuthPoll { device_code } => auth::poll(host, &device_code).map(Response::AuthPoll),
+        Op::AuthRefresh => auth::refresh(host).map(Response::Credentials),
     }
 }
 
@@ -95,19 +111,32 @@ pub extern "C" fn rvah_invoke(ptr: i32, len: i32) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rvah_addon_sdk::PageItem;
+    use rvah_addon_sdk::{AuthPoll, PageItem};
     use serde_json::{json, Value};
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
     /// Scripted host: canned HTTP responses per URL, in-memory storage and
-    /// secrets, recorded log lines.
+    /// secrets, recorded requests.
     #[derive(Default)]
     struct MockHost {
         secrets: BTreeMap<String, String>,
         http: BTreeMap<String, (u16, Vec<u8>)>,
         storage: Mutex<BTreeMap<String, Vec<u8>>>,
         http_calls: Mutex<Vec<String>>,
+        /// (method, url, body) of every request, in order.
+        requests: Mutex<Vec<(String, String, String)>>,
+    }
+
+    impl MockHost {
+        fn route(&mut self, url: &str, status: u16, body: Value) {
+            self.http
+                .insert(url.into(), (status, serde_json::to_vec(&body).unwrap()));
+        }
+
+        fn requests(&self) -> Vec<(String, String, String)> {
+            self.requests.lock().unwrap().clone()
+        }
     }
 
     impl Host for MockHost {
@@ -115,12 +144,23 @@ mod tests {
             match request["fn"].as_str().unwrap() {
                 "http_fetch" => {
                     let url = request["req"]["url"].as_str().unwrap().to_string();
-                    assert!(
-                        request["req"]["headers"]["authorization"]
-                            .as_str()
-                            .is_some_and(|h| h.starts_with("Bearer ")),
-                        "every API call must send the bearer token"
-                    );
+                    if url.starts_with("https://api.real-debrid.com/rest/") {
+                        assert!(
+                            request["req"]["headers"]["authorization"]
+                                .as_str()
+                                .is_some_and(|h| h.starts_with("Bearer ")),
+                            "every REST call must send the bearer token"
+                        );
+                    }
+                    let body: Vec<u8> = match &request["req"]["body"] {
+                        Value::Null => Vec::new(),
+                        body => serde_json::from_value(body.clone()).unwrap(),
+                    };
+                    self.requests.lock().unwrap().push((
+                        request["req"]["method"].as_str().unwrap().to_string(),
+                        url.clone(),
+                        String::from_utf8(body).unwrap(),
+                    ));
                     self.http_calls.lock().unwrap().push(url.clone());
                     let (status, body) = self
                         .http
@@ -285,5 +325,136 @@ mod tests {
         // Undeclared op → structured error, not a panic.
         let err = dispatch(br#"{"op":"search","query":"x","cursor":null}"#, &host).unwrap_err();
         assert_eq!(err.code, AddonErrorCode::Internal);
+    }
+
+    const CODE_URL: &str =
+        "https://api.real-debrid.com/oauth/v2/device/code?client_id=X245A4XAIBGVM&new_credentials=yes";
+    const CREDENTIALS_URL: &str =
+        "https://api.real-debrid.com/oauth/v2/device/credentials?client_id=X245A4XAIBGVM&code=dev-code-1";
+    const TOKEN_URL: &str = "https://api.real-debrid.com/oauth/v2/token";
+
+    fn token_response(access: &str, refresh: &str) -> Value {
+        json!({
+            "access_token": access, "expires_in": 3600,
+            "token_type": "Bearer", "refresh_token": refresh
+        })
+    }
+
+    #[test]
+    fn begin_asks_real_debrid_for_a_device_code() {
+        let mut host = MockHost::default();
+        host.route(
+            CODE_URL,
+            200,
+            json!({
+                "device_code": "dev-code-1", "user_code": "ABCDEFGH",
+                "interval": 5, "expires_in": 1800,
+                "verification_url": "https://real-debrid.com/device"
+            }),
+        );
+        let device = auth::begin(&host).unwrap();
+        assert_eq!(device.user_code, "ABCDEFGH");
+        assert_eq!(device.verification_url, "https://real-debrid.com/device");
+        assert_eq!(device.device_code, "dev-code-1");
+        assert_eq!((device.interval_secs, device.expires_in_secs), (5, 1800));
+    }
+
+    #[test]
+    fn poll_is_pending_until_the_user_approves() {
+        let mut host = MockHost::default();
+        host.route(
+            CREDENTIALS_URL,
+            403,
+            json!({ "error": "authorization_pending" }),
+        );
+        assert_eq!(auth::poll(&host, "dev-code-1").unwrap(), AuthPoll::Pending);
+        assert_eq!(host.requests().len(), 1, "no token request before approval");
+    }
+
+    #[test]
+    fn approval_trades_the_device_code_for_tokens() {
+        let mut host = MockHost::default();
+        host.route(
+            CREDENTIALS_URL,
+            200,
+            json!({ "client_id": "cid-1", "client_secret": "csecret-1" }),
+        );
+        host.route(TOKEN_URL, 200, token_response("access-1", "refresh-1"));
+        let AuthPoll::Authorized(credentials) = auth::poll(&host, "dev-code-1").unwrap() else {
+            panic!("expected approval");
+        };
+        assert_eq!(credentials.0["api_token"], "access-1");
+        let client: Value = serde_json::from_str(&credentials.0["oauth_client"]).unwrap();
+        assert_eq!(
+            client,
+            json!({ "client_id": "cid-1", "client_secret": "csecret-1", "refresh_token": "refresh-1" })
+        );
+
+        let (method, url, body) = host.requests().pop().unwrap();
+        assert_eq!((method.as_str(), url.as_str()), ("POST", TOKEN_URL));
+        assert_eq!(
+            body,
+            "client_id=cid-1&client_secret=csecret-1&code=dev-code-1\
+             &grant_type=http%3A%2F%2Foauth.net%2Fgrant_type%2Fdevice%2F1.0"
+        );
+    }
+
+    #[test]
+    fn refresh_trades_the_stored_refresh_token_for_new_tokens() {
+        let mut host = MockHost::default();
+        host.secrets.insert(
+            "oauth_client".into(),
+            json!({ "client_id": "cid-1", "client_secret": "csecret-1", "refresh_token": "refresh-1" })
+                .to_string(),
+        );
+        host.route(TOKEN_URL, 200, token_response("access-2", "refresh-2"));
+        let credentials = auth::refresh(&host).unwrap();
+        assert_eq!(credentials.0["api_token"], "access-2");
+        assert!(credentials.0["oauth_client"].contains("refresh-2"));
+        let (_, _, body) = host.requests().pop().unwrap();
+        assert!(body.contains("&code=refresh-1&"), "{body}");
+
+        host.route(
+            TOKEN_URL,
+            401,
+            json!({ "error": "bad_token", "error_code": 8 }),
+        );
+        assert_eq!(auth::refresh(&host).unwrap_err().code, AddonErrorCode::Auth);
+    }
+
+    #[test]
+    fn refresh_without_a_device_link_is_an_auth_error() {
+        // A pasted api_token has nothing to refresh with.
+        let host = rd_host();
+        let err = auth::refresh(&host).unwrap_err();
+        assert_eq!(err.code, AddonErrorCode::Auth);
+        assert!(host.requests().is_empty());
+    }
+
+    #[test]
+    fn dispatch_speaks_the_auth_wire_format() {
+        let mut host = MockHost::default();
+        host.route(
+            CODE_URL,
+            200,
+            json!({
+                "device_code": "dev-code-1", "user_code": "ABCDEFGH",
+                "interval": 5, "expires_in": 1800,
+                "verification_url": "https://real-debrid.com/device"
+            }),
+        );
+        host.route(CREDENTIALS_URL, 403, json!({}));
+        let begin =
+            serde_json::to_value(dispatch(br#"{"op":"auth_begin"}"#, &host).unwrap()).unwrap();
+        assert_eq!(begin["kind"], "device_auth");
+        assert_eq!(begin["value"]["user_code"], "ABCDEFGH");
+        let poll = serde_json::to_value(
+            dispatch(br#"{"op":"auth_poll","device_code":"dev-code-1"}"#, &host).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            poll,
+            json!({ "kind": "auth_poll", "value": { "status": "pending" } })
+        );
     }
 }
