@@ -54,7 +54,8 @@ catalog.
 ## Verification status
 
 Rust side: `cargo test -p rvah-android` covers install preview and consent,
-trusted-signer checks, secrets, setting validation, and quarantine recovery;
+trusted-signer checks, secrets, setting validation, quarantine recovery, and
+page cursors for browse and search;
 the crate cross-compiles for `arm64-v8a` and `armeabi-v7a` with NDK 27.
 Kotlin side: `./gradlew :app:testDebugUnitTest` runs the JVM tests;
 `assembleDebug`, `assembleDebugAndroidTest`, and the R8-minified
@@ -62,5 +63,9 @@ Kotlin side: `./gradlew :app:testDebugUnitTest` runs the JVM tests;
 `PlaybackMediaInstrumentedTest` needs a device or emulator
 (`connectedDebugAndroidTest`), since `MediaItem` uses `android.net.Uri`.
 First-frame rendering, D-pad focus, hardware decode, and audio sync still
-need a physical Android TV smoke test. Catalog pagination ("load more") is
-not wired on Android yet; only the first page of a directory is shown.
+need a physical Android TV smoke test.
+
+Browse and search lists end in a "Load more" row while the add-on reports
+another page; the new rows take focus as they land. Loaded pages survive a
+trip to the player or into a subdirectory, and Back refocuses the row that was
+opened. The paging rules are in `Listing.kt` (JVM-tested in `ListingTest`).
