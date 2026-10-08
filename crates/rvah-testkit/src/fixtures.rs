@@ -298,8 +298,9 @@ impl AddonProvider for LargeCatalogProvider {
 }
 
 /// Device-code sign-in fixture (UC-04). Polls approve from the
-/// `approve_after`-th on; `list` fails with an auth error until a refresh
-/// has happened, like an access token that expired after linking.
+/// `approve_after`-th on; `list` and `account_status` fail with an auth
+/// error until a refresh has happened, like an access token that expired
+/// after linking.
 pub struct DeviceAuthProvider {
     approve_after: u32,
     interval_secs: u32,
@@ -364,6 +365,15 @@ impl AddonProvider for DeviceAuthProvider {
         Ok(Page {
             items: vec![media("m1", "Linked Movie")],
             ..Page::default()
+        })
+    }
+
+    fn account_status(&self, _ctx: &dyn HostApi) -> Result<AccountStatus, AddonError> {
+        if self.refreshes() == 0 {
+            return Err(AddonError::new(AddonErrorCode::Auth, "token expired"));
+        }
+        Ok(AccountStatus::SignedIn {
+            display_name: Some("fixture-user".into()),
         })
     }
 

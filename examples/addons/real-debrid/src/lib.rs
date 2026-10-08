@@ -457,4 +457,19 @@ mod tests {
             json!({ "kind": "auth_poll", "value": { "status": "pending" } })
         );
     }
+
+    #[test]
+    fn an_expired_link_asks_the_host_to_refresh_instead_of_signing_out() {
+        let mut host = rd_host();
+        host.route(
+            "https://api.real-debrid.com/rest/1.0/user",
+            401,
+            json!({ "error": "bad_token", "error_code": 8 }),
+        );
+        // A pasted token that is rejected: simply signed out.
+        assert_eq!(rd::account(&host).unwrap(), AccountStatus::SignedOut);
+        // A device link can be refreshed, so report it as an auth failure.
+        host.secrets.insert("oauth_client".into(), "{}".into());
+        assert_eq!(rd::account(&host).unwrap_err().code, AddonErrorCode::Auth);
+    }
 }

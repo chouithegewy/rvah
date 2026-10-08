@@ -39,7 +39,14 @@ fingerprint, capabilities, network hosts, storage, secrets) → Approve. The
 core re-verifies the signature on approval and refuses the install if the
 package's permissions no longer match what was shown.
 
-For Real-Debrid: Settings → Real-Debrid Downloads → enter `api_token` → Save.
+For Real-Debrid: Settings → Real-Debrid Downloads → **Link account**. The TV
+shows a code; open `real-debrid.com/device` on a phone or computer, sign in
+there, and enter it. The TV notices within a few seconds and shows the linked
+account. The tokens go straight to the Keystore-backed vault, and the host
+refreshes the access token when it expires, so linking is a one-time step.
+Typing your private `api_token` (real-debrid.com/apitoken) on the same
+screen still works. Version 0.2.0 of the add-on is needed for linking.
+
 An add-on that failed three times in a row is quarantined; the same screen
 re-enables it once its credentials are fixed. Diagnostics lists recent core
 events, including add-ons whose runtime failed to load.
@@ -54,8 +61,8 @@ catalog.
 ## Verification status
 
 Rust side: `cargo test -p rvah-android` covers install preview and consent,
-trusted-signer checks, secrets, setting validation, quarantine recovery, and
-page cursors for browse and search;
+trusted-signer checks, secrets, setting validation, quarantine recovery, page
+cursors for browse and search, and device-code sign-in;
 the crate cross-compiles for `arm64-v8a` and `armeabi-v7a` with NDK 27.
 Kotlin side: `./gradlew :app:testDebugUnitTest` runs the JVM tests;
 `assembleDebug`, `assembleDebugAndroidTest`, and the R8-minified

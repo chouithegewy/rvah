@@ -9,8 +9,8 @@ use rvah_addon_host::{
     AddonManager, AddonRuntime, BridgedHostApi, CapabilityGated, Manifest, WasmiLimits,
     WasmiRuntime,
 };
-use rvah_addon_sdk::{Page, PageItem, Protocol, SubtitleFormat};
-use rvah_auth::{SecretVault, VaultError};
+use rvah_addon_sdk::{AccountStatus, Page, PageItem, Protocol, SubtitleFormat};
+use rvah_auth::{DeviceCodeState, SecretVault, VaultError};
 use rvah_core::{
     lock_tracker, AppCore, PlaybackCapabilities, PlaybackLifecycleEvent, PlaybackSessionId,
     PlaybackTracker, PreparedPlayback,
@@ -158,6 +158,34 @@ pub enum CatalogEntry {
         synopsis: Option<String>,
         year: Option<u16>,
     },
+}
+
+/// What the TV shows to finish linking an account by device code (UC-04).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SignInPrompt {
+    pub user_code: String,
+    pub verification_url: String,
+    /// The provider's minimum wait between polls.
+    pub interval_secs: u32,
+    /// Unix seconds after which the code stops working.
+    pub expires_at_unix: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum SignInState {
+    /// The user has not entered the code yet.
+    Waiting,
+    /// Credentials are in the vault.
+    Linked,
+    Expired,
+    Denied,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum AccountState {
+    SignedOut,
+    SignedIn { display_name: Option<String> },
+    Expired,
 }
 
 /// One page of a catalog or search listing. Pass `next_cursor` back to get
@@ -707,6 +735,46 @@ impl AndroidCore {
             .map_err(playback_error)
     }
 
+    /// Start linking the add-on's account by device code. The device code
+    /// and the resulting credentials never cross into Kotlin.
+    pub fn begin_sign_in(&self, addon_id: String) -> Result<SignInPrompt, AndroidCoreError> {
+        let prompt = self.core().auth_begin(&addon_id).map_err(addon_error)?;
+        Ok(SignInPrompt {
+            user_code: prompt.user_code,
+            verification_url: prompt.verification_url,
+            interval_secs: prompt.interval_secs,
+            expires_at_unix: prompt.expires_at,
+        })
+    }
+
+    /// Check once for approval. The core paces calls to the provider's
+    /// interval, so polling more often is harmless. Linked, Expired and
+    /// Denied end the sign-in.
+    pub fn poll_sign_in(&self, addon_id: String) -> Result<SignInState, AndroidCoreError> {
+        Ok(
+            match self.core().auth_poll(&addon_id).map_err(addon_error)? {
+                DeviceCodeState::Pending { .. } => SignInState::Waiting,
+                DeviceCodeState::Authorized => SignInState::Linked,
+                DeviceCodeState::Expired => SignInState::Expired,
+                DeviceCodeState::Denied => SignInState::Denied,
+            },
+        )
+    }
+
+    pub fn cancel_sign_in(&self, addon_id: String) {
+        self.core().auth_cancel(&addon_id);
+    }
+
+    pub fn account_status(&self, addon_id: String) -> Result<AccountState, AndroidCoreError> {
+        Ok(
+            match self.core().account_status(&addon_id).map_err(addon_error)? {
+                AccountStatus::SignedOut => AccountState::SignedOut,
+                AccountStatus::SignedIn { display_name } => AccountState::SignedIn { display_name },
+                AccountStatus::Expired => AccountState::Expired,
+            },
+        )
+    }
+
     /// Never waits for an in-flight add-on call (see [`AndroidCore`]).
     pub fn stop_playback(&self, session_id: u64) -> Result<bool, AndroidCoreError> {
         Ok(lock_tracker(&self.playback).stop(PlaybackSessionId(session_id)))
@@ -715,6 +783,12 @@ impl AndroidCore {
 
 fn playback_error(error: rvah_core::CoreError) -> AndroidCoreError {
     AndroidCoreError::Playback {
+        reason: error.to_string(),
+    }
+}
+
+fn addon_error(error: rvah_core::CoreError) -> AndroidCoreError {
+    AndroidCoreError::Addon {
         reason: error.to_string(),
     }
 }
@@ -934,7 +1008,7 @@ name = "TV Fixture"
 version = "0.1.0"
 sdk = ">=0.1, <0.2"
 entry = "module.wasm"
-capabilities = ["catalog", "search"]
+capabilities = ["catalog", "search", "auth", "account_status"]
 
 [permissions]
 network = ["api.example.com"]
@@ -947,17 +1021,43 @@ subtitles = { type = "bool", default = false }
 
     const EMPTY_PAGE: &str = r#"{"items":[]}"#;
 
-    /// Wasm guest (WAT; Wasmi accepts text) answering every op with `page`.
+    const DEVICE_AUTH: &str = r#"{"Ok":{"kind":"device_auth","value":{"user_code":"WXYZ-1234","verification_url":"https://example.com/device","device_code":"dev-1","interval_secs":0,"expires_in_secs":600}}}"#;
+    const APPROVED: &str = r#"{"Ok":{"kind":"auth_poll","value":{"status":"authorized","credentials":{"api_token":"tok-1"}}}}"#;
+    const SIGNED_IN: &str =
+        r#"{"Ok":{"kind":"account","value":{"kind":"signed_in","display_name":"fixture-user"}}}"#;
+
+    /// Wasm guest (WAT; Wasmi accepts text). It tells ops apart by one byte
+    /// of the request (`{"op":"auth_begin"...`): `auth_begin` gets a device
+    /// code, `auth_poll` an approval with an `api_token`, `account_status` a
+    /// signed-in account, and anything else `page`.
     fn module(page: &str) -> String {
         let page = format!(r#"{{"Ok":{{"kind":"page","value":{page}}}}}"#);
+        let escape = |json: &str| json.replace('"', "\\\"");
+        let at = |offset: i64, json: &str| (offset << 32) | json.len() as i64;
         format!(
             r#"(module
   (memory (export "memory") 1)
-  (data (i32.const 1024) "{}")
+  (data (i32.const 1024) "{page_data}")
+  (data (i32.const 2048) "{begin_data}")
+  (data (i32.const 3072) "{poll_data}")
+  (data (i32.const 3584) "{account_data}")
   (func (export "rvah_alloc") (param i32) (result i32) (i32.const 4096))
-  (func (export "rvah_invoke") (param i32 i32) (result i64) (i64.const {})))"#,
-            page.replace('"', "\\\""),
-            (1024_i64 << 32) | page.len() as i64
+  (func (export "rvah_invoke") (param $ptr i32) (param i32) (result i64)
+    (if (i32.eq (i32.load8_u offset=12 (local.get $ptr)) (i32.const 98))
+      (then (return (i64.const {begin}))))
+    (if (i32.eq (i32.load8_u offset=12 (local.get $ptr)) (i32.const 112))
+      (then (return (i64.const {poll}))))
+    (if (i32.eq (i32.load8_u offset=8 (local.get $ptr)) (i32.const 99))
+      (then (return (i64.const {account}))))
+    (i64.const {page_at})))"#,
+            page_data = escape(&page),
+            begin_data = escape(DEVICE_AUTH),
+            poll_data = escape(APPROVED),
+            account_data = escape(SIGNED_IN),
+            begin = at(2048, DEVICE_AUTH),
+            poll = at(3072, APPROVED),
+            account = at(3584, SIGNED_IN),
+            page_at = at(1024, &page),
         )
     }
 
@@ -1026,7 +1126,10 @@ subtitles = { type = "bool", default = false }
         assert_eq!(preview.id, ID);
         assert_eq!(preview.name, "TV Fixture");
         assert_eq!(preview.version, "0.1.0");
-        assert_eq!(preview.capabilities, ["catalog", "search"]);
+        assert_eq!(
+            preview.capabilities,
+            ["catalog", "search", "auth", "account_status"]
+        );
         assert_eq!(preview.network, ["api.example.com"]);
         assert_eq!(preview.secrets, ["api_token"]);
         assert_eq!(preview.signer_key_hex, f.key_hex);
@@ -1066,7 +1169,10 @@ subtitles = { type = "bool", default = false }
         let addons = f.core.addons().unwrap();
         assert_eq!(addons.len(), 1);
         assert_eq!(addons[0].status, "enabled");
-        assert_eq!(addons[0].capabilities, ["catalog", "search"]);
+        assert_eq!(
+            addons[0].capabilities,
+            ["catalog", "search", "auth", "account_status"]
+        );
         let page = f.core.browse(ID.into(), None, None).unwrap();
         assert!(page.entries.is_empty());
         assert_eq!(page.next_cursor, None);
@@ -1180,6 +1286,39 @@ subtitles = { type = "bool", default = false }
         assert_eq!(
             prepared.with_title(Some("  ".into())).title,
             "opaque-id-123"
+        );
+    }
+
+    #[test]
+    fn device_code_sign_in_stores_the_token_without_showing_it() {
+        let f = installed();
+        let prompt = f.core.begin_sign_in(ID.into()).unwrap();
+        assert_eq!(prompt.user_code, "WXYZ-1234");
+        assert_eq!(prompt.verification_url, "https://example.com/device");
+        assert!(prompt.expires_at_unix > 0);
+        assert_eq!(f.core.poll_sign_in(ID.into()).unwrap(), SignInState::Linked);
+        let secrets = f.core.secret_status(ID.into()).unwrap();
+        assert!(secrets.iter().any(|s| s.name == "api_token" && s.is_set));
+        // The sign-in is over; there is nothing left to poll.
+        assert!(f.core.poll_sign_in(ID.into()).is_err());
+    }
+
+    #[test]
+    fn a_cancelled_sign_in_cannot_be_polled() {
+        let f = installed();
+        f.core.begin_sign_in(ID.into()).unwrap();
+        f.core.cancel_sign_in(ID.into());
+        assert!(f.core.poll_sign_in(ID.into()).is_err());
+    }
+
+    #[test]
+    fn account_status_names_the_signed_in_user() {
+        let f = installed();
+        assert_eq!(
+            f.core.account_status(ID.into()).unwrap(),
+            AccountState::SignedIn {
+                display_name: Some("fixture-user".into())
+            }
         );
     }
 }

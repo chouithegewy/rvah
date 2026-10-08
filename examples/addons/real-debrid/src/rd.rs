@@ -170,6 +170,10 @@ pub fn resolve(host: &dyn Host, item_id: &str) -> Result<ResolveResult, AddonErr
     })
 }
 
+fn linked(host: &dyn Host) -> Result<bool, AddonError> {
+    Ok(host::secret_get(host, "oauth_client")?.is_some())
+}
+
 /// `GET /user`: premium account → signed in.
 pub fn account(host: &dyn Host) -> Result<AccountStatus, AddonError> {
     #[derive(Deserialize)]
@@ -180,7 +184,10 @@ pub fn account(host: &dyn Host) -> Result<AccountStatus, AddonError> {
     }
     let resp = match api_get(host, "/user") {
         Ok(resp) => resp,
-        Err(e) if e.code == AddonErrorCode::Auth => return Ok(AccountStatus::SignedOut),
+        // A device link has refresh material: let the host refresh it.
+        Err(e) if e.code == AddonErrorCode::Auth && !linked(host)? => {
+            return Ok(AccountStatus::SignedOut)
+        }
         Err(e) => return Err(e),
     };
     let user: User = serde_json::from_slice(&resp.body).map_err(|e| {

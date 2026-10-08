@@ -6,7 +6,8 @@ use rvah_addon_host::{
     AddonManager, AddonOp, AddonResponse, AddonRuntime, Capability, InvocationCtx, Manifest,
 };
 use rvah_addon_sdk::{
-    AddonError, AddonErrorCode, AuthPoll, Credentials, Filter, HostApi, Page, ResolveResult,
+    AccountStatus, AddonError, AddonErrorCode, AuthPoll, Credentials, Filter, HostApi, Page,
+    ResolveResult,
 };
 use rvah_auth::{DeviceCodeFlow, DeviceCodeState, PollOutcome, SecretVault};
 use rvah_data::{AddonStatus, Database, DiagnosticEvent, FavoriteRecord};
@@ -607,6 +608,15 @@ impl<B: PlayerBackend> AppCore<B> {
     /// Abandon a sign-in, e.g. when the user leaves the screen.
     pub fn auth_cancel(&mut self, addon_id: &str) {
         self.sign_ins.remove(addon_id);
+    }
+
+    /// The add-on's view of its account (FR-085), after a refresh if the
+    /// stored token had expired.
+    pub fn account_status(&mut self, addon_id: &str) -> Result<AccountStatus, CoreError> {
+        match self.invoke(addon_id, AddonOp::AccountStatus)? {
+            AddonResponse::Account(status) => Ok(status),
+            other => Err(unexpected_response(&other)),
+        }
     }
 
     /// Re-approve the permissions currently declared by the installed

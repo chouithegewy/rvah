@@ -745,3 +745,31 @@ fn add_ons_without_the_auth_capability_are_never_refreshed() {
     assert!(w.core.browse(LINK_ID, None, None).is_err());
     assert_eq!(provider.refreshes(), 0);
 }
+
+#[test]
+fn account_status_reports_the_linked_account_after_a_refresh() {
+    // FR-085: the settings screen can say who is signed in.
+    let provider = Arc::new(
+        DeviceAuthProvider::new(1, &[("api_token", "tok-1")])
+            .refreshing_to(&[("api_token", "tok-2")]),
+    );
+    let mut w = World::new();
+    w.add_addon_with_secrets(
+        LINK_ID,
+        &["catalog", "auth", "account_status"],
+        &["api_token", "oauth_client"],
+        Arc::clone(&provider) as Arc<dyn AddonProvider + Send + Sync>,
+        vec![
+            Capability::Catalog,
+            Capability::Auth,
+            Capability::AccountStatus,
+        ],
+    );
+    assert_eq!(
+        w.core.account_status(LINK_ID).unwrap(),
+        rvah_addon_sdk::AccountStatus::SignedIn {
+            display_name: Some("fixture-user".into())
+        }
+    );
+    assert_eq!(provider.refreshes(), 1);
+}
