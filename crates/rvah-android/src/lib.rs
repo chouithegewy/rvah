@@ -787,6 +787,36 @@ fn playback_error(error: rvah_core::CoreError) -> AndroidCoreError {
     }
 }
 
+/// Route the core's debug lines (add-on calls and timings, credential
+/// refreshes) to logcat under the tag `rvah`. Debug builds turn this on at
+/// startup; `adb logcat -s rvah` shows them.
+#[uniffi::export]
+pub fn set_debug_logging(enabled: bool) {
+    rvah_core::debug::set_sink(Some(logcat));
+    rvah_core::debug::set_enabled(enabled);
+}
+
+#[cfg(target_os = "android")]
+fn logcat(line: &str) {
+    use std::ffi::{c_char, c_int, CString};
+    #[link(name = "log")]
+    extern "C" {
+        fn __android_log_write(prio: c_int, tag: *const c_char, text: *const c_char) -> c_int;
+    }
+    const ANDROID_LOG_DEBUG: c_int = 3;
+    let text = CString::new(line.replace('\0', " ")).unwrap_or_default();
+    // SAFETY: both pointers are valid NUL-terminated strings for the call.
+    unsafe {
+        __android_log_write(ANDROID_LOG_DEBUG, c"rvah".as_ptr(), text.as_ptr());
+    }
+}
+
+/// Host builds (tests) have no logcat.
+#[cfg(not(target_os = "android"))]
+fn logcat(line: &str) {
+    eprintln!("{line}");
+}
+
 fn addon_error(error: rvah_core::CoreError) -> AndroidCoreError {
     AndroidCoreError::Addon {
         reason: error.to_string(),
@@ -926,6 +956,14 @@ fn load_wasmi_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_logging_switches_the_core_flag() {
+        set_debug_logging(true);
+        assert!(rvah_core::debug::enabled());
+        set_debug_logging(false);
+        assert!(!rvah_core::debug::enabled());
+    }
 
     #[test]
     fn source_conversion_maps_protocol_headers_subtitles_and_resume() {

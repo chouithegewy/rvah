@@ -58,6 +58,34 @@ play/pause button has focus first; media keys (play/pause, fast-forward,
 rewind) work regardless of focus; Back stops playback and returns to the
 catalog.
 
+## Emulator
+
+`android/tv-emulator.sh` runs the app on an Android TV emulator (API 36,
+x86_64, 1080p) for testing and debugging without a TV:
+
+```sh
+export ANDROID_HOME=~/Android/Sdk          # needs cmdline-tools/latest
+android/tv-emulator.sh setup               # once: emulator, TV image, AVD "rvah-tv"
+android/tv-emulator.sh run                 # boot, build + install, push add-ons, launch
+android/tv-emulator.sh logs                # the app's log; Rust core lines are tagged rvah
+android/tv-emulator.sh key down down ok    # drive it like a remote
+android/tv-emulator.sh screenshot shot.png
+```
+
+`run` builds only the x86_64 core and installs the debug APK, trusting
+`keys/verify.pub` if it exists. `addons` pushes every signed `*.rvah` in the
+repository root; install them from the app's Install screen as on a TV. In
+the emulator window, the arrow keys and Enter work as the D-pad.
+
+The emulator needs hardware virtualization: `/dev/kvm` must exist and be
+writable by you. On AMD, enable "SVM Mode" in the firmware settings (Intel:
+VT-x), reboot, and add yourself to the `kvm` group if needed
+(`sudo usermod -aG kvm "$USER"`). Without it, `start` stops with that advice.
+
+Debug builds send the Rust core's debug lines (each add-on call with its
+outcome and duration, credential refreshes) to logcat under the tag `rvah`,
+on a physical TV as well: `adb logcat -s rvah`.
+
 ## Verification status
 
 Rust side: `cargo test -p rvah-android` covers install preview and consent,

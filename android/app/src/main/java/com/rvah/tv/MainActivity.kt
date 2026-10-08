@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.lifecycle.lifecycleScope
 import uniffi.rvah_android.AndroidCore
+import uniffi.rvah_android.setDebugLogging
 
 class MainActivity : ComponentActivity() {
     private lateinit var owner: RvahPlayerOwner
@@ -15,6 +16,8 @@ class MainActivity : ComponentActivity() {
         // Opening the core touches SQLite and compiles every installed add-on;
         // RvahTvApp calls this on Dispatchers.IO, never on the main thread.
         val openCore = {
+            // Core debug lines in logcat (`adb logcat -s rvah`) for debug builds.
+            if (BuildConfig.DEBUG) setDebugLogging(true)
             AndroidCore.open(filesDir.absolutePath, AndroidKeystoreSecretStore(applicationContext))
         }
         setContent {
