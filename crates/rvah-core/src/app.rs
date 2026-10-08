@@ -179,6 +179,9 @@ impl<B: PlayerBackend> AppCore<B> {
         path: Option<String>,
         cursor: Option<String>,
     ) -> Result<Page, CoreError> {
+        // A cursor continues the listing already on screen (FR-024): the
+        // location is unchanged, so history gains no entry.
+        let follow_up = cursor.is_some();
         let page = Self::expect_page(self.invoke(
             addon_id,
             AddonOp::List {
@@ -186,16 +189,24 @@ impl<B: PlayerBackend> AppCore<B> {
                 cursor,
             },
         )?)?;
-        self.nav
-            .push(format!("{addon_id}:{}", path.as_deref().unwrap_or("/")));
+        if !follow_up {
+            self.nav
+                .push(format!("{addon_id}:{}", path.as_deref().unwrap_or("/")));
+        }
         Ok(page)
     }
 
-    pub fn search(&mut self, addon_id: &str, query: &str) -> Result<Page, CoreError> {
+    /// `cursor` is the previous page's `cursor_next`, or `None` for the first.
+    pub fn search(
+        &mut self,
+        addon_id: &str,
+        query: &str,
+        cursor: Option<String>,
+    ) -> Result<Page, CoreError> {
         let op = AddonOp::Search {
             query: query.to_string(),
             filters: Vec::<Filter>::new(),
-            cursor: None,
+            cursor,
         };
         Self::expect_page(self.invoke(addon_id, op)?)
     }
@@ -215,7 +226,7 @@ impl<B: PlayerBackend> AppCore<B> {
         candidates
             .into_iter()
             .map(|id| {
-                let result = self.search(&id, query);
+                let result = self.search(&id, query, None);
                 (id, result)
             })
             .collect()
