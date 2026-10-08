@@ -273,7 +273,9 @@ impl<B: PlayerBackend + Send + 'static> CoreService<B> {
                 let results = match addon_id {
                     Some(id) => vec![(
                         id.clone(),
-                        self.core.search(&id, &query).map_err(|e| e.to_string()),
+                        self.core
+                            .search(&id, &query, None)
+                            .map_err(|e| e.to_string()),
                     )],
                     None => self
                         .core

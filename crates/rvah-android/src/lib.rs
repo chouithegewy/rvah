@@ -9,7 +9,7 @@ use rvah_addon_host::{
     AddonManager, AddonRuntime, BridgedHostApi, CapabilityGated, Manifest, WasmiLimits,
     WasmiRuntime,
 };
-use rvah_addon_sdk::{PageItem, Protocol, SubtitleFormat};
+use rvah_addon_sdk::{Page, PageItem, Protocol, SubtitleFormat};
 use rvah_auth::{SecretVault, VaultError};
 use rvah_core::{
     lock_tracker, AppCore, PlaybackCapabilities, PlaybackLifecycleEvent, PlaybackSessionId,
@@ -158,6 +158,23 @@ pub enum CatalogEntry {
         synopsis: Option<String>,
         year: Option<u16>,
     },
+}
+
+/// One page of a catalog or search listing. Pass `next_cursor` back to get
+/// the page after it; `None` means this was the last page (FR-024).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct CatalogPage {
+    pub entries: Vec<CatalogEntry>,
+    pub next_cursor: Option<String>,
+}
+
+impl From<Page> for CatalogPage {
+    fn from(page: Page) -> Self {
+        Self {
+            entries: page.items.into_iter().map(catalog_entry).collect(),
+            next_cursor: page.cursor_next,
+        }
+    }
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -639,28 +656,30 @@ impl AndroidCore {
             .collect())
     }
 
+    /// `cursor` is the previous page's `next_cursor`, or `None` for the first.
     pub fn browse(
         &self,
         addon_id: String,
         path: Option<String>,
-    ) -> Result<Vec<CatalogEntry>, AndroidCoreError> {
-        let page = self
-            .core()
-            .browse(&addon_id, path, None)
-            .map_err(playback_error)?;
-        Ok(page.items.into_iter().map(catalog_entry).collect())
+        cursor: Option<String>,
+    ) -> Result<CatalogPage, AndroidCoreError> {
+        self.core()
+            .browse(&addon_id, path, cursor)
+            .map(CatalogPage::from)
+            .map_err(playback_error)
     }
 
+    /// `cursor` is the previous page's `next_cursor`, or `None` for the first.
     pub fn search(
         &self,
         addon_id: String,
         query: String,
-    ) -> Result<Vec<CatalogEntry>, AndroidCoreError> {
-        let page = self
-            .core()
-            .search(&addon_id, &query)
-            .map_err(playback_error)?;
-        Ok(page.items.into_iter().map(catalog_entry).collect())
+        cursor: Option<String>,
+    ) -> Result<CatalogPage, AndroidCoreError> {
+        self.core()
+            .search(&addon_id, &query, cursor)
+            .map(CatalogPage::from)
+            .map_err(playback_error)
     }
 
     /// `title` is the catalog title the user selected, shown in the media
@@ -915,7 +934,7 @@ name = "TV Fixture"
 version = "0.1.0"
 sdk = ">=0.1, <0.2"
 entry = "module.wasm"
-capabilities = ["catalog"]
+capabilities = ["catalog", "search"]
 
 [permissions]
 network = ["api.example.com"]
@@ -926,10 +945,11 @@ quality = { type = "string", default = "1080p", enum = ["720p", "1080p"] }
 subtitles = { type = "bool", default = false }
 "#;
 
-    /// Wasm guest (WAT; Wasmi accepts text) answering every op with an
-    /// empty page.
-    fn module() -> String {
-        let page = r#"{"Ok":{"kind":"page","value":{"items":[]}}}"#;
+    const EMPTY_PAGE: &str = r#"{"items":[]}"#;
+
+    /// Wasm guest (WAT; Wasmi accepts text) answering every op with `page`.
+    fn module(page: &str) -> String {
+        let page = format!(r#"{{"Ok":{{"kind":"page","value":{page}}}}}"#);
         format!(
             r#"(module
   (memory (export "memory") 1)
@@ -950,11 +970,15 @@ subtitles = { type = "bool", default = false }
     }
 
     fn fixture() -> Fixture {
+        fixture_with(EMPTY_PAGE)
+    }
+
+    fn fixture_with(page: &str) -> Fixture {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("addon");
         std::fs::create_dir(&src).unwrap();
         std::fs::write(src.join("manifest.toml"), MANIFEST).unwrap();
-        std::fs::write(src.join("module.wasm"), module()).unwrap();
+        std::fs::write(src.join("module.wasm"), module(page)).unwrap();
         let pkg = tmp.path().join("tv.rvah");
         rvah_addon_host::package_dir(&src, &pkg).unwrap();
         let (signing, verifying) = rvah_addon_host::keygen();
@@ -976,7 +1000,11 @@ subtitles = { type = "bool", default = false }
     }
 
     fn installed() -> Fixture {
-        let f = fixture();
+        installed_with(EMPTY_PAGE)
+    }
+
+    fn installed_with(page: &str) -> Fixture {
+        let f = fixture_with(page);
         let keys = vec![f.key_hex.clone()];
         let preview = f.core.preview_install(f.pkg.clone(), keys.clone()).unwrap();
         f.core
@@ -998,7 +1026,7 @@ subtitles = { type = "bool", default = false }
         assert_eq!(preview.id, ID);
         assert_eq!(preview.name, "TV Fixture");
         assert_eq!(preview.version, "0.1.0");
-        assert_eq!(preview.capabilities, ["catalog"]);
+        assert_eq!(preview.capabilities, ["catalog", "search"]);
         assert_eq!(preview.network, ["api.example.com"]);
         assert_eq!(preview.secrets, ["api_token"]);
         assert_eq!(preview.signer_key_hex, f.key_hex);
@@ -1038,8 +1066,28 @@ subtitles = { type = "bool", default = false }
         let addons = f.core.addons().unwrap();
         assert_eq!(addons.len(), 1);
         assert_eq!(addons[0].status, "enabled");
-        assert_eq!(addons[0].capabilities, ["catalog"]);
-        assert!(f.core.browse(ID.into(), None).unwrap().is_empty());
+        assert_eq!(addons[0].capabilities, ["catalog", "search"]);
+        let page = f.core.browse(ID.into(), None, None).unwrap();
+        assert!(page.entries.is_empty());
+        assert_eq!(page.next_cursor, None);
+    }
+
+    #[test]
+    fn browse_and_search_hand_back_the_next_cursor() {
+        let f = installed_with(
+            r#"{"items":[{"kind":"media","id":"m1","content_type":"movie","title":"One"}],"cursor_next":"p2"}"#,
+        );
+        for page in [
+            f.core.browse(ID.into(), None, None).unwrap(),
+            f.core.browse(ID.into(), None, Some("p2".into())).unwrap(),
+            f.core.search(ID.into(), "one".into(), None).unwrap(),
+            f.core
+                .search(ID.into(), "one".into(), Some("p2".into()))
+                .unwrap(),
+        ] {
+            assert_eq!(page.next_cursor.as_deref(), Some("p2"));
+            assert!(matches!(&page.entries[..], [CatalogEntry::Media { id, .. }] if id == "m1"));
+        }
     }
 
     #[test]

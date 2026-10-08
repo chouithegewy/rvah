@@ -13,16 +13,21 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateMap
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -42,6 +47,7 @@ import androidx.tv.material3.Button
 import androidx.tv.material3.MaterialTheme
 import java.io.File
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -68,6 +74,35 @@ private sealed interface Screen {
     data class AddonSettings(val addon: AddonRecord) : Screen
     data object Install : Screen
     data object Diagnostics : Screen
+}
+
+/** The screen Back eventually leads to: the player returns to where it was opened. */
+private val Screen.base: Screen get() = if (this is Screen.Player) returnTo.base else this
+
+private data class BrowseKey(val addonId: String, val path: String?)
+
+/** Submitted search: Load more repeats this query, not whatever is typed now. */
+private data class SearchResults(
+    val generation: Int,
+    val addonId: String,
+    val query: String,
+    val listing: Listing<CatalogEntry.Media>,
+)
+
+/** Search outlives a trip to the player; leaving it for another screen starts over. */
+private class SearchModel {
+    var addonId by mutableStateOf<String?>(null)
+    var query by mutableStateOf("")
+    var results by mutableStateOf<SearchResults?>(null)
+    var searching by mutableStateOf(false)
+    var error by mutableStateOf<String?>(null)
+    /** Bumped per submission so a slow earlier search cannot overwrite a newer one. */
+    var generation = 0
+
+    /** Apply [change] only while submission [generation]'s results are the ones shown. */
+    fun updateResults(generation: Int, change: (Listing<CatalogEntry.Media>) -> Listing<CatalogEntry.Media>) {
+        results?.takeIf { it.generation == generation }?.let { results = it.copy(listing = change(it.listing)) }
+    }
 }
 
 @Composable
@@ -111,6 +146,19 @@ private fun AppNavigation(
     var addons by remember { mutableStateOf<List<AddonRecord>>(emptyList()) }
     var addonsError by remember { mutableStateOf<String?>(null) }
     var refresh by remember { mutableStateOf(0) }
+    // Loaded pages live here rather than in their screens, so Back from the
+    // player or a subdirectory shows them again with the opened row focused.
+    val browsed = remember { mutableStateMapOf<BrowseKey, Listing<CatalogEntry>>() }
+    var search by remember { mutableStateOf(SearchModel()) }
+    // Load-more requests outlive their screen so none is left stuck "Loading…".
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(screen) {
+        // Keep only what Back can still reach from here.
+        val base = screen.base
+        val levels = if (base is Screen.Browse) base.stack.map { BrowseKey(base.addonId, it) } else emptyList()
+        browsed.keys.filterNot { it in levels }.forEach { browsed.remove(it) }
+        if (base != Screen.Search) search = SearchModel()
+    }
     LaunchedEffect(refresh) {
         onIo { core.addons() }
             .onSuccess {
@@ -142,6 +190,8 @@ private fun AppNavigation(
         is Screen.Browse -> BrowseScreen(
             core = core,
             browse = current,
+            listings = browsed,
+            scope = scope,
             onNavigate = { screen = it },
             onPlay = { itemId, title -> screen = Screen.Player(current.addonId, itemId, title, current) },
             onExit = goHome,
@@ -149,6 +199,8 @@ private fun AppNavigation(
         Screen.Search -> SearchScreen(
             core = core,
             addons = searchable,
+            model = search,
+            scope = scope,
             onPlay = { addonId, itemId, title -> screen = Screen.Player(addonId, itemId, title, Screen.Search) },
             onExit = goHome,
         )
@@ -228,55 +280,118 @@ private fun HomeScreen(
 private fun BrowseScreen(
     core: AndroidCore,
     browse: Screen.Browse,
+    listings: SnapshotStateMap<BrowseKey, Listing<CatalogEntry>>,
+    scope: CoroutineScope,
     onNavigate: (Screen) -> Unit,
     onPlay: (itemId: String, title: String) -> Unit,
     onExit: () -> Unit,
 ) {
-    val path = browse.stack.last()
-    var entries by remember(browse.addonId, path) { mutableStateOf<List<CatalogEntry>?>(null) }
-    var error by remember(browse.addonId, path) { mutableStateOf<String?>(null) }
-    LaunchedEffect(browse.addonId, path) {
-        onIo { core.browse(browse.addonId, path) }
-            .onSuccess { entries = it }
+    val level = BrowseKey(browse.addonId, browse.stack.last())
+    var error by remember(level) { mutableStateOf<String?>(null) }
+    LaunchedEffect(level) {
+        if (level in listings) return@LaunchedEffect
+        onIo { core.browse(level.addonId, level.path, null) }
+            .onSuccess { listings[level] = Listing(it.entries, it.nextCursor) }
             .onFailure { error = it.userMessage() }
     }
     BackHandler {
         if (browse.stack.size > 1) onNavigate(browse.copy(stack = browse.stack.dropLast(1))) else onExit()
     }
+    // Only while the level is still loaded: a late page for a level Back
+    // already dropped must not bring it back.
+    val update: ((Listing<CatalogEntry>) -> Listing<CatalogEntry>) -> Unit = { change ->
+        listings[level]?.let { listings[level] = change(it) }
+    }
     Page(browse.addonName) {
-        val loaded = entries
+        val loaded = listings[level]
         when {
             error != null -> Body(error.orEmpty(), ErrorText)
             loaded == null -> Body("Loading…")
-            loaded.isEmpty() -> Body("Nothing here.")
-            else -> EntryList(
-                entries = loaded,
-                onDirectory = { onNavigate(browse.copy(stack = browse.stack + it.path)) },
-                onMedia = { onPlay(it.id, it.title) },
-            )
+            loaded.entries.isEmpty() && !loaded.hasMore -> Body("Nothing here.")
+            // Each level gets its own scroll and focus state.
+            else -> key(level) {
+                ListingView(
+                    listing = loaded,
+                    onOpen = { index, entry ->
+                        update { it.opened(index) }
+                        when (entry) {
+                            is CatalogEntry.Directory -> onNavigate(browse.copy(stack = browse.stack + entry.path))
+                            is CatalogEntry.Media -> onPlay(entry.id, entry.title)
+                        }
+                    },
+                    onLoadMore = {
+                        scope.loadMore(update) { cursor ->
+                            core.browse(level.addonId, level.path, cursor).let { it.entries to it.nextCursor }
+                        }
+                    },
+                )
+            }
         }
     }
 }
 
+/**
+ * The rows loaded so far, then a "Load more" row while the add-on has more
+ * pages (FR-024). Focus goes to [Listing.focusIndex] when shown and whenever
+ * a page lands, so the D-pad continues into the new rows.
+ */
 @Composable
-private fun EntryList(
-    entries: List<CatalogEntry>,
-    onDirectory: (CatalogEntry.Directory) -> Unit,
-    onMedia: (CatalogEntry.Media) -> Unit,
+private fun <T : CatalogEntry> ListingView(
+    listing: Listing<T>,
+    onOpen: (index: Int, entry: T) -> Unit,
+    onLoadMore: () -> Unit,
 ) {
-    val first = rememberInitialFocus(entries)
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        items(entries.size) { index ->
-            val modifier = if (index == 0) Modifier.focusRequester(first) else Modifier
-            when (val entry = entries[index]) {
-                is CatalogEntry.Directory -> Button(onClick = { onDirectory(entry) }, modifier = modifier) {
-                    Text("▸ ${entry.title}")
-                }
-                is CatalogEntry.Media -> Button(onClick = { onMedia(entry) }, modifier = modifier) {
-                    Text(listOfNotNull(entry.title, entry.year?.toString()).joinToString("  ·  "))
+    val focus = rememberInitialFocus(listing.focusIndex to listing.entries.size)
+    fun focusAt(index: Int) = if (index == listing.focusIndex) Modifier.focusRequester(focus) else Modifier
+    LazyColumn(
+        state = rememberLazyListState(initialFirstVisibleItemIndex = listing.focusIndex),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        items(listing.entries.size) { index ->
+            val entry = listing.entries[index]
+            Button(onClick = { onOpen(index, entry) }, modifier = focusAt(index)) { Text(entryLabel(entry)) }
+        }
+        if (listing.hasMore) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listing.moreError?.let { Body(it, ErrorText) }
+                    Button(onClick = onLoadMore, modifier = focusAt(listing.entries.size)) {
+                        Text(
+                            when {
+                                listing.loadingMore -> "Loading…"
+                                listing.moreError != null -> "Try again"
+                                else -> "Load more"
+                            },
+                        )
+                    }
                 }
             }
         }
+    }
+}
+
+private fun entryLabel(entry: CatalogEntry): String = when (entry) {
+    is CatalogEntry.Directory -> "▸ ${entry.title}"
+    is CatalogEntry.Media -> listOfNotNull(entry.title, entry.year?.toString()).joinToString("  ·  ")
+}
+
+/**
+ * Fetch the page after the listing [update] reaches, in this app-wide scope so
+ * leaving the screen mid-request cannot strand it "Loading…". Each transition
+ * applies to whatever the listing is by then; [update] skips a listing that
+ * is gone, and [Listing.appended] skips one reloaded meanwhile.
+ */
+private fun <T> CoroutineScope.loadMore(
+    update: ((Listing<T>) -> Listing<T>) -> Unit,
+    fetch: (cursor: String) -> Pair<List<T>, String?>,
+) {
+    var cursor: String? = null
+    update { current -> current.cursorToLoad()?.let { cursor = it; current.startLoadingMore() } ?: current }
+    val requested = cursor ?: return
+    launch {
+        onIo { fetch(requested) }
+            .onSuccess { (page, next) -> update { it.appended(requested, page, next) } }
+            .onFailure { error -> update { it.failedMore(requested, error.userMessage()) } }
     }
 }
 
@@ -284,18 +399,14 @@ private fun EntryList(
 private fun SearchScreen(
     core: AndroidCore,
     addons: List<AddonRecord>,
+    model: SearchModel,
+    scope: CoroutineScope,
     onPlay: (addonId: String, itemId: String, title: String) -> Unit,
     onExit: () -> Unit,
 ) {
     BackHandler(onBack = onExit)
-    var selected by remember { mutableStateOf(addons.firstOrNull()) }
-    var query by remember { mutableStateOf("") }
-    var results by remember { mutableStateOf<List<CatalogEntry>>(emptyList()) }
-    var status by remember { mutableStateOf<String?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
     Page("Search") {
-        val addon = selected
+        val addon = addons.firstOrNull { it.id == model.addonId } ?: addons.firstOrNull()
         if (addon == null) {
             Body("No installed add-on supports search.")
             return@Page
@@ -303,43 +414,62 @@ private fun SearchScreen(
         if (addons.size > 1) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 addons.forEach { candidate ->
-                    Button(onClick = { selected = candidate }) {
+                    Button(onClick = { model.addonId = candidate.id }) {
                         Text(if (candidate == addon) "• ${candidate.name}" else candidate.name)
                     }
                 }
             }
         }
-        val field = rememberInitialFocus(Unit)
+        val results = model.results
+        // Returning from the player focuses the opened result instead.
+        val field = rememberInitialFocus(Unit, enabled = results == null)
         OutlinedTextField(
-            value = query,
-            onValueChange = { query = it },
+            value = model.query,
+            onValueChange = { model.query = it },
             label = { Text("Search ${addon.name}") },
             singleLine = true,
             modifier = Modifier.focusRequester(field),
         )
         Button(onClick = {
-            if (query.isBlank()) return@Button
-            status = "Searching…"
-            error = null
+            val query = model.query.trim()
+            if (query.isEmpty()) return@Button
+            val generation = ++model.generation
+            model.searching = true
+            model.error = null
             scope.launch {
-                onIo { core.search(addon.id, query.trim()) }
-                    .onSuccess {
-                        results = it
-                        status = if (it.isEmpty()) "No results." else null
+                val outcome = onIo { core.search(addon.id, query, null) }
+                if (generation != model.generation) return@launch
+                model.searching = false
+                outcome
+                    .onSuccess { page ->
+                        val media = page.entries.filterIsInstance<CatalogEntry.Media>()
+                        model.results = SearchResults(generation, addon.id, query, Listing(media, page.nextCursor))
                     }
-                    .onFailure {
-                        error = it.userMessage()
-                        status = null
-                    }
+                    .onFailure { model.error = it.userMessage() }
             }
         }) { Text("Search") }
-        status?.let { Body(it) }
-        error?.let { Body(it, ErrorText) }
-        EntryList(
-            entries = results.filterIsInstance<CatalogEntry.Media>(),
-            onDirectory = {},
-            onMedia = { onPlay(addon.id, it.id, it.title) },
-        )
+        when {
+            model.searching -> Body("Searching…")
+            model.error != null -> Body(model.error.orEmpty(), ErrorText)
+            results != null && results.listing.entries.isEmpty() && !results.listing.hasMore -> Body("No results.")
+        }
+        // Each submission starts at the top with its first result focused.
+        if (results != null) key(results.generation) {
+            ListingView(
+                listing = results.listing,
+                onOpen = { index, entry ->
+                    model.updateResults(results.generation) { it.opened(index) }
+                    onPlay(results.addonId, entry.id, entry.title)
+                },
+                onLoadMore = {
+                    // Bound to this submission: a newer search drops its late pages.
+                    scope.loadMore({ change -> model.updateResults(results.generation, change) }) { cursor ->
+                        core.search(results.addonId, results.query, cursor)
+                            .let { page -> page.entries.filterIsInstance<CatalogEntry.Media>() to page.nextCursor }
+                    }
+                },
+            )
+        }
     }
 }
 
@@ -676,11 +806,16 @@ private fun Body(text: String, color: Color = Primary) {
  * whenever [key] changes, so every screen starts with a focused control.
  */
 @Composable
-private fun rememberInitialFocus(key: Any?): FocusRequester {
+private fun rememberInitialFocus(key: Any?, enabled: Boolean = true): FocusRequester {
     val requester = remember { FocusRequester() }
-    LaunchedEffect(key) {
-        // Not attached when the screen has nothing focusable yet; harmless.
-        runCatching { requester.requestFocus() }
+    LaunchedEffect(key, enabled) {
+        if (!enabled) return@LaunchedEffect
+        // A lazy row is composed during layout, possibly a frame later; a
+        // screen with nothing focusable never attaches it. Both are harmless.
+        repeat(3) {
+            if (runCatching { requester.requestFocus() }.isSuccess) return@LaunchedEffect
+            withFrameNanos { }
+        }
     }
     return requester
 }

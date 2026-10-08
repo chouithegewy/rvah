@@ -120,6 +120,56 @@ fn pagination_over_large_catalog() {
 }
 
 #[test]
+fn search_follows_cursor_pages() {
+    let mut w = World::new();
+    w.add_addon(
+        "com.rvah.fixtures.large",
+        &["search"],
+        Arc::new(LargeCatalogProvider {
+            total: 15,
+            page_size: 10,
+        }),
+        vec![Capability::Search],
+    );
+
+    let first = w
+        .core
+        .search("com.rvah.fixtures.large", "item", None)
+        .unwrap();
+    assert_eq!(first.items.len(), 10);
+    let second = w
+        .core
+        .search("com.rvah.fixtures.large", "item", first.cursor_next)
+        .unwrap();
+    assert_eq!(second.items.len(), 5);
+    assert_eq!(second.cursor_next, None);
+}
+
+#[test]
+fn following_a_cursor_stays_on_the_same_history_entry() {
+    // A follow-up page extends the listing; it is not a new location, so
+    // Back must not land on the same directory again.
+    let mut w = World::new();
+    w.add_addon(
+        "com.rvah.fixtures.large",
+        &["catalog"],
+        Arc::new(LargeCatalogProvider {
+            total: 25,
+            page_size: 10,
+        }),
+        vec![Capability::Catalog],
+    );
+    w.core
+        .browse("com.rvah.fixtures.large", None, None)
+        .unwrap();
+    w.core
+        .browse("com.rvah.fixtures.large", None, Some("10".into()))
+        .unwrap();
+    assert_eq!(w.core.nav.current(), Some("com.rvah.fixtures.large:/"));
+    assert_eq!(w.core.nav.back(), None);
+}
+
+#[test]
 fn malformed_provider_response_surfaces_error_host_survives() {
     // TC-RUN-003: invalid provider output becomes a Developer-class error and
     // the host keeps serving other add-ons.
@@ -393,7 +443,7 @@ fn protected_sources_fail_closed_before_reaching_player() {
 #[test]
 fn search_single_addon() {
     let mut w = World::new();
-    let page = w.core.search(ECHO_FIXTURE_ID, "naruto").unwrap();
+    let page = w.core.search(ECHO_FIXTURE_ID, "naruto", None).unwrap();
     assert_eq!(page.items.len(), 1);
     let PageItem::Media(m) = &page.items[0] else {
         panic!("expected media");

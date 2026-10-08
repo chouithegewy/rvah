@@ -239,19 +239,15 @@ impl AddonProvider for BadPermissionsProvider {
     }
 }
 
-/// `total` media items served `page_size` at a time via numeric cursors.
+/// `total` media items served `page_size` at a time via numeric cursors, for
+/// both `list` and `search` (which ignores the query).
 pub struct LargeCatalogProvider {
     pub total: usize,
     pub page_size: usize,
 }
 
-impl AddonProvider for LargeCatalogProvider {
-    fn list(
-        &self,
-        _ctx: &dyn HostApi,
-        _path: Option<&str>,
-        cursor: Option<&str>,
-    ) -> Result<Page, AddonError> {
+impl LargeCatalogProvider {
+    fn page(&self, cursor: Option<&str>) -> Result<Page, AddonError> {
         let offset: usize = match cursor {
             None => 0,
             Some(c) => c
@@ -266,6 +262,27 @@ impl AddonProvider for LargeCatalogProvider {
             cursor_next: (end < self.total).then(|| end.to_string()),
             total_hint: Some(self.total as u64),
         })
+    }
+}
+
+impl AddonProvider for LargeCatalogProvider {
+    fn list(
+        &self,
+        _ctx: &dyn HostApi,
+        _path: Option<&str>,
+        cursor: Option<&str>,
+    ) -> Result<Page, AddonError> {
+        self.page(cursor)
+    }
+
+    fn search(
+        &self,
+        _ctx: &dyn HostApi,
+        _query: &str,
+        _filters: &[Filter],
+        cursor: Option<&str>,
+    ) -> Result<Page, AddonError> {
+        self.page(cursor)
     }
 }
 
