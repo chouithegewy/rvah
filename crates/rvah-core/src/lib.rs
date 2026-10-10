@@ -4,6 +4,7 @@
 //! and favorites.
 
 mod app;
+mod artwork;
 pub mod debug;
 mod errors;
 mod nav;

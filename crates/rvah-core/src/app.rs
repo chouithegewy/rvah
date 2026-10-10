@@ -283,6 +283,7 @@ impl<B: PlayerBackend> AppCore<B> {
                 cursor,
             },
         )?)?;
+        let page = self.screened(addon_id, page)?;
         if !follow_up {
             self.nav
                 .push(format!("{addon_id}:{}", path.as_deref().unwrap_or("/")));
@@ -302,7 +303,15 @@ impl<B: PlayerBackend> AppCore<B> {
             filters: Vec::<Filter>::new(),
             cursor,
         };
-        Self::expect_page(self.invoke(addon_id, op)?)
+        let page = Self::expect_page(self.invoke(addon_id, op)?)?;
+        self.screened(addon_id, page)
+    }
+
+    /// `page` with only the artwork the UI may load (see `artwork`).
+    fn screened(&self, addon_id: &str, mut page: Page) -> Result<Page, CoreError> {
+        let manifest = self.installed_manifest(addon_id)?;
+        crate::artwork::screen_page(&mut page, &manifest.permissions.network);
+        Ok(page)
     }
 
     /// Fan a query out to every enabled add-on declaring search (FR-044).

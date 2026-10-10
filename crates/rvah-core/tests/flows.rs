@@ -67,8 +67,25 @@ impl World {
         provider: Arc<dyn AddonProvider + Send + Sync>,
         runtime_caps: Vec<Capability>,
     ) {
-        let (pkg, sig, pubkey) =
-            rvah_testkit::write_fixture_package_with_secrets(self._tmp.path(), id, caps, secrets);
+        self.add_addon_with_permissions(id, caps, &[], secrets, provider, runtime_caps);
+    }
+
+    fn add_addon_with_permissions(
+        &mut self,
+        id: &str,
+        caps: &[&str],
+        network: &[&str],
+        secrets: &[&str],
+        provider: Arc<dyn AddonProvider + Send + Sync>,
+        runtime_caps: Vec<Capability>,
+    ) {
+        let (pkg, sig, pubkey) = rvah_testkit::write_fixture_package_with_permissions(
+            self._tmp.path(),
+            id,
+            caps,
+            network,
+            secrets,
+        );
         self.core
             .manager
             .install(&pkg, &sig, &pubkey, InstallDecision::Approve)
@@ -772,4 +789,92 @@ fn account_status_reports_the_linked_account_after_a_refresh() {
         }
     );
     assert_eq!(provider.refreshes(), 1);
+}
+
+const ART_ID: &str = "com.rvah.fixtures.art";
+
+fn with_artwork(poster: &str, fanart: &str, thumb: &str) -> rvah_addon_sdk::Artwork {
+    rvah_addon_sdk::Artwork {
+        poster: Some(poster.into()),
+        fanart: Some(fanart.into()),
+        thumb: Some(thumb.into()),
+    }
+}
+
+#[test]
+fn artwork_reaches_the_ui_only_over_https_from_declared_hosts() {
+    use rvah_addon_sdk::{ContentType, DirectoryItem, MediaItem, Page};
+    let page = Page {
+        items: vec![
+            PageItem::Media(MediaItem {
+                id: "m1".into(),
+                content_type: ContentType::Movie,
+                title: "Poster Movie".into(),
+                year: None,
+                season: None,
+                episode: None,
+                runtime_secs: None,
+                synopsis: None,
+                rating: None,
+                artwork: with_artwork(
+                    "https://img.example.com/p/m1.jpg",
+                    // Not https.
+                    "http://img.example.com/f/m1.jpg",
+                    // Not a host the add-on declared.
+                    "https://tracker.example.net/pixel.gif",
+                ),
+                provider_ids: Default::default(),
+            }),
+            PageItem::Directory(DirectoryItem {
+                id: "d1".into(),
+                title: "Row".into(),
+                subtitle: None,
+                artwork: with_artwork(
+                    // A subdomain under a declared wildcard.
+                    "https://a.cdn.example.org/d1.jpg",
+                    "https://user@img.example.com/d1.jpg",
+                    "not a url",
+                ),
+                path: "/d1".into(),
+                badges: vec![],
+            }),
+        ],
+        cursor_next: None,
+        total_hint: None,
+    };
+    let mut w = World::new();
+    w.add_addon_with_permissions(
+        ART_ID,
+        &["catalog", "search"],
+        &["img.example.com", "*.cdn.example.org"],
+        &[],
+        Arc::new(rvah_testkit::StaticPageProvider(page)),
+        vec![Capability::Catalog, Capability::Search],
+    );
+    let browsed = w.core.browse(ART_ID, None, None).unwrap();
+    let searched = w.core.search(ART_ID, "anything", None).unwrap();
+    for page in [browsed, searched] {
+        let PageItem::Media(m) = &page.items[0] else {
+            panic!("expected media first");
+        };
+        assert_eq!(
+            m.artwork,
+            rvah_addon_sdk::Artwork {
+                poster: Some("https://img.example.com/p/m1.jpg".into()),
+                fanart: None,
+                thumb: None,
+            }
+        );
+        let PageItem::Directory(d) = &page.items[1] else {
+            panic!("expected a directory second");
+        };
+        assert_eq!(
+            d.artwork,
+            rvah_addon_sdk::Artwork {
+                poster: Some("https://a.cdn.example.org/d1.jpg".into()),
+                fanart: None,
+                thumb: None,
+            }
+        );
+    }
 }
