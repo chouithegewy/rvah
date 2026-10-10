@@ -14,12 +14,16 @@ const val TRAKT_ADDON = "com.rvah.trakt"
  * Which `.env` variable feeds which add-on secret. For the same secret the
  * earlier variable wins: TMDB's read access token before its API key.
  */
-private val SEEDS = listOf(
-    Triple("TMDB_READ_ACCESS_TOKEN", TMDB_ADDON, "tmdb_key"),
-    Triple("TMDB_API_KEY", TMDB_ADDON, "tmdb_key"),
-    Triple("MDBLIST_API_KEY", TMDB_ADDON, "mdblist_key"),
+private val SEEDS = listOf("com.rvah.discover", TMDB_ADDON).flatMap { addon ->
+    listOf(
+        Triple("TMDB_READ_ACCESS_TOKEN", addon, "tmdb_key"),
+        Triple("TMDB_API_KEY", addon, "tmdb_key"),
+        Triple("MDBLIST_API_KEY", addon, "mdblist_key"),
+    )
+} + listOf("com.rvah.discover", TRAKT_ADDON).map { addon ->
+    Triple("TRAKT_CLIENT_ID", addon, "client_id")
+} + listOf(
     Triple("PROWLARR_API_KEY", PROWLARR_ADDON, "api_key"),
-    Triple("TRAKT_CLIENT_ID", TRAKT_ADDON, "client_id"),
 )
 
 /** `NAME=value;NAME=value`, as Gradle writes `BuildConfig.DEV_SECRETS`. */

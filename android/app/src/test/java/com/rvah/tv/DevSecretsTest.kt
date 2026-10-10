@@ -16,7 +16,7 @@ class DevSecretsTest {
     @Test fun theReadAccessTokenWinsOverTheApiKey() {
         val seeds = devSecrets(
             mapOf("TMDB_API_KEY" to "key", "TMDB_READ_ACCESS_TOKEN" to "eyJtoken", "MDBLIST_API_KEY" to "mdb"),
-        )
+        ).filter { it.addonId == TMDB_ADDON }
         assertEquals(
             listOf(
                 SeedSecret(TMDB_ADDON, "tmdb_key", "eyJtoken"),
@@ -24,14 +24,17 @@ class DevSecretsTest {
             ),
             seeds,
         )
-        assertEquals(listOf(SeedSecret(TMDB_ADDON, "tmdb_key", "key")), devSecrets(mapOf("TMDB_API_KEY" to "key")))
+        assertEquals(
+            listOf(SeedSecret(DISCOVER_ADDON, "tmdb_key", "key"), SeedSecret(TMDB_ADDON, "tmdb_key", "key")),
+            devSecrets(mapOf("TMDB_API_KEY" to "key")),
+        )
         assertEquals(emptyList<SeedSecret>(), devSecrets(mapOf("OTHER" to "x")))
         assertEquals(
             listOf(SeedSecret(PROWLARR_ADDON, "api_key", "pk")),
             devSecrets(mapOf("PROWLARR_API_KEY" to "pk", "PROWLARR_URL" to "https://x")),
         )
         assertEquals(
-            listOf(SeedSecret(TRAKT_ADDON, "client_id", "cid")),
+            listOf(SeedSecret(DISCOVER_ADDON, "client_id", "cid"), SeedSecret(TRAKT_ADDON, "client_id", "cid")),
             devSecrets(mapOf("TRAKT_CLIENT_ID" to "cid", "TRAKT_REDIRECT_URI" to "https://x")),
         )
     }
