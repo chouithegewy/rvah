@@ -1,0 +1,23 @@
+[addon]
+id = "org.themoviedb.discover"
+name = "TMDB Discover"
+version = "0.1.0"
+sdk = ">=0.1, <0.2"
+entry = "module.wasm"
+capabilities = ["catalog", "search", "details"]
+
+[permissions]
+# api.themoviedb.org: listings, search, details. image.tmdb.org: posters
+# and backdrops (the TV only loads artwork from declared hosts).
+# api.mdblist.com: Rotten Tomatoes, IMDb and other ratings.
+network = ["api.themoviedb.org", "image.tmdb.org", "api.mdblist.com"]
+storage = "64KiB"
+# tmdb_key: an API key or read access token from themoviedb.org/settings/api.
+# mdblist_key: optional, from mdblist.com/preferences, for ratings.
+secrets = ["tmdb_key", "mdblist_key"]
+
+[settings]
+# Where "In theaters" and "Coming soon" are, as an ISO 3166-1 code.
+region = { type = "string", default = "US" }
+# Titles, synopses and trailers in this language, as IETF tag.
+language = { type = "string", default = "en-US" }

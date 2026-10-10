@@ -206,6 +206,12 @@ pub fn secret_get(host: &dyn Host, name: &str) -> Result<Option<String>, AddonEr
     Ok(decode::<Answer<String>>(&resp, "secret")?.value)
 }
 
+/// The add-on's setting `key` (its manifest default until the user changes it).
+pub fn setting_get(host: &dyn Host, key: &str) -> Result<Option<String>, AddonError> {
+    let resp = host.call(json!({ "fn": "setting_get", "key": key }))?;
+    Ok(decode::<Answer<String>>(&resp, "setting")?.value)
+}
+
 pub fn storage_get(host: &dyn Host, key: &str) -> Result<Option<Vec<u8>>, AddonError> {
     let resp = host.call(json!({ "fn": "storage_get", "key": key }))?;
     Ok(decode::<Answer<Vec<u8>>>(&resp, "storage")?.value)
@@ -269,6 +275,84 @@ fn ok_payload(response: &[u8]) -> Result<Vec<u8>, AddonError> {
     match envelope {
         Envelope::Ok(payload) => Ok(payload.get().as_bytes().to_vec()),
         Envelope::Err(err) => Err(err),
+    }
+}
+
+/// A scripted [`Host`] for add-on unit tests: canned HTTP answers by exact
+/// URL (anything else is a 404), in-memory secrets, settings and storage,
+/// and a record of every request. Answers are encoded as the real host
+/// encodes them, so the decoders above are exercised too.
+#[derive(Default)]
+pub struct ScriptedHost {
+    pub http: BTreeMap<String, (u16, Vec<u8>)>,
+    pub secrets: BTreeMap<String, String>,
+    pub settings: BTreeMap<String, String>,
+    pub storage: std::sync::Mutex<BTreeMap<String, Vec<u8>>>,
+    requests: std::sync::Mutex<Vec<crate::HttpRequest>>,
+}
+
+impl ScriptedHost {
+    /// Answer GETs of `url` with `status` and `body` as JSON.
+    pub fn route(&mut self, url: &str, status: u16, body: &impl Serialize) {
+        let body = serde_json::to_vec(body).expect("route body serializes");
+        self.http.insert(url.to_string(), (status, body));
+    }
+
+    /// Every request so far, in order.
+    pub fn requests(&self) -> Vec<crate::HttpRequest> {
+        self.requests.lock().expect("requests lock").clone()
+    }
+
+    /// The URL of every request so far, in order.
+    pub fn urls(&self) -> Vec<String> {
+        self.requests().into_iter().map(|r| r.url).collect()
+    }
+}
+
+impl Host for ScriptedHost {
+    fn call(&self, request: Value) -> Result<Vec<u8>, AddonError> {
+        let answer = match request["fn"].as_str() {
+            Some("http_fetch") => {
+                let req: crate::HttpRequest = serde_json::from_value(request["req"].clone())
+                    .map_err(|e| internal(&format!("scripted host: {e}")))?;
+                let (status, body) = self
+                    .http
+                    .get(&req.url)
+                    .cloned()
+                    .unwrap_or((404, b"not routed".to_vec()));
+                self.requests.lock().expect("requests lock").push(req);
+                serde_json::to_value(HttpResponse {
+                    status,
+                    headers: BTreeMap::new(),
+                    body,
+                })
+                .expect("answer serializes")
+            }
+            Some("secret_get") => {
+                json!({ "value": request["name"].as_str().and_then(|n| self.secrets.get(n)) })
+            }
+            Some("setting_get") => {
+                json!({ "value": request["key"].as_str().and_then(|k| self.settings.get(k)) })
+            }
+            Some("storage_get") => {
+                let storage = self.storage.lock().expect("storage lock");
+                json!({ "value": request["key"].as_str().and_then(|k| storage.get(k)) })
+            }
+            Some("storage_set") => {
+                let value: Vec<u8> = serde_json::from_value(request["value"].clone())
+                    .map_err(|e| internal(&format!("scripted host: {e}")))?;
+                let key = request["key"].as_str().unwrap_or_default().to_string();
+                self.storage
+                    .lock()
+                    .expect("storage lock")
+                    .insert(key, value);
+                Value::Null
+            }
+            Some("log") => Value::Null,
+            other => return Err(internal(&format!("scripted host: no {other:?}"))),
+        };
+        // Encoded like the real host: sorted keys, compact.
+        Ok(serde_json::to_vec(&answer).expect("answer serializes"))
     }
 }
 
@@ -409,6 +493,32 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.code, AddonErrorCode::Auth);
         assert!(ok_payload(b"garbage").is_err());
+    }
+
+    #[test]
+    fn the_scripted_host_answers_like_the_real_one() {
+        let mut host = ScriptedHost::default();
+        host.route("https://api.example.com/a", 200, &json!({ "ok": true }));
+        host.secrets.insert("key".into(), "s3cret".into());
+        host.settings.insert("region".into(), "US".into());
+        let resp = http_get(&host, "https://api.example.com/a", BTreeMap::new()).unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, br#"{"ok":true}"#);
+        assert_eq!(
+            http_get(&host, "https://api.example.com/b", BTreeMap::new())
+                .unwrap()
+                .status,
+            404
+        );
+        assert_eq!(
+            host.urls(),
+            ["https://api.example.com/a", "https://api.example.com/b"]
+        );
+        assert_eq!(secret_get(&host, "key").unwrap().as_deref(), Some("s3cret"));
+        assert_eq!(secret_get(&host, "other").unwrap(), None);
+        assert_eq!(setting_get(&host, "region").unwrap().as_deref(), Some("US"));
+        storage_set(&host, "k", b"v").unwrap();
+        assert_eq!(storage_get(&host, "k").unwrap().as_deref(), Some(&b"v"[..]));
     }
 
     #[test]
