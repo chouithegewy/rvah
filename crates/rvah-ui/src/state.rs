@@ -902,6 +902,7 @@ mod tests {
             subtitle: None,
             artwork: Default::default(),
             path: path.into(),
+            of_directories: false,
             badges: Vec::new(),
         })
     }

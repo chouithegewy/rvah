@@ -37,6 +37,10 @@ pub struct DirectoryItem {
     pub artwork: Artwork,
     /// Provider-defined path passed back to `list` when the user enters it.
     pub path: String,
+    /// It lists more directories (a group of groups, like "by genre"), so a
+    /// host can show those as columns rather than this as one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub of_directories: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub badges: Vec<String>,
 }
@@ -391,6 +395,7 @@ mod tests {
                     subtitle: None,
                     artwork: Artwork::default(),
                     path: "/movies".into(),
+                    of_directories: false,
                     badges: vec!["new".into()],
                 }),
                 PageItem::Media(MediaItem {

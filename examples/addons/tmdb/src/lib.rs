@@ -534,4 +534,83 @@ mod tests {
         }
         assert!(host.urls().is_empty());
     }
+
+    #[test]
+    fn genre_boards_close_the_root() {
+        let host = host_with(V3_KEY);
+        let root = tmdb::list(&host, None, None).unwrap();
+        let groups: Vec<(String, String, bool)> = root
+            .items
+            .iter()
+            .map(|item| match item {
+                PageItem::Directory(d) => (d.title.clone(), d.path.clone(), d.of_directories),
+                other => panic!("expected rows, got {other:?}"),
+            })
+            .filter(|(_, _, groups)| *groups)
+            .collect();
+        assert_eq!(
+            groups,
+            [
+                ("Films by genre".into(), "genres/movie".into(), true),
+                ("Series by genre".into(), "genres/tv".into(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_genre_board_lists_tmdb_genres() {
+        let mut host = host_with(V3_KEY);
+        host.route(
+            &format!(
+                "https://api.themoviedb.org/3/genre/movie/list?api_key={V3_KEY}&language=en-US"
+            ),
+            200,
+            &json!({ "genres": [{ "id": 28, "name": "Action" }, { "id": 35, "name": "Comedy" }] }),
+        );
+        let board = tmdb::list(&host, Some("genres/movie"), None).unwrap();
+        let genres: Vec<(String, String)> = board
+            .items
+            .iter()
+            .map(|item| match item {
+                PageItem::Directory(d) => (d.title.clone(), d.path.clone()),
+                other => panic!("expected genres, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            genres,
+            [
+                ("Action".into(), "genre/movie/28".into()),
+                ("Comedy".into(), "genre/movie/35".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_genre_lists_its_popular_titles() {
+        let mut host = host_with(V3_KEY);
+        host.route(
+            &format!("https://api.themoviedb.org/3/discover/tv?api_key={V3_KEY}&language=en-US&with_genres=18&sort_by=popularity.desc&vote_count.gte=50&include_adult=false&page=2"),
+            200,
+            &page(vec![series(1399, "Acme Corp", "2011-04-17")], 2, 9),
+        );
+        let titles = tmdb::list(&host, Some("genre/tv/18"), Some("2")).unwrap();
+        let m = media(&titles.items[0]);
+        assert_eq!(
+            (m.id.as_str(), m.content_type),
+            ("tv:1399", ContentType::Series)
+        );
+        assert_eq!(titles.cursor_next.as_deref(), Some("3"));
+        for path in [
+            "genre/tv/",
+            "genre/tv/1a",
+            "genre/person/1",
+            "genres/person",
+        ] {
+            assert_eq!(
+                tmdb::list(&host, Some(path), None).unwrap_err().code,
+                AddonErrorCode::NotFound,
+                "{path}"
+            );
+        }
+    }
 }

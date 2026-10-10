@@ -271,6 +271,7 @@ mod tests {
                     subtitle: None,
                     artwork: Default::default(),
                     path: "/d1".into(),
+                    of_directories: false,
                     badges: vec![],
                 }));
             Ok(page)

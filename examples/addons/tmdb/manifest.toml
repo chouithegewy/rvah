@@ -1,7 +1,7 @@
 [addon]
 id = "org.themoviedb.discover"
 name = "TMDB Discover"
-version = "0.2.0"
+version = "0.3.0"
 sdk = ">=0.1, <0.2"
 entry = "module.wasm"
 capabilities = ["catalog", "search", "details"]

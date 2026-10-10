@@ -155,6 +155,8 @@ pub enum CatalogEntry {
         subtitle: Option<String>,
         path: String,
         poster: Option<String>,
+        /// It lists more directories: show it as a board of columns.
+        of_directories: bool,
     },
     /// Artwork URLs are https on a host the add-on declared (core rule).
     Media {
@@ -1119,6 +1121,7 @@ fn catalog_entry(item: PageItem) -> CatalogEntry {
             subtitle: item.subtitle,
             path: item.path,
             poster: item.artwork.poster,
+            of_directories: item.of_directories,
         },
         PageItem::Media(item) => CatalogEntry::Media {
             kind: content_kind(item.content_type),

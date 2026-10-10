@@ -231,6 +231,7 @@ fn rows(signed_in: bool) -> Page {
                     subtitle: None,
                     artwork: Artwork::default(),
                     path: path.to_string(),
+                    of_directories: false,
                     badges: vec![],
                 })
             })
