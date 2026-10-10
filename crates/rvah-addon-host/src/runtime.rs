@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use rvah_addon_sdk::{
     AccountStatus, AddonError, AddonErrorCode, AddonProvider, AuthPoll, Credentials, DeviceAuth,
-    Filter, HostApi, ItemDetails, Page, Release, ResolveResult, SourceRequest,
+    Filter, HostApi, ItemDetails, Page, Release, ResolveResult, ScrobbleAction, ScrobbleItem,
+    SourceRequest,
 };
 
 use crate::manifest::Capability;
@@ -45,6 +46,11 @@ pub enum AddonOp {
         season: Option<u32>,
         episode: Option<u32>,
     },
+    Scrobble {
+        action: ScrobbleAction,
+        item: ScrobbleItem,
+        progress: f32,
+    },
 }
 
 impl AddonOp {
@@ -61,6 +67,7 @@ impl AddonOp {
             AddonOp::Details { .. } => Capability::Details,
             AddonOp::Sources { .. } => Capability::Sources,
             AddonOp::ResolveRelease { .. } => Capability::Debrid,
+            AddonOp::Scrobble { .. } => Capability::Scrobble,
         }
     }
 }
@@ -76,6 +83,8 @@ pub enum AddonResponse {
     Credentials(Credentials),
     Details(Box<ItemDetails>),
     Releases(Vec<Release>),
+    /// An operation that answers nothing, such as `scrobble`.
+    Done,
 }
 
 /// Per-invocation environment: deadline plus the capability-checked host API.
@@ -192,6 +201,13 @@ impl AddonRuntime for InProcessRuntime {
                 } => provider
                     .resolve_release(host.as_ref(), &release, season, episode)
                     .map(AddonResponse::Resolve),
+                AddonOp::Scrobble {
+                    action,
+                    item,
+                    progress,
+                } => provider
+                    .scrobble(host.as_ref(), action, &item, progress)
+                    .map(|()| AddonResponse::Done),
             };
             let _ = tx.send(result);
         });
@@ -561,6 +577,17 @@ mod tests {
                 season: Some(1),
                 episode: Some(2),
             },
+            AddonOp::Scrobble {
+                action: ScrobbleAction::Stop,
+                item: ScrobbleItem {
+                    kind: rvah_addon_sdk::SourceKind::Episode,
+                    tmdb_id: "1399".into(),
+                    imdb_id: None,
+                    season: Some(1),
+                    episode: Some(2),
+                },
+                progress: 91.5,
+            },
         ];
         for op in ops {
             let wire = serde_json::to_vec(&op).unwrap();
@@ -576,6 +603,7 @@ mod tests {
             Response::AuthPoll(AuthPoll::Pending),
             Response::Credentials(Credentials::default()),
             Response::Releases(vec![]),
+            Response::Done,
         ];
         for answer in answers {
             let wire = serde_json::to_vec(&answer).unwrap();

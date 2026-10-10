@@ -1,0 +1,22 @@
+[addon]
+id = "com.rvah.trakt"
+name = "Trakt"
+version = "0.1.0"
+sdk = ">=0.1, <0.2"
+entry = "module.wasm"
+capabilities = ["catalog", "auth", "account_status", "scrobble"]
+
+[permissions]
+# api.trakt.tv: lists, sign-in, scrobbling. media.trakt.tv and
+# walter-r2.trakt.tv: posters (the TV only loads artwork from declared
+# hosts, and caches it, as Trakt asks).
+network = ["api.trakt.tv", "media.trakt.tv", "walter-r2.trakt.tv"]
+storage = "64KiB"
+# client_id: your Trakt app's (app.trakt.tv/settings/apps); there is no
+# client secret. access_token / refresh_token: written by Link account.
+secrets = ["client_id", "access_token", "refresh_token"]
+
+[settings]
+# Your Trakt app's redirect URI; refreshing a sign-in sends it. build.sh
+# sets the default from TRAKT_REDIRECT_URI.
+redirect_uri = { type = "string", default = "urn:ietf:wg:oauth:2.0:oob" }

@@ -165,7 +165,46 @@ pub enum CatalogEntry {
         rating: Option<f32>,
         poster: Option<String>,
         fanart: Option<String>,
+        /// `movie`, `series`, `episode`, …
+        kind: String,
+        /// The film's or series' TMDB id, so a TMDB add-on can describe
+        /// an item another add-on listed.
+        tmdb_id: Option<String>,
     },
+}
+
+/// A change in playback, for scrobbling add-ons.
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum ScrobbleChange {
+    Start,
+    Pause,
+    Stop,
+}
+
+/// What is playing, for scrobbling: a film, or an episode of a series
+/// (`season` and `episode` set), by TMDB id.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ScrobbleTarget {
+    pub tmdb_id: String,
+    pub imdb_id: Option<String>,
+    pub season: Option<u32>,
+    pub episode: Option<u32>,
+}
+
+impl From<ScrobbleTarget> for rvah_addon_sdk::ScrobbleItem {
+    fn from(target: ScrobbleTarget) -> Self {
+        let kind = match (target.season, target.episode) {
+            (Some(_), Some(_)) => rvah_addon_sdk::SourceKind::Episode,
+            _ => rvah_addon_sdk::SourceKind::Movie,
+        };
+        rvah_addon_sdk::ScrobbleItem {
+            kind,
+            tmdb_id: target.tmdb_id,
+            imdb_id: target.imdb_id,
+            season: target.season,
+            episode: target.episode,
+        }
+    }
 }
 
 /// A details page (capability `details`).
@@ -179,6 +218,8 @@ pub struct ItemDetailsRecord {
     pub series_title: Option<String>,
     /// The film's or series' IMDb id.
     pub imdb_id: Option<String>,
+    /// The film's or series' TMDB id (scrobbling names titles by it).
+    pub tmdb_id: Option<String>,
     pub season: Option<u32>,
     pub episode: Option<u32>,
     pub year: Option<u16>,
@@ -275,13 +316,11 @@ impl From<rvah_addon_sdk::ItemDetails> for ItemDetailsRecord {
         let item = details.item;
         ItemDetailsRecord {
             id: item.id,
-            kind: serde_json::to_value(item.content_type)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_owned))
-                .unwrap_or_default(),
+            kind: content_kind(item.content_type),
             title: item.title,
             series_title: details.series_title,
             imdb_id: item.provider_ids.get("imdb").cloned(),
+            tmdb_id: item.provider_ids.get("tmdb").cloned(),
             season: item.season,
             episode: item.episode,
             year: item.year,
@@ -920,6 +959,26 @@ impl AndroidCore {
             .map_err(playback_error)
     }
 
+    /// Tell every scrobbling add-on about a change in playback, at
+    /// `progress` percent. Returns what failed, for the log; never throws.
+    pub fn scrobble(
+        &self,
+        change: ScrobbleChange,
+        target: ScrobbleTarget,
+        progress: f32,
+    ) -> Vec<String> {
+        let action = match change {
+            ScrobbleChange::Start => rvah_addon_sdk::ScrobbleAction::Start,
+            ScrobbleChange::Pause => rvah_addon_sdk::ScrobbleAction::Pause,
+            ScrobbleChange::Stop => rvah_addon_sdk::ScrobbleAction::Stop,
+        };
+        self.core()
+            .scrobble_all(action, &target.into(), progress)
+            .into_iter()
+            .filter_map(|(id, result)| result.err().map(|e| format!("{id}: {e}")))
+            .collect()
+    }
+
     /// Never waits for an in-flight add-on call (see [`AndroidCore`]).
     pub fn report_playback_event(
         &self,
@@ -1062,6 +1121,8 @@ fn catalog_entry(item: PageItem) -> CatalogEntry {
             poster: item.artwork.poster,
         },
         PageItem::Media(item) => CatalogEntry::Media {
+            kind: content_kind(item.content_type),
+            tmdb_id: item.provider_ids.get("tmdb").cloned(),
             id: item.id,
             title: item.title,
             synopsis: item.synopsis,
@@ -1071,6 +1132,14 @@ fn catalog_entry(item: PageItem) -> CatalogEntry {
             fanart: item.artwork.fanart,
         },
     }
+}
+
+/// `movie`, `series`, `episode`, … as the SDK spells content types.
+fn content_kind(content_type: rvah_addon_sdk::ContentType) -> String {
+    serde_json::to_value(content_type)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 fn capability_names(manifest: &Manifest) -> Vec<String> {
@@ -1230,15 +1299,21 @@ mod tests {
 
     #[test]
     fn catalog_entries_carry_artwork_and_rating() {
+        let mut item = movie();
+        item.provider_ids.insert("tmdb".into(), "603".into());
         let CatalogEntry::Media {
             poster,
             fanart,
             rating,
+            kind,
+            tmdb_id,
             ..
-        } = catalog_entry(PageItem::Media(movie()))
+        } = catalog_entry(PageItem::Media(item))
         else {
             panic!("expected media");
         };
+        assert_eq!(kind, "movie");
+        assert_eq!(tmdb_id.as_deref(), Some("603"));
         assert_eq!(
             poster.as_deref(),
             Some("https://image.tmdb.org/t/p/w342/p.jpg")

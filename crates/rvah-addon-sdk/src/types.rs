@@ -337,6 +337,30 @@ pub struct Release {
     pub origin: Option<String>,
 }
 
+/// What is playing, for a `scrobble` add-on: a film, or an episode of a
+/// series, named by its TMDB id (and IMDb id when known).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScrobbleItem {
+    pub kind: SourceKind,
+    /// The film's, or for an episode the series', TMDB id.
+    pub tmdb_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imdb_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub season: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episode: Option<u32>,
+}
+
+/// A change in playback a `scrobble` add-on reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrobbleAction {
+    Start,
+    Pause,
+    Stop,
+}
+
 /// What one `auth_poll` saw at the provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", content = "credentials", rename_all = "snake_case")]
