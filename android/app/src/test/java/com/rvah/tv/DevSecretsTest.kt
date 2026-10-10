@@ -30,5 +30,9 @@ class DevSecretsTest {
             listOf(SeedSecret(PROWLARR_ADDON, "api_key", "pk")),
             devSecrets(mapOf("PROWLARR_API_KEY" to "pk", "PROWLARR_URL" to "https://x")),
         )
+        assertEquals(
+            listOf(SeedSecret(TRAKT_ADDON, "client_id", "cid")),
+            devSecrets(mapOf("TRAKT_CLIENT_ID" to "cid", "TRAKT_REDIRECT_URI" to "https://x")),
+        )
     }
 }

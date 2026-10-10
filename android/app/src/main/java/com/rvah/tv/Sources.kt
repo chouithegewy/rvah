@@ -23,6 +23,7 @@ import androidx.tv.material3.Text
 import uniffi.rvah_android.AddonRecord
 import uniffi.rvah_android.AndroidCore
 import uniffi.rvah_android.ReleaseRecord
+import uniffi.rvah_android.ScrobbleTarget
 import uniffi.rvah_android.SourceQuery
 
 /** What a Sources screen finds releases of: a film or an episode. */
@@ -33,6 +34,8 @@ internal data class SourcesTarget(
     /** "Acme Corp · S01E02" */
     val heading: String,
     val query: SourceQuery,
+    /** How scrobbling add-ons name it, when it has a TMDB id. */
+    val scrobble: ScrobbleTarget? = null,
 )
 
 /** A release chosen to play, through a debrid add-on. */

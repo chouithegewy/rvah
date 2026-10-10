@@ -26,6 +26,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import uniffi.rvah_android.AndroidCore
 import uniffi.rvah_android.NativePlaybackEvent
+import uniffi.rvah_android.ScrobbleChange
+import uniffi.rvah_android.ScrobbleTarget
 
 /** What the player screen renders; updated from ExoPlayer callbacks (main thread). */
 data class PlayerUi(
@@ -84,9 +86,14 @@ class RvahPlayerOwner(
     private val mediaSession = MediaSession.Builder(context, player).build()
     private var active: PlaybackSpec? = null
     private var progressJob: Job? = null
+    /** What scrobbling add-ons hear about, for a title they can name; else null. */
+    private var scrobbleTarget: ScrobbleTarget? = null
+    private var scrobbles = ScrobbleState()
 
-    fun play(spec: PlaybackSpec) {
+    fun play(spec: PlaybackSpec, scrobble: ScrobbleTarget? = null) {
         active = spec
+        scrobbleTarget = scrobble
+        scrobbles = ScrobbleState()
         ui = PlayerUi(status = "Buffering…")
         requestHeaders.set(spec.headers)
         report(NativePlaybackEvent.Preparing)
@@ -119,6 +126,8 @@ class RvahPlayerOwner(
 
     fun stop() {
         progressJob?.cancel()
+        scrobble(scrobbles.stopped())
+        scrobbleTarget = null
         val session = active
         active = null
         player.stop()
@@ -141,6 +150,7 @@ class RvahPlayerOwner(
             }
             Player.STATE_ENDED -> {
                 ui = ui.copy(isPlaying = false, status = "Finished")
+                scrobble(scrobbles.stopped())
                 report(NativePlaybackEvent.Ended(player.currentPosition.toULong(), durationMs()))
             }
         }
@@ -155,6 +165,20 @@ class RvahPlayerOwner(
         }
         ui = ui.copy(isPlaying = isPlaying, status = status)
         if (isPlaying) reportPlaying() else if (ready) reportPaused()
+        // A stall while buffering is not a pause.
+        if (isPlaying) scrobble(scrobbles.playing()) else if (ready) scrobble(scrobbles.paused())
+    }
+
+    /** Tell scrobbling add-ons, off the main thread; failures only reach the log. */
+    private fun scrobble(change: ScrobbleChange?) {
+        val target = scrobbleTarget ?: return
+        val core = core ?: return
+        change ?: return
+        val progress = scrobbleProgress(player.currentPosition, durationMs()?.toLong())
+        scope.launch(Dispatchers.IO) {
+            runCatching { core.scrobble(change, target, progress) }
+                .onSuccess { failed -> if (BuildConfig.DEBUG && failed.isNotEmpty()) Log.d("rvah", "scrobble $change: $failed") }
+        }
     }
 
     override fun onPlayerError(error: PlaybackException) {

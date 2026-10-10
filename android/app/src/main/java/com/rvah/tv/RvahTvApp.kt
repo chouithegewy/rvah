@@ -61,6 +61,7 @@ import uniffi.rvah_android.AddonRecord
 import uniffi.rvah_android.AndroidCore
 import uniffi.rvah_android.AndroidCoreException
 import uniffi.rvah_android.NativePreparedPlayback
+import uniffi.rvah_android.ScrobbleTarget
 import uniffi.rvah_android.SourceQuery
 import uniffi.rvah_android.CatalogEntry
 import uniffi.rvah_android.DiagnosticRecord
@@ -248,6 +249,19 @@ private fun AppNavigation(
             Screen.Player(addonId, itemId, title, from)
         }
     }
+    // An item of an add-on without details pages (Trakt, say) opens on the
+    // TMDB add-on's, when it names a TMDB id; else it opens as below.
+    val openEntry: (String, CatalogEntry.Media, Screen) -> Unit = { addonId, entry, from ->
+        val tmdb = entry.tmdbId
+        val described = !hasDetails(addonId) && tmdb != null && hasDetails(TMDB_ADDON) &&
+            (entry.kind == "movie" || entry.kind == "series")
+        if (described) {
+            val id = if (entry.kind == "movie") "movie:$tmdb" else "tv:$tmdb"
+            screen = Screen.Details(TMDB_ADDON, id, entry.title, from)
+        } else {
+            open(addonId, entry.id, entry.title, from)
+        }
+    }
     val searchable = addons.filter { it.status == "enabled" && "search" in it.capabilities }
     // Where an add-on's sign-in error leads: device sign-in when it has one.
     val signInFor: (AddonRecord, Screen) -> Pair<String, () -> Unit> = { addon, back ->
@@ -278,9 +292,9 @@ private fun AppNavigation(
             listings = browsed,
             scope = scope,
             signIn = addons.firstOrNull { it.id == current.addonId }?.let { signInFor(it, current) },
-            discover = if (hasDetails(current.addonId)) discover.getOrPut(current.addonId) { DiscoverState(current.addonId) } else null,
+            discover = discover.getOrPut(current.addonId) { DiscoverState(current.addonId) },
             onNavigate = { screen = it },
-            onPlay = { itemId, title -> open(current.addonId, itemId, title, current) },
+            onPlay = { entry -> openEntry(current.addonId, entry, current) },
             onExit = { current.returnTo?.let { screen = it } ?: goHome() },
         )
         is Screen.Details -> DetailsScreen(
@@ -314,7 +328,10 @@ private fun AppNavigation(
                         episode = details.episode,
                     )
                     val heading = sourcesTitle(details.title, details.seriesTitle, details.season, details.episode)
-                    sources = SourcesState(SourcesTarget(current.addonId, details.id, heading, query))
+                    val scrobble = details.tmdbId?.let {
+                        ScrobbleTarget(tmdbId = it, imdbId = details.imdbId, season = details.season, episode = details.episode)
+                    }
+                    sources = SourcesState(SourcesTarget(current.addonId, details.id, heading, query, scrobble))
                     screen = Screen.Sources(returnTo = current)
                 }
             } else {
@@ -476,10 +493,10 @@ private fun BrowseScreen(
     scope: CoroutineScope,
     /** Label and action offered when the add-on needs an account. */
     signIn: Pair<String, () -> Unit>?,
-    /** Set for add-ons with details pages: their root shows as poster rows. */
+    /** Rows state: a first level of only folders shows as poster rows. */
     discover: DiscoverState?,
     onNavigate: (Screen) -> Unit,
-    onPlay: (itemId: String, title: String) -> Unit,
+    onPlay: (CatalogEntry.Media) -> Unit,
     onExit: () -> Unit,
 ) {
     val level = BrowseKey(browse.addonId, browse.stack.last())
@@ -520,7 +537,7 @@ private fun BrowseScreen(
                     onOpen = { entry ->
                         when (entry) {
                             is CatalogEntry.Directory -> onNavigate(browse.copy(stack = browse.stack + entry.path))
-                            is CatalogEntry.Media -> onPlay(entry.id, entry.title)
+                            is CatalogEntry.Media -> onPlay(entry)
                         }
                     },
                 )
@@ -532,7 +549,7 @@ private fun BrowseScreen(
                         update { it.opened(index) }
                         when (entry) {
                             is CatalogEntry.Directory -> onNavigate(browse.copy(stack = browse.stack + entry.path))
-                            is CatalogEntry.Media -> onPlay(entry.id, entry.title)
+                            is CatalogEntry.Media -> onPlay(entry)
                         }
                     },
                     onLoadMore = {
@@ -726,7 +743,7 @@ private fun PlayerScreen(
     LaunchedEffect(target) {
         onIo { prepare() }.onSuccess {
             started = true
-            owner.play(it.toSpec())
+            owner.play(it.toSpec(), scrobble = target.release?.target?.scrobble)
         }.onFailure { error ->
             val message = error.userMessage()
             if (onPrepareFailed != null) onPrepareFailed(message) else owner.fail(message)

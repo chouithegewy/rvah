@@ -218,6 +218,8 @@ pub struct ItemDetailsRecord {
     pub series_title: Option<String>,
     /// The film's or series' IMDb id.
     pub imdb_id: Option<String>,
+    /// The film's or series' TMDB id (scrobbling names titles by it).
+    pub tmdb_id: Option<String>,
     pub season: Option<u32>,
     pub episode: Option<u32>,
     pub year: Option<u16>,
@@ -318,6 +320,7 @@ impl From<rvah_addon_sdk::ItemDetails> for ItemDetailsRecord {
             title: item.title,
             series_title: details.series_title,
             imdb_id: item.provider_ids.get("imdb").cloned(),
+            tmdb_id: item.provider_ids.get("tmdb").cloned(),
             season: item.season,
             episode: item.episode,
             year: item.year,
