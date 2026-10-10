@@ -1099,11 +1099,14 @@ internal fun rememberInitialFocus(key: Any?, enabled: Boolean = true): FocusRequ
     val requester = remember { FocusRequester() }
     LaunchedEffect(key, enabled) {
         if (!enabled) return@LaunchedEffect
-        // A lazy row is composed during layout, possibly a frame later; a
-        // screen with nothing focusable never attaches it. Both are harmless.
+        // Wait a frame first: a control composed with this effect starts
+        // watching its focus in an effect of its own, and a focus change it
+        // misses leaves it focused but drawn unfocused. A lazy row is
+        // composed during layout, possibly a frame later; a screen with
+        // nothing focusable never attaches the requester. Both are harmless.
         repeat(3) {
-            if (runCatching { requester.requestFocus() }.isSuccess) return@LaunchedEffect
             withFrameNanos { }
+            if (runCatching { requester.requestFocus() }.isSuccess) return@LaunchedEffect
         }
     }
     return requester

@@ -154,12 +154,14 @@ private fun PosterRow(
     var claim by remember { mutableStateOf(takesFocus) }
     LaunchedEffect(claim, listing?.loadingMore, listing?.entries?.size) {
         if (!claim || listing == null || listing.entries.isEmpty() || listing.loadingMore) return@LaunchedEffect
+        // A frame first, as in rememberInitialFocus: the card must be
+        // watching its focus before it gets it, or it is drawn unfocused.
         repeat(3) {
+            withFrameNanos { }
             if (runCatching { focus.requestFocus() }.isSuccess) {
                 claim = false
                 return@LaunchedEffect
             }
-            withFrameNanos { }
         }
         claim = false
     }
