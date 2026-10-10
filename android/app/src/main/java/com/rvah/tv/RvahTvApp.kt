@@ -84,8 +84,12 @@ private sealed interface Screen {
     data object Diagnostics : Screen
 }
 
-/** The screen Back eventually leads to: the player returns to where it was opened. */
-private val Screen.base: Screen get() = if (this is Screen.Player) returnTo.base else this
+/** The screen Back eventually leads to: the player and Link account return to where they were opened. */
+private val Screen.base: Screen get() = when (this) {
+    is Screen.Player -> returnTo.base
+    is Screen.LinkAccount -> returnTo.base
+    else -> this
+}
 
 private data class BrowseKey(val addonId: String, val path: String?)
 
@@ -97,13 +101,18 @@ private data class SearchResults(
     val listing: Listing<CatalogEntry.Media>,
 )
 
-/** Search outlives a trip to the player; leaving it for another screen starts over. */
+/** A failed submission, kept with its add-on and query so signing in can retry it. */
+private class SearchFailure(val addon: AddonRecord, val query: String, val error: Throwable)
+
+/** Search outlives a trip to the player or Link account; leaving it for another screen starts over. */
 private class SearchModel {
     var addonId by mutableStateOf<String?>(null)
     var query by mutableStateOf("")
     var results by mutableStateOf<SearchResults?>(null)
     var searching by mutableStateOf(false)
-    var error by mutableStateOf<String?>(null)
+    var failure by mutableStateOf<SearchFailure?>(null)
+    /** Submitted again when Search is next shown: the query that needed a sign-in. */
+    var retryQuery: String? = null
     /** Bumped per submission so a slow earlier search cannot overwrite a newer one. */
     var generation = 0
 
@@ -194,6 +203,14 @@ private fun AppNavigation(
         screen = Screen.Home
     }
     val searchable = addons.filter { it.status == "enabled" && "search" in it.capabilities }
+    // Where an add-on's sign-in error leads: device sign-in when it has one.
+    val signInFor: (AddonRecord, Screen) -> Pair<String, () -> Unit> = { addon, back ->
+        if ("auth" in addon.capabilities) {
+            "Link account" to { screen = Screen.LinkAccount(addon, returnTo = back) }
+        } else {
+            "Add-on settings" to { screen = Screen.AddonSettings(addon) }
+        }
+    }
 
     when (val current = screen) {
         Screen.Home -> HomeScreen(
@@ -214,13 +231,7 @@ private fun AppNavigation(
             browse = current,
             listings = browsed,
             scope = scope,
-            signIn = addons.firstOrNull { it.id == current.addonId }?.let { addon ->
-                if ("auth" in addon.capabilities) {
-                    "Link account" to { screen = Screen.LinkAccount(addon, returnTo = current) }
-                } else {
-                    "Add-on settings" to { screen = Screen.AddonSettings(addon) }
-                }
-            },
+            signIn = addons.firstOrNull { it.id == current.addonId }?.let { signInFor(it, current) },
             onNavigate = { screen = it },
             onPlay = { itemId, title -> screen = Screen.Player(current.addonId, itemId, title, current) },
             onExit = goHome,
@@ -230,6 +241,7 @@ private fun AppNavigation(
             addons = searchable,
             model = search,
             scope = scope,
+            signIn = { addon -> signInFor(addon, Screen.Search) },
             onPlay = { addonId, itemId, title -> screen = Screen.Player(addonId, itemId, title, Screen.Search) },
             onExit = goHome,
         )
@@ -449,6 +461,8 @@ private fun SearchScreen(
     addons: List<AddonRecord>,
     model: SearchModel,
     scope: CoroutineScope,
+    /** Label and action offered when [AddonRecord] needs an account. */
+    signIn: (AddonRecord) -> Pair<String, () -> Unit>,
     onPlay: (addonId: String, itemId: String, title: String) -> Unit,
     onExit: () -> Unit,
 ) {
@@ -478,12 +492,10 @@ private fun SearchScreen(
             singleLine = true,
             modifier = Modifier.focusRequester(field),
         )
-        Button(onClick = {
-            val query = model.query.trim()
-            if (query.isEmpty()) return@Button
+        fun submit(query: String) {
             val generation = ++model.generation
             model.searching = true
-            model.error = null
+            model.failure = null
             scope.launch {
                 val outcome = onIo { core.search(addon.id, query, null) }
                 if (generation != model.generation) return@launch
@@ -493,12 +505,35 @@ private fun SearchScreen(
                         val media = page.entries.filterIsInstance<CatalogEntry.Media>()
                         model.results = SearchResults(generation, addon.id, query, Listing(media, page.nextCursor))
                     }
-                    .onFailure { model.error = it.userMessage() }
+                    .onFailure { model.failure = SearchFailure(addon, query, it) }
             }
+        }
+        // Back from Link account: run the search that needed it.
+        LaunchedEffect(Unit) {
+            model.retryQuery?.let {
+                model.retryQuery = null
+                submit(it)
+            }
+        }
+        Button(onClick = {
+            val query = model.query.trim()
+            if (query.isNotEmpty()) submit(query)
         }) { Text("Search") }
+        val failure = model.failure
         when {
             model.searching -> Body("Searching…")
-            model.error != null -> Body(model.error.orEmpty(), ErrorText)
+            failure != null -> {
+                Body(failure.error.userMessage(), ErrorText)
+                if (failure.error is AndroidCoreException.SignInRequired) {
+                    val (label, go) = signIn(failure.addon)
+                    val action = rememberInitialFocus(failure)
+                    Button(onClick = {
+                        model.addonId = failure.addon.id
+                        model.retryQuery = failure.query
+                        go()
+                    }, modifier = Modifier.focusRequester(action)) { Text(label) }
+                }
+            }
             results != null && results.listing.entries.isEmpty() && !results.listing.hasMore -> Body("No results.")
         }
         // Each submission starts at the top with its first result focused.
