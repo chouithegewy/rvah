@@ -16,7 +16,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
+import androidx.compose.material3.Text as FieldLabel
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -45,6 +45,8 @@ import androidx.compose.ui.unit.sp
 import androidx.media3.ui.compose.PlayerSurface
 import androidx.tv.material3.Button
 import androidx.tv.material3.MaterialTheme
+import androidx.tv.material3.Text
+import androidx.tv.material3.darkColorScheme
 import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -55,6 +57,7 @@ import kotlinx.coroutines.withContext
 import uniffi.rvah_android.AccountState
 import uniffi.rvah_android.AddonRecord
 import uniffi.rvah_android.AndroidCore
+import uniffi.rvah_android.AndroidCoreException
 import uniffi.rvah_android.CatalogEntry
 import uniffi.rvah_android.DiagnosticRecord
 import uniffi.rvah_android.InstallPreview
@@ -76,7 +79,7 @@ private sealed interface Screen {
     data class Player(val addonId: String, val itemId: String, val title: String, val returnTo: Screen) : Screen
     data object Settings : Screen
     data class AddonSettings(val addon: AddonRecord) : Screen
-    data class LinkAccount(val addon: AddonRecord) : Screen
+    data class LinkAccount(val addon: AddonRecord, val returnTo: Screen = AddonSettings(addon)) : Screen
     data object Install : Screen
     data object Diagnostics : Screen
 }
@@ -117,7 +120,7 @@ fun RvahTvApp(
     packagesDir: File?,
     trustedKeys: List<String>,
 ) {
-    MaterialTheme {
+    RvahTheme {
         Box(Modifier.fillMaxSize().background(Background)) {
             var core by remember { mutableStateOf<AndroidCore?>(null) }
             var startupError by remember { mutableStateOf<String?>(null) }
@@ -137,6 +140,20 @@ fun RvahTvApp(
                 else -> Page("RVAH") { Body("Starting…") }
             }
         }
+    }
+}
+
+/**
+ * Buttons and labels follow tv.material3's theme, the text fields
+ * compose.material3's. Both are dark, so focus brightens a button.
+ */
+@Composable
+private fun RvahTheme(content: @Composable () -> Unit) {
+    MaterialTheme(colorScheme = darkColorScheme()) {
+        androidx.compose.material3.MaterialTheme(
+            colorScheme = androidx.compose.material3.darkColorScheme(),
+            content = content,
+        )
     }
 }
 
@@ -197,6 +214,13 @@ private fun AppNavigation(
             browse = current,
             listings = browsed,
             scope = scope,
+            signIn = addons.firstOrNull { it.id == current.addonId }?.let { addon ->
+                if ("auth" in addon.capabilities) {
+                    "Link account" to { screen = Screen.LinkAccount(addon, returnTo = current) }
+                } else {
+                    "Add-on settings" to { screen = Screen.AddonSettings(addon) }
+                }
+            },
             onNavigate = { screen = it },
             onPlay = { itemId, title -> screen = Screen.Player(current.addonId, itemId, title, current) },
             onExit = goHome,
@@ -244,7 +268,7 @@ private fun AppNavigation(
             scope = scope,
             onExit = {
                 refresh++
-                screen = Screen.AddonSettings(current.addon)
+                screen = current.returnTo
             },
         )
         Screen.Install -> InstallScreen(
@@ -297,17 +321,19 @@ private fun BrowseScreen(
     browse: Screen.Browse,
     listings: SnapshotStateMap<BrowseKey, Listing<CatalogEntry>>,
     scope: CoroutineScope,
+    /** Label and action offered when the add-on needs an account. */
+    signIn: Pair<String, () -> Unit>?,
     onNavigate: (Screen) -> Unit,
     onPlay: (itemId: String, title: String) -> Unit,
     onExit: () -> Unit,
 ) {
     val level = BrowseKey(browse.addonId, browse.stack.last())
-    var error by remember(level) { mutableStateOf<String?>(null) }
+    var failure by remember(level) { mutableStateOf<Throwable?>(null) }
     LaunchedEffect(level) {
         if (level in listings) return@LaunchedEffect
         onIo { core.browse(level.addonId, level.path, null) }
             .onSuccess { listings[level] = Listing(it.entries, it.nextCursor) }
-            .onFailure { error = it.userMessage() }
+            .onFailure { failure = it }
     }
     BackHandler {
         if (browse.stack.size > 1) onNavigate(browse.copy(stack = browse.stack.dropLast(1))) else onExit()
@@ -319,8 +345,15 @@ private fun BrowseScreen(
     }
     Page(browse.addonName) {
         val loaded = listings[level]
+        val failed = failure
         when {
-            error != null -> Body(error.orEmpty(), ErrorText)
+            failed != null -> {
+                Body(failed.userMessage(), ErrorText)
+                if (failed is AndroidCoreException.SignInRequired && signIn != null) {
+                    val action = rememberInitialFocus(Unit)
+                    Button(onClick = signIn.second, modifier = Modifier.focusRequester(action)) { Text(signIn.first) }
+                }
+            }
             loaded == null -> Body("Loading…")
             loaded.entries.isEmpty() && !loaded.hasMore -> Body("Nothing here.")
             // Each level gets its own scroll and focus state.
@@ -441,7 +474,7 @@ private fun SearchScreen(
         OutlinedTextField(
             value = model.query,
             onValueChange = { model.query = it },
-            label = { Text("Search ${addon.name}") },
+            label = { FieldLabel("Search ${addon.name}") },
             singleLine = true,
             modifier = Modifier.focusRequester(field),
         )
@@ -619,7 +652,7 @@ private fun AddonSettingsScreen(
                         OutlinedTextField(
                             value = value,
                             onValueChange = { value = it },
-                            label = { Text(if (secret.isSet) "Replace ${secret.name}" else "Enter ${secret.name}") },
+                            label = { FieldLabel(if (secret.isSet) "Replace ${secret.name}" else "Enter ${secret.name}") },
                             singleLine = true,
                             visualTransformation = PasswordVisualTransformation(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -648,7 +681,7 @@ private fun AddonSettingsScreen(
                             OutlinedTextField(
                                 value = value,
                                 onValueChange = { value = it },
-                                label = { Text(setting.key) },
+                                label = { FieldLabel(setting.key) },
                                 singleLine = true,
                             )
                             Button(onClick = {

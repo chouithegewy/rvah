@@ -30,6 +30,9 @@ pub enum AndroidCoreError {
     Addon { reason: String },
     #[error("playback: {reason}")]
     Playback { reason: String },
+    /// The add-on needs an account: the TV offers Link account here.
+    #[error("sign-in required: {reason}")]
+    SignInRequired { reason: String },
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -782,8 +785,23 @@ impl AndroidCore {
 }
 
 fn playback_error(error: rvah_core::CoreError) -> AndroidCoreError {
-    AndroidCoreError::Playback {
+    sign_in_required(&error).unwrap_or_else(|| AndroidCoreError::Playback {
         reason: error.to_string(),
+    })
+}
+
+/// An add-on's `Auth` failure, which a token refresh did not fix.
+fn sign_in_required(error: &rvah_core::CoreError) -> Option<AndroidCoreError> {
+    match error {
+        rvah_core::CoreError::Provider(e) if e.code == rvah_addon_sdk::AddonErrorCode::Auth => {
+            let reason = if e.user_visible {
+                e.message.clone()
+            } else {
+                "sign-in required".to_owned()
+            };
+            Some(AndroidCoreError::SignInRequired { reason })
+        }
+        _ => None,
     }
 }
 
@@ -818,9 +836,9 @@ fn logcat(line: &str) {
 }
 
 fn addon_error(error: rvah_core::CoreError) -> AndroidCoreError {
-    AndroidCoreError::Addon {
+    sign_in_required(&error).unwrap_or_else(|| AndroidCoreError::Addon {
         reason: error.to_string(),
-    }
+    })
 }
 
 fn storage_error(error: rvah_data::DataError) -> AndroidCoreError {
@@ -963,6 +981,39 @@ mod tests {
         assert!(rvah_core::debug::enabled());
         set_debug_logging(false);
         assert!(!rvah_core::debug::enabled());
+    }
+
+    #[test]
+    fn auth_failures_ask_for_sign_in() {
+        use rvah_addon_sdk::{AddonError, AddonErrorCode};
+        use rvah_core::CoreError;
+
+        let shown = || {
+            let mut error = AddonError::new(AddonErrorCode::Auth, "not signed in to Real-Debrid");
+            error.user_visible = true;
+            CoreError::Provider(error)
+        };
+        for mapped in [addon_error(shown()), playback_error(shown())] {
+            match mapped {
+                AndroidCoreError::SignInRequired { reason } => {
+                    assert_eq!(reason, "not signed in to Real-Debrid")
+                }
+                other => panic!("expected SignInRequired, got {other:?}"),
+            }
+        }
+
+        // An add-on's internal wording stays out of the UI.
+        let hidden = CoreError::Provider(AddonError::new(AddonErrorCode::Auth, "401 from /user"));
+        match playback_error(hidden) {
+            AndroidCoreError::SignInRequired { reason } => assert_eq!(reason, "sign-in required"),
+            other => panic!("expected SignInRequired, got {other:?}"),
+        }
+
+        let offline = CoreError::Provider(AddonError::new(AddonErrorCode::Network, "offline"));
+        assert!(matches!(
+            playback_error(offline),
+            AndroidCoreError::Playback { .. }
+        ));
     }
 
     #[test]
