@@ -9,6 +9,7 @@ import androidx.compose.runtime.setValue
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
@@ -76,7 +77,10 @@ class RvahPlayerOwner(
                 .build(),
         )
         .build()
-        .also { it.addListener(this) }
+        .also {
+            it.trackSelectionParameters = it.trackSelectionParameters.withLanguageDefaults()
+            it.addListener(this)
+        }
     private val mediaSession = MediaSession.Builder(context, player).build()
     private var active: PlaybackSpec? = null
     private var progressJob: Job? = null
@@ -162,6 +166,23 @@ class RvahPlayerOwner(
         }
         ui = ui.copy(isPlaying = false, failure = message)
         report(NativePlaybackEvent.Error(message))
+    }
+
+    /** Debug builds log each file's audio and subtitle tracks, selected ones starred. */
+    override fun onTracksChanged(tracks: Tracks) {
+        if (!BuildConfig.DEBUG) return
+        for ((type, name) in listOf(C.TRACK_TYPE_AUDIO to "audio", C.TRACK_TYPE_TEXT to "subtitles")) {
+            val line = tracks.groups.filter { it.type == type }.flatMap { group ->
+                (0 until group.length).map { i ->
+                    val format = group.getTrackFormat(i)
+                    val default = if (format.selectionFlags and C.SELECTION_FLAG_DEFAULT != 0) " default" else ""
+                    val forced = if (format.selectionFlags and C.SELECTION_FLAG_FORCED != 0) " forced" else ""
+                    val mark = if (group.isTrackSelected(i)) "*" else ""
+                    "$mark${format.language ?: "und"}${format.label?.let { " \"$it\"" } ?: ""}$default$forced"
+                }
+            }
+            Log.d("rvah", "$name: ${line.joinToString(", ").ifEmpty { "none" }}")
+        }
     }
 
     private fun durationMs(): ULong? = player.duration
