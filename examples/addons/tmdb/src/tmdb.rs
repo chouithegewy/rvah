@@ -17,12 +17,6 @@ const IMAGES: &str = "https://image.tmdb.org/t/p";
 const MAX_PAGES: u32 = 50;
 const MAX_TRAILERS: usize = 3;
 
-/// Groups of rows after the root rows: (title, path).
-const GENRE_BOARDS: &[(&str, &str)] = &[
-    ("Films by genre", "genres/movie"),
-    ("Series by genre", "genres/tv"),
-];
-
 /// The root rows: (title, list path, whether the list is per region).
 const ROWS: &[(&str, &str, bool)] = &[
     ("Trending this week", "trending/all/week", false),
@@ -221,27 +215,29 @@ fn page_number(cursor: Option<&str>) -> Result<String, AddonError> {
 /// listed, so a path never reaches TMDB's URL unchecked.
 pub fn list(host: &dyn Host, path: Option<&str>, cursor: Option<&str>) -> Result<Page, AddonError> {
     let Some(path) = path.filter(|p| *p != "/") else {
-        let rows = ROWS
-            .iter()
-            .map(|(title, path, _)| folder(title, path, false));
-        let boards = GENRE_BOARDS
-            .iter()
-            .map(|(title, path)| folder(title, path, true));
+        let mut items = streaming_rows();
+        items.extend(genre_rows(host)?);
         return Ok(Page {
-            items: rows.chain(boards).collect(),
+            items,
             cursor_next: None,
             total_hint: None,
         });
     };
-    // Genres: a board of them, then each genre's popular titles.
+    match path {
+        "streaming/new" => return new_to_streaming(host, cursor),
+        "streaming/popular" => return popular_to_stream(host, cursor),
+        _ => {}
+    }
+    // Genres: TMDB's for films or series (genre boards), or a column of
+    // the root mixing both.
     if let Some(kind) = path.strip_prefix("genres/") {
         return genres(host, media_kind(kind)?);
     }
-    if let Some((kind, id)) = path
-        .strip_prefix("genre/")
-        .and_then(|rest| rest.split_once('/'))
-    {
-        return genre(host, media_kind(kind)?, digits(id)?, cursor);
+    if let Some(rest) = path.strip_prefix("genre/") {
+        return match rest.split_once('/') {
+            Some((kind, id)) => genre(host, media_kind(kind)?, digits(id)?, cursor),
+            None => genre_column(host, rest, cursor),
+        };
     }
     // A series lists its seasons; a season, its episodes.
     if let Some(series) = path.strip_prefix("tv:") {
@@ -754,4 +750,331 @@ fn genre(host: &dyn Host, kind: Kind, id: &str, cursor: Option<&str>) -> Result<
         ],
     )?;
     Ok(to_page(listing, Some(kind)))
+}
+
+/// The first columns: films out to stream, newest and most popular.
+const STREAMING_ROWS: &[(&str, &str)] = &[
+    ("New to streaming", "streaming/new"),
+    ("Popular to stream or rent", "streaming/popular"),
+];
+
+/// A genre column: its name in the `genres` setting, the TMDB genre of
+/// films and of series it covers, and an original language. TMDB has no
+/// anime genre: anime is animation in Japanese.
+struct GenreColumn {
+    name: &'static str,
+    films: Option<&'static str>,
+    series: Option<&'static str>,
+    language: Option<&'static str>,
+}
+
+const GENRES: &[GenreColumn] = &[
+    GenreColumn {
+        name: "Sci-Fi",
+        films: Some("878"),
+        series: Some("10765"),
+        language: None,
+    },
+    GenreColumn {
+        name: "Anime",
+        films: Some("16"),
+        series: Some("16"),
+        language: Some("ja"),
+    },
+    GenreColumn {
+        name: "Thriller",
+        films: Some("53"),
+        series: None,
+        language: None,
+    },
+    GenreColumn {
+        name: "Action",
+        films: Some("28"),
+        series: Some("10759"),
+        language: None,
+    },
+    GenreColumn {
+        name: "Comedy",
+        films: Some("35"),
+        series: Some("35"),
+        language: None,
+    },
+    GenreColumn {
+        name: "Horror",
+        films: Some("27"),
+        series: None,
+        language: None,
+    },
+    GenreColumn {
+        name: "Drama",
+        films: Some("18"),
+        series: Some("18"),
+        language: None,
+    },
+    GenreColumn {
+        name: "Mystery",
+        films: Some("9648"),
+        series: Some("9648"),
+        language: None,
+    },
+    GenreColumn {
+        name: "Crime",
+        films: Some("80"),
+        series: Some("80"),
+        language: None,
+    },
+    GenreColumn {
+        name: "Fantasy",
+        films: Some("14"),
+        series: Some("10765"),
+        language: None,
+    },
+    GenreColumn {
+        name: "Animation",
+        films: Some("16"),
+        series: Some("16"),
+        language: None,
+    },
+    GenreColumn {
+        name: "Documentary",
+        films: Some("99"),
+        series: Some("99"),
+        language: None,
+    },
+    GenreColumn {
+        name: "Romance",
+        films: Some("10749"),
+        series: None,
+        language: None,
+    },
+    GenreColumn {
+        name: "Family",
+        films: Some("10751"),
+        series: Some("10751"),
+        language: None,
+    },
+    GenreColumn {
+        name: "War",
+        films: Some("10752"),
+        series: Some("10768"),
+        language: None,
+    },
+    GenreColumn {
+        name: "Western",
+        films: Some("37"),
+        series: Some("37"),
+        language: None,
+    },
+    GenreColumn {
+        name: "History",
+        films: Some("36"),
+        series: None,
+        language: None,
+    },
+    GenreColumn {
+        name: "Music",
+        films: Some("10402"),
+        series: None,
+        language: None,
+    },
+    GenreColumn {
+        name: "Kids",
+        films: None,
+        series: Some("10762"),
+        language: None,
+    },
+    GenreColumn {
+        name: "Reality",
+        films: None,
+        series: Some("10764"),
+        language: None,
+    },
+];
+
+/// Used until the `genres` setting says otherwise.
+const DEFAULT_GENRES: &str =
+    "Sci-Fi,Anime,Thriller,Action,Comedy,Horror,Drama,Mystery,Crime,Fantasy,Documentary,Romance";
+
+/// How many days "new to streaming" reaches back.
+const NEW_DAYS: u64 = 60;
+
+/// A genre's column path: its name, lowercase letters and digits only.
+fn slug(name: &str) -> String {
+    name.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// The streaming columns, for the root (and an add-on that nests this one).
+pub fn streaming_rows() -> Vec<PageItem> {
+    STREAMING_ROWS
+        .iter()
+        .map(|(title, path)| folder(title, path, false))
+        .collect()
+}
+
+/// A column per genre in the `genres` setting, in its order.
+pub fn genre_rows(host: &dyn Host) -> Result<Vec<PageItem>, AddonError> {
+    let chosen = guest::setting_get(host, "genres")?.unwrap_or_else(|| DEFAULT_GENRES.into());
+    let mut seen = Vec::new();
+    Ok(chosen
+        .split(',')
+        .map(str::trim)
+        .filter_map(|name| GENRES.iter().find(|g| g.name.eq_ignore_ascii_case(name)))
+        .filter(|g| {
+            let fresh = !seen.contains(&g.name);
+            seen.push(g.name);
+            fresh
+        })
+        .map(|g| folder(g.name, &format!("genre/{}", slug(g.name)), false))
+        .collect())
+}
+
+fn region(host: &dyn Host) -> Result<String, AddonError> {
+    Ok(guest::setting_get(host, "region")?.unwrap_or_else(|| "US".into()))
+}
+
+/// GET a discover list with `params`, then only what some streaming,
+/// rental or purchase service in the region has, then `page`.
+fn discover(
+    host: &dyn Host,
+    kind: Kind,
+    params: &[(&str, &str)],
+    page: &str,
+) -> Result<Listing, AddonError> {
+    let region = region(host)?;
+    let mut all: Vec<(&str, &str)> = params.to_vec();
+    all.push(("watch_region", &region));
+    all.push((
+        "with_watch_monetization_types",
+        "flatrate|free|ads|rent|buy",
+    ));
+    all.push(("page", page));
+    get(host, &format!("discover/{}", kind.segment()), &all)
+}
+
+/// Films released to streaming (digitally) in the last two months, in the
+/// region, most popular first: never theatrical-only or upcoming.
+fn new_to_streaming(host: &dyn Host, cursor: Option<&str>) -> Result<Page, AddonError> {
+    let page = page_number(cursor)?;
+    let region = region(host)?;
+    let now = guest::now_unix(host);
+    let from = now.map(|t| guest::civil_date(t.saturating_sub(NEW_DAYS * 86_400)));
+    let to = now.map(guest::civil_date);
+    let mut params = vec![("with_release_type", "4")];
+    if let (Some(from), Some(to)) = (&from, &to) {
+        params.push(("release_date.gte", from));
+        params.push(("release_date.lte", to));
+    }
+    params.extend([
+        ("region", region.as_str()),
+        ("sort_by", "popularity.desc"),
+        ("vote_count.gte", "10"),
+        ("include_adult", "false"),
+    ]);
+    Ok(to_page(
+        discover(host, Kind::Movie, &params, &page)?,
+        Some(Kind::Movie),
+    ))
+}
+
+/// Popular films already out digitally or on disc, so there to stream or rent.
+fn popular_to_stream(host: &dyn Host, cursor: Option<&str>) -> Result<Page, AddonError> {
+    let page = page_number(cursor)?;
+    let region = region(host)?;
+    let to = guest::now_unix(host).map(guest::civil_date);
+    let mut params = vec![("with_release_type", "4|5")];
+    if let Some(to) = &to {
+        params.push(("release_date.lte", to));
+    }
+    params.extend([
+        ("region", region.as_str()),
+        ("sort_by", "popularity.desc"),
+        ("vote_count.gte", "100"),
+        ("include_adult", "false"),
+    ]);
+    Ok(to_page(
+        discover(host, Kind::Movie, &params, &page)?,
+        Some(Kind::Movie),
+    ))
+}
+
+/// A genre's popular films and series you can watch, interleaved. The
+/// cursor is the next page, ending in `m` or `t` when only films or only
+/// series have more.
+fn genre_column(host: &dyn Host, name: &str, cursor: Option<&str>) -> Result<Page, AddonError> {
+    let &GenreColumn {
+        films,
+        series,
+        language,
+        ..
+    } = GENRES
+        .iter()
+        .find(|g| slug(g.name) == name)
+        .ok_or_else(|| not_found(format!("no such genre: {name}")))?;
+    let (page, only) = match cursor {
+        None => ("1".to_string(), None),
+        Some(c) => {
+            let (number, only) = if let Some(rest) = c.strip_suffix('m') {
+                (rest, Some(Kind::Movie))
+            } else if let Some(rest) = c.strip_suffix('t') {
+                (rest, Some(Kind::Tv))
+            } else {
+                (c, None)
+            };
+            (page_number(Some(number))?, only)
+        }
+    };
+    let fetch = |kind: Kind, genre: Option<&str>| -> Result<Option<Listing>, AddonError> {
+        let Some(genre) = genre else { return Ok(None) };
+        if only.is_some_and(|k| k != kind) {
+            return Ok(None);
+        }
+        let min_votes = if kind == Kind::Movie { "100" } else { "50" };
+        let mut params = vec![("with_genres", genre)];
+        if let Some(language) = language {
+            params.push(("with_original_language", language));
+        }
+        params.extend([
+            ("sort_by", "popularity.desc"),
+            ("vote_count.gte", min_votes),
+            ("include_adult", "false"),
+        ]);
+        discover(host, kind, &params, &page).map(Some)
+    };
+    let films = fetch(Kind::Movie, films)?;
+    let series = fetch(Kind::Tv, series)?;
+    let more = |listing: &Option<Listing>| {
+        listing
+            .as_ref()
+            .is_some_and(|l| l.page < l.total_pages.min(MAX_PAGES))
+    };
+    let next = page.parse::<u32>().unwrap_or(1) + 1;
+    let cursor_next = match (more(&films), more(&series)) {
+        (true, true) => Some(next.to_string()),
+        (true, false) => Some(format!("{next}m")),
+        (false, true) => Some(format!("{next}t")),
+        (false, false) => None,
+    };
+    let mut films = films
+        .map(|l| to_page(l, Some(Kind::Movie)).items)
+        .unwrap_or_default()
+        .into_iter();
+    let mut series = series
+        .map(|l| to_page(l, Some(Kind::Tv)).items)
+        .unwrap_or_default()
+        .into_iter();
+    let mut items = Vec::new();
+    loop {
+        match (films.next(), series.next()) {
+            (None, None) => break,
+            (a, b) => items.extend(a.into_iter().chain(b)),
+        }
+    }
+    Ok(Page {
+        items,
+        cursor_next,
+        total_hint: None,
+    })
 }

@@ -13,7 +13,10 @@ pub mod tmdb;
 use rvah_addon_sdk::guest::{read_op, Host, Op, Response};
 use rvah_addon_sdk::{AddonError, AddonErrorCode};
 
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+#[cfg_attr(
+    any(not(target_arch = "wasm32"), not(feature = "standalone")),
+    allow(dead_code)
+)]
 fn dispatch(input: &[u8], host: &dyn Host) -> Result<Response, AddonError> {
     match read_op(input)? {
         Op::List { path, cursor } => {
@@ -32,6 +35,7 @@ fn dispatch(input: &[u8], host: &dyn Host) -> Result<Response, AddonError> {
     }
 }
 
+#[cfg(feature = "standalone")]
 rvah_addon_sdk::export_guest!(dispatch);
 
 #[cfg(test)]
@@ -81,26 +85,123 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_root_lists_the_rows() {
-        let host = host_with(V3_KEY);
-        let root = tmdb::list(&host, None, None).unwrap();
-        let rows: Vec<(String, String)> = root
+    const TODAY: u64 = 1_791_590_400; // 2026-10-10
+    const AVAILABLE: &str =
+        "watch_region=US&with_watch_monetization_types=flatrate%7Cfree%7Cads%7Crent%7Cbuy";
+
+    fn root_rows(host: &ScriptedHost) -> Vec<(String, String)> {
+        tmdb::list(host, None, None)
+            .unwrap()
             .items
             .iter()
             .map(|item| match item {
                 PageItem::Directory(d) => (d.title.clone(), d.path.clone()),
                 other => panic!("expected rows, got {other:?}"),
             })
-            .collect();
+            .collect()
+    }
+
+    #[test]
+    fn the_root_is_whats_streaming_then_your_genres() {
+        let mut host = host_with(V3_KEY);
+        host.settings
+            .insert("genres".into(), "Sci-Fi,Anime,Thriller".into());
         assert_eq!(
-            rows[0],
-            ("Trending this week".into(), "trending/all/week".into())
+            root_rows(&host),
+            [
+                ("New to streaming".into(), "streaming/new".into()),
+                (
+                    "Popular to stream or rent".into(),
+                    "streaming/popular".into()
+                ),
+                ("Sci-Fi".into(), "genre/scifi".into()),
+                ("Anime".into(), "genre/anime".into()),
+                ("Thriller".into(), "genre/thriller".into()),
+            ]
         );
-        assert!(rows.contains(&("In theaters".into(), "movie/now_playing".into())));
-        assert!(rows.contains(&("Coming soon".into(), "movie/upcoming".into())));
-        assert!(rows.contains(&("New episodes this week".into(), "tv/on_the_air".into())));
+        // Unknown names are skipped; no setting means the default genres.
+        host.settings
+            .insert("genres".into(), "Anime, Nonsense ,Horror".into());
+        assert_eq!(
+            root_rows(&host)[2..],
+            [
+                ("Anime".into(), "genre/anime".into()),
+                ("Horror".into(), "genre/horror".into())
+            ]
+        );
+        host.settings.remove("genres");
+        assert!(root_rows(&host).len() > 8);
         assert!(host.urls().is_empty(), "the root costs no request");
+    }
+
+    #[test]
+    fn new_to_streaming_is_the_last_two_months_of_digital_releases() {
+        let mut host = host_with(V3_KEY);
+        host.now = Some(TODAY + 3_600);
+        host.route(
+            &format!("https://api.themoviedb.org/3/discover/movie?api_key={V3_KEY}&language=en-US&with_release_type=4&release_date.gte=2026-08-11&release_date.lte=2026-10-10&region=US&sort_by=popularity.desc&vote_count.gte=10&include_adult=false&{AVAILABLE}&page=1"),
+            200,
+            &page(vec![movie(603, "Coyote vs. Acme", "2026-03-14")], 1, 4),
+        );
+        let new = tmdb::list(&host, Some("streaming/new"), None).unwrap();
+        assert_eq!(media(&new.items[0]).id, "movie:603");
+        assert_eq!(new.cursor_next.as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn popular_to_stream_or_rent_is_out_on_digital_or_disc() {
+        let mut host = host_with(V3_KEY);
+        host.now = Some(TODAY);
+        host.route(
+            &format!("https://api.themoviedb.org/3/discover/movie?api_key={V3_KEY}&language=en-US&with_release_type=4%7C5&release_date.lte=2026-10-10&region=US&sort_by=popularity.desc&vote_count.gte=100&include_adult=false&{AVAILABLE}&page=1"),
+            200,
+            &page(vec![movie(1, "Hit", "2025-01-01")], 1, 1),
+        );
+        let popular = tmdb::list(&host, Some("streaming/popular"), None).unwrap();
+        assert_eq!(media(&popular.items[0]).id, "movie:1");
+        assert_eq!(popular.cursor_next, None);
+    }
+
+    #[test]
+    fn a_genre_column_interleaves_films_and_series_you_can_watch() {
+        let mut host = host_with(V3_KEY);
+        host.route(
+            &format!("https://api.themoviedb.org/3/discover/movie?api_key={V3_KEY}&language=en-US&with_genres=16&with_original_language=ja&sort_by=popularity.desc&vote_count.gte=100&include_adult=false&{AVAILABLE}&page=1"),
+            200,
+            &page(vec![movie(1, "Film A", "2025-01-01"), movie(2, "Film B", "2024-01-01")], 1, 1),
+        );
+        host.route(
+            &format!("https://api.themoviedb.org/3/discover/tv?api_key={V3_KEY}&language=en-US&with_genres=16&with_original_language=ja&sort_by=popularity.desc&vote_count.gte=50&include_adult=false&{AVAILABLE}&page=1"),
+            200,
+            &page(vec![series(10, "Show A", "2023-01-01")], 1, 3),
+        );
+        let anime = tmdb::list(&host, Some("genre/anime"), None).unwrap();
+        let ids: Vec<&str> = anime.items.iter().map(|i| media(i).id.as_str()).collect();
+        assert_eq!(ids, ["movie:1", "tv:10", "movie:2"]);
+        // Only the series have more pages: the next asks only for series.
+        assert_eq!(anime.cursor_next.as_deref(), Some("2t"));
+
+        // A genre TMDB has only for films asks only for films.
+        let mut host = host_with(V3_KEY);
+        host.route(
+            &format!("https://api.themoviedb.org/3/discover/movie?api_key={V3_KEY}&language=en-US&with_genres=53&sort_by=popularity.desc&vote_count.gte=100&include_adult=false&{AVAILABLE}&page=1"),
+            200,
+            &page(vec![movie(5, "Tense", "2022-01-01")], 1, 1),
+        );
+        assert_eq!(
+            tmdb::list(&host, Some("genre/thriller"), None)
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
+        assert_eq!(host.urls().len(), 1);
+        assert_eq!(
+            tmdb::list(&host, Some("genre/nonsense"), None)
+                .unwrap_err()
+                .code,
+            AddonErrorCode::NotFound
+        );
     }
 
     #[test]
@@ -533,28 +634,6 @@ mod tests {
             );
         }
         assert!(host.urls().is_empty());
-    }
-
-    #[test]
-    fn genre_boards_close_the_root() {
-        let host = host_with(V3_KEY);
-        let root = tmdb::list(&host, None, None).unwrap();
-        let groups: Vec<(String, String, bool)> = root
-            .items
-            .iter()
-            .map(|item| match item {
-                PageItem::Directory(d) => (d.title.clone(), d.path.clone(), d.of_directories),
-                other => panic!("expected rows, got {other:?}"),
-            })
-            .filter(|(_, _, groups)| *groups)
-            .collect();
-        assert_eq!(
-            groups,
-            [
-                ("Films by genre".into(), "genres/movie".into(), true),
-                ("Series by genre".into(), "genres/tv".into(), true),
-            ]
-        );
     }
 
     #[test]

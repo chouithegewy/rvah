@@ -1,6 +1,6 @@
 [package]
 name = "rvah-addon-tmdb"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "RVAH add-on: discover films and series on TMDB, with trailers and ratings"
@@ -8,6 +8,12 @@ description = "RVAH add-on: discover films and series on TMDB, with trailers and
 [lib]
 # cdylib for the wasm module; rlib so the logic unit-tests natively.
 crate-type = ["cdylib", "rlib"]
+
+[features]
+# Exports the wasm entry points; an add-on nesting this one as a component
+# turns it off (default-features = false) and calls the modules directly.
+default = ["standalone"]
+standalone = []
 
 [dependencies]
 rvah-addon-sdk = { path = "../../../crates/rvah-addon-sdk", features = ["guest"] }

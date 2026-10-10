@@ -223,6 +223,32 @@ pub fn secret_get(host: &dyn Host, name: &str) -> Result<Option<String>, AddonEr
     Ok(decode::<Answer<String>>(&resp, "secret")?.value)
 }
 
+/// The time in Unix seconds, or `None` from a host too old to say.
+pub fn now_unix(host: &dyn Host) -> Option<u64> {
+    let resp = host.call(json!({ "fn": "now" })).ok()?;
+    decode::<Answer<u64>>(&resp, "time").ok()?.value
+}
+
+/// A Unix time's UTC date, `YYYY-MM-DD`.
+pub fn civil_date(unix: u64) -> String {
+    // Howard Hinnant's days-to-civil, for days since 1970-01-01.
+    let days = (unix / 86_400) as i64 + 719_468;
+    let era = days.div_euclid(146_097);
+    let day_of_era = days.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
 /// The add-on's setting `key` (its manifest default until the user changes it).
 pub fn setting_get(host: &dyn Host, key: &str) -> Result<Option<String>, AddonError> {
     let resp = host.call(json!({ "fn": "setting_get", "key": key }))?;
@@ -307,6 +333,8 @@ pub struct ScriptedHost {
     pub secrets: BTreeMap<String, String>,
     pub settings: BTreeMap<String, String>,
     pub storage: std::sync::Mutex<BTreeMap<String, Vec<u8>>>,
+    /// What `now` answers; `None` acts like a host without the call.
+    pub now: Option<u64>,
     requests: std::sync::Mutex<Vec<crate::HttpRequest>>,
 }
 
@@ -391,6 +419,10 @@ impl Host for ScriptedHost {
                 Value::Null
             }
             Some("log") => Value::Null,
+            Some("now") => match self.now {
+                Some(now) => json!({ "value": now }),
+                None => return Err(internal("scripted host: no clock")),
+            },
             other => return Err(internal(&format!("scripted host: no {other:?}"))),
         };
         // Encoded like the real host: sorted keys, compact.
@@ -576,6 +608,23 @@ mod tests {
         assert_eq!(setting_get(&host, "region").unwrap().as_deref(), Some("US"));
         storage_set(&host, "k", b"v").unwrap();
         assert_eq!(storage_get(&host, "k").unwrap().as_deref(), Some(&b"v"[..]));
+    }
+
+    #[test]
+    fn the_time_comes_from_the_host_as_a_date() {
+        let mut host = ScriptedHost::default();
+        assert_eq!(now_unix(&host), None);
+        host.now = Some(1_791_590_400 + 3_600);
+        assert_eq!(now_unix(&host), Some(1_791_594_000));
+        for (unix, date) in [
+            (0, "1970-01-01"),
+            (86_399, "1970-01-01"),
+            (951_782_400, "2000-02-29"),
+            (1_735_689_599, "2024-12-31"),
+            (1_791_590_400, "2026-10-10"),
+        ] {
+            assert_eq!(civil_date(unix), date, "{unix}");
+        }
     }
 
     #[test]

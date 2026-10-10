@@ -1,0 +1,25 @@
+[package]
+name = "rvah-addon-discover"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "RVAH add-on: one Discover board from TMDB and Trakt, nested as components"
+
+[lib]
+# cdylib for the wasm module; rlib so the logic unit-tests natively.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rvah-addon-sdk = { path = "../../../crates/rvah-addon-sdk", features = ["guest"] }
+# Nested add-ons: their logic, without their own wasm entry points.
+rvah-addon-tmdb = { path = "../tmdb", default-features = false }
+rvah-addon-trakt = { path = "../trakt", default-features = false }
+serde_json = "1"
+
+# Standalone crate: not part of the host workspace.
+[workspace]
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

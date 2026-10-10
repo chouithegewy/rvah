@@ -720,6 +720,11 @@ impl AndroidCore {
                 reason: format!("{addon_id} declares no setting {key}"),
             })?;
         let valid = match (&spec.r#enum, spec.r#type.as_str()) {
+            // A list: comma-separated options, in the viewer's order.
+            (Some(options), "list") => value
+                .split(',')
+                .filter(|v| !v.is_empty())
+                .all(|v| options.iter().any(|o| o == v)),
             (Some(options), _) => options.contains(&value),
             (None, "bool") => value == "true" || value == "false",
             (None, "int" | "integer") => value.parse::<i64>().is_ok(),
@@ -1487,6 +1492,7 @@ secrets = ["api_token"]
 [settings]
 quality = { type = "string", default = "1080p", enum = ["720p", "1080p"] }
 subtitles = { type = "bool", default = false }
+genres = { type = "list", default = "Anime,Drama", enum = ["Anime", "Drama", "Sci-Fi"] }
 "#;
 
     const EMPTY_PAGE: &str = r#"{"items":[]}"#;
@@ -1708,6 +1714,11 @@ subtitles = { type = "bool", default = false }
         assert!(save("quality", "4k").is_err());
         assert!(save("subtitles", "maybe").is_err());
         assert!(save("undeclared", "x").is_err());
+        // A list: any of its options, in any order, or none.
+        assert!(save("genres", "Anime,Westerns").is_err());
+        save("genres", "Sci-Fi,Anime").unwrap();
+        save("genres", "").unwrap();
+        save("genres", "Drama").unwrap();
         save("quality", "720p").unwrap();
         save("subtitles", "true").unwrap();
         let settings = f.core.settings(ID.into()).unwrap();
@@ -1720,6 +1731,10 @@ subtitles = { type = "bool", default = false }
         };
         assert_eq!(value("quality"), "720p");
         assert_eq!(value("subtitles"), "true");
+        assert_eq!(value("genres"), "Drama");
+        let genres = settings.iter().find(|s| s.key == "genres").unwrap();
+        assert_eq!(genres.value_type, "list");
+        assert_eq!(genres.options, ["Anime", "Drama", "Sci-Fi"]);
     }
 
     #[test]

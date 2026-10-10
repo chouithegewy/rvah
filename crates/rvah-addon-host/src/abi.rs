@@ -56,6 +56,8 @@ pub(crate) fn dispatch_host_call(host: &dyn HostApi, request: &[u8]) -> Vec<u8> 
             level: Option<String>,
             message: String,
         },
+        /// The time, in Unix seconds: add-ons have no clock of their own.
+        Now,
     }
 
     fn ok(value: Value) -> Vec<u8> {
@@ -97,5 +99,51 @@ pub(crate) fn dispatch_host_call(host: &dyn HostApi, request: &[u8]) -> Vec<u8> 
             host.log(parse_level(level.as_deref()), &message);
             ok(Value::Null)
         }
+        HostCall::Now => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            ok(json!({ "value": now }))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rvah_addon_sdk::{HttpRequest, HttpResponse};
+
+    struct Silent;
+    impl HostApi for Silent {
+        fn http_fetch(&self, _req: HttpRequest) -> Result<HttpResponse, AddonError> {
+            Err(AddonError::new(
+                AddonErrorCode::PermissionDenied,
+                "no network",
+            ))
+        }
+        fn setting_get(&self, _key: &str) -> Option<String> {
+            None
+        }
+        fn secret_get(&self, _name: &str) -> Result<Option<String>, AddonError> {
+            Ok(None)
+        }
+        fn storage_get(&self, _key: &str) -> Option<Vec<u8>> {
+            None
+        }
+        fn storage_set(&self, _key: &str, _value: &[u8]) -> Result<(), AddonError> {
+            Ok(())
+        }
+        fn storage_delete(&self, _key: &str) {}
+        fn log(&self, _level: LogLevel, _message: &str) {}
+    }
+
+    #[test]
+    fn add_ons_can_ask_the_time() {
+        let answer: serde_json::Value =
+            serde_json::from_slice(&dispatch_host_call(&Silent, br#"{"fn":"now"}"#)).unwrap();
+        let now = answer["Ok"]["value"].as_u64().unwrap();
+        // After 2026-01-01, before 2100.
+        assert!((1_767_225_600..4_102_444_800).contains(&now), "{now}");
     }
 }

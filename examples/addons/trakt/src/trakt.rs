@@ -24,26 +24,13 @@ const MAX_PAGES: u32 = 10;
 enum Shape {
     Wrapped,
     Movies,
-    Shows,
 }
 
 /// (title, path, needs a sign-in, shape, extra query)
 const ROWS: &[(&str, &str, bool, Shape, &str)] = &[
+    // Films and series together; see `recommendations`.
+    ("You might like", "recommendations", true, Shape::Movies, ""),
     ("Your watchlist", "sync/watchlist", true, Shape::Wrapped, ""),
-    (
-        "Recommended films",
-        "recommendations/movies",
-        true,
-        Shape::Movies,
-        "&ignore_collected=true",
-    ),
-    (
-        "Recommended series",
-        "recommendations/shows",
-        true,
-        Shape::Shows,
-        "&ignore_collected=true",
-    ),
     (
         "Trending films",
         "movies/trending",
@@ -263,6 +250,9 @@ pub fn list(host: &dyn Host, path: Option<&str>, cursor: Option<&str>) -> Result
     } else {
         None
     };
+    if path == "recommendations" {
+        return recommendations(host, token.as_deref().unwrap_or_default(), page);
+    }
     let resp = call(
         host,
         "GET",
@@ -285,10 +275,6 @@ pub fn list(host: &dyn Host, path: Option<&str>, cursor: Option<&str>) -> Result
         Shape::Movies => decode::<Vec<Media>>(path, &resp.body)?
             .into_iter()
             .map(|m| (m, ContentType::Movie))
-            .collect(),
-        Shape::Shows => decode::<Vec<Media>>(path, &resp.body)?
-            .into_iter()
-            .map(|m| (m, ContentType::Series))
             .collect(),
     };
     let full = media.len() >= LIMIT;
@@ -477,4 +463,49 @@ pub fn scrobble(
             Ok(())
         }
     }
+}
+
+/// The "You might like" column, for an add-on nesting this one: only once
+/// linked, since it is yours.
+pub fn you_might_like(host: &dyn Host) -> Result<Option<PageItem>, AddonError> {
+    if access_token(host)?.is_none() {
+        return Ok(None);
+    }
+    Ok(rows(true).items.into_iter().next())
+}
+
+/// Recommended films and series together, alternating.
+fn recommendations(host: &dyn Host, token: &str, page: u32) -> Result<Page, AddonError> {
+    const EACH: usize = LIMIT / 2;
+    let fetch = |kind: &str| -> Result<Vec<Media>, AddonError> {
+        let path = format!(
+            "/recommendations/{kind}?extended=full&page={page}&limit={EACH}&ignore_collected=true"
+        );
+        let resp = call(host, "GET", &path, Some(token), None)?;
+        if !(200..300).contains(&resp.status) {
+            return Err(failed("recommendations", resp.status));
+        }
+        decode("recommendations", &resp.body)
+    };
+    let films = fetch("movies")?;
+    let shows = fetch("shows")?;
+    let more = films.len() >= EACH || shows.len() >= EACH;
+    let mut films = films.into_iter().map(|m| (m, ContentType::Movie));
+    let mut shows = shows.into_iter().map(|m| (m, ContentType::Series));
+    let mut media = Vec::new();
+    loop {
+        match (films.next(), shows.next()) {
+            (None, None) => break,
+            (a, b) => media.extend(a.into_iter().chain(b)),
+        }
+    }
+    Ok(Page {
+        items: media
+            .into_iter()
+            .filter_map(|(m, kind)| item(m, kind))
+            .map(PageItem::Media)
+            .collect(),
+        cursor_next: (more && page < MAX_PAGES).then(|| (page + 1).to_string()),
+        total_hint: None,
+    })
 }
