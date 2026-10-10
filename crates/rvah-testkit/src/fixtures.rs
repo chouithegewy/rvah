@@ -9,7 +9,7 @@ use rvah_addon_host::{keygen, package_dir, sign_package};
 use rvah_addon_sdk::{
     AccountStatus, AddonError, AddonErrorCode, AddonProvider, Artwork, AuthPoll, Credentials,
     DeviceAuth, DirectoryItem, Filter, HostApi, HttpRequest, HttpResponse, ItemDetails, LogLevel,
-    MediaItem, Page, PageItem, PlayableSource, Protocol, ResolveResult,
+    MediaItem, Page, PageItem, PlayableSource, Protocol, Release, ResolveResult, SourceRequest,
 };
 
 pub const ECHO_FIXTURE_ID: &str = "com.rvah.fixtures.echo";
@@ -226,6 +226,57 @@ pub struct StaticDetailsProvider(pub ItemDetails);
 impl AddonProvider for StaticDetailsProvider {
     fn details(&self, _ctx: &dyn HostApi, _item_id: &str) -> Result<ItemDetails, AddonError> {
         Ok(self.0.clone())
+    }
+}
+
+/// Answers `sources` with fixed releases, after `delay`.
+pub struct StaticSourcesProvider {
+    pub releases: Vec<Release>,
+    pub delay: Duration,
+}
+
+impl AddonProvider for StaticSourcesProvider {
+    fn sources(
+        &self,
+        _ctx: &dyn HostApi,
+        _request: &SourceRequest,
+    ) -> Result<Vec<Release>, AddonError> {
+        std::thread::sleep(self.delay);
+        Ok(self.releases.clone())
+    }
+}
+
+/// One `resolve_release` request: the release, season and episode.
+pub type ReleaseRequest = (Release, Option<u32>, Option<u32>);
+
+/// Answers `resolve_release` with a fixed result, recording each request.
+pub struct DebridProvider {
+    pub result: ResolveResult,
+    pub seen: Mutex<Vec<ReleaseRequest>>,
+}
+
+impl DebridProvider {
+    pub fn new(result: ResolveResult) -> Self {
+        DebridProvider {
+            result,
+            seen: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl AddonProvider for DebridProvider {
+    fn resolve_release(
+        &self,
+        _ctx: &dyn HostApi,
+        release: &Release,
+        season: Option<u32>,
+        episode: Option<u32>,
+    ) -> Result<ResolveResult, AddonError> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push((release.clone(), season, episode));
+        Ok(self.result.clone())
     }
 }
 

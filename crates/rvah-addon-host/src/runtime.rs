@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use rvah_addon_sdk::{
     AccountStatus, AddonError, AddonErrorCode, AddonProvider, AuthPoll, Credentials, DeviceAuth,
-    Filter, HostApi, ItemDetails, Page, ResolveResult,
+    Filter, HostApi, ItemDetails, Page, Release, ResolveResult, SourceRequest,
 };
 
 use crate::manifest::Capability;
@@ -37,6 +37,14 @@ pub enum AddonOp {
     Details {
         item_id: String,
     },
+    Sources {
+        request: SourceRequest,
+    },
+    ResolveRelease {
+        release: Release,
+        season: Option<u32>,
+        episode: Option<u32>,
+    },
 }
 
 impl AddonOp {
@@ -51,6 +59,8 @@ impl AddonOp {
                 Capability::Auth
             }
             AddonOp::Details { .. } => Capability::Details,
+            AddonOp::Sources { .. } => Capability::Sources,
+            AddonOp::ResolveRelease { .. } => Capability::Debrid,
         }
     }
 }
@@ -65,6 +75,7 @@ pub enum AddonResponse {
     AuthPoll(AuthPoll),
     Credentials(Credentials),
     Details(Box<ItemDetails>),
+    Releases(Vec<Release>),
 }
 
 /// Per-invocation environment: deadline plus the capability-checked host API.
@@ -171,6 +182,16 @@ impl AddonRuntime for InProcessRuntime {
                 AddonOp::Details { item_id } => provider
                     .details(host.as_ref(), &item_id)
                     .map(|details| AddonResponse::Details(Box::new(details))),
+                AddonOp::Sources { request } => provider
+                    .sources(host.as_ref(), &request)
+                    .map(AddonResponse::Releases),
+                AddonOp::ResolveRelease {
+                    release,
+                    season,
+                    episode,
+                } => provider
+                    .resolve_release(host.as_ref(), &release, season, episode)
+                    .map(AddonResponse::Resolve),
             };
             let _ = tx.send(result);
         });
@@ -399,6 +420,65 @@ mod tests {
     }
 
     #[test]
+    fn sources_and_debrid_need_their_capabilities() {
+        let sources = AddonOp::Sources {
+            request: SourceRequest {
+                kind: rvah_addon_sdk::SourceKind::Movie,
+                imdb_id: Some("tt1".into()),
+                title: "Film".into(),
+                year: Some(2026),
+                season: None,
+                episode: None,
+            },
+        };
+        let release = AddonOp::ResolveRelease {
+            release: Release {
+                name: "Film.2026.2160p".into(),
+                info_hash: "b".repeat(40),
+                size_bytes: Some(1),
+                seeders: Some(2),
+                origin: None,
+            },
+            season: None,
+            episode: None,
+        };
+        let rt = InProcessRuntime::new(Arc::new(DetailsProvider), vec![Capability::Details]);
+        for op in [sources.clone(), release.clone()] {
+            let err = rt.invoke(op, &ctx(1_000)).unwrap_err();
+            assert_eq!(err.code, AddonErrorCode::PermissionDenied);
+        }
+        let rt = InProcessRuntime::new(
+            Arc::new(DetailsProvider),
+            vec![Capability::Sources, Capability::Debrid],
+        );
+        // Declared but not implemented: a structured error, not a panic.
+        for op in [sources, release] {
+            let err = rt.invoke(op, &ctx(1_000)).unwrap_err();
+            assert_eq!(err.code, AddonErrorCode::Internal);
+        }
+        let wire = serde_json::to_value(AddonOp::Sources {
+            request: SourceRequest {
+                kind: rvah_addon_sdk::SourceKind::Episode,
+                imdb_id: None,
+                title: "Show".into(),
+                year: None,
+                season: Some(1),
+                episode: Some(2),
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "op": "sources",
+                "request": { "kind": "episode", "title": "Show", "season": 1, "episode": 2 }
+            })
+        );
+        let caps: Vec<Capability> = serde_json::from_str(r#"["sources","debrid"]"#).unwrap();
+        assert_eq!(caps, [Capability::Sources, Capability::Debrid]);
+    }
+
+    #[test]
     fn details_wire_format() {
         let wire = serde_json::to_value(AddonOp::Details {
             item_id: "movie:1".into(),
@@ -459,6 +539,27 @@ mod tests {
             AddonOp::Details {
                 item_id: "i".into(),
             },
+            AddonOp::Sources {
+                request: SourceRequest {
+                    kind: rvah_addon_sdk::SourceKind::Episode,
+                    imdb_id: Some("tt1".into()),
+                    title: "Show".into(),
+                    year: None,
+                    season: Some(1),
+                    episode: Some(2),
+                },
+            },
+            AddonOp::ResolveRelease {
+                release: Release {
+                    name: "Show.S01E02".into(),
+                    info_hash: "a".repeat(40),
+                    size_bytes: None,
+                    seeders: None,
+                    origin: None,
+                },
+                season: Some(1),
+                episode: Some(2),
+            },
         ];
         for op in ops {
             let wire = serde_json::to_vec(&op).unwrap();
@@ -473,6 +574,7 @@ mod tests {
             Response::Account(AccountStatus::SignedOut),
             Response::AuthPoll(AuthPoll::Pending),
             Response::Credentials(Credentials::default()),
+            Response::Releases(vec![]),
         ];
         for answer in answers {
             let wire = serde_json::to_vec(&answer).unwrap();

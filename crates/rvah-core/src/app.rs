@@ -7,7 +7,7 @@ use rvah_addon_host::{
 };
 use rvah_addon_sdk::{
     AccountStatus, AddonError, AddonErrorCode, AuthPoll, Credentials, Filter, HostApi, ItemDetails,
-    Page, ResolveResult,
+    Page, Release, ResolveResult, SourceRequest,
 };
 use rvah_auth::{DeviceCodeFlow, DeviceCodeState, PollOutcome, SecretVault};
 use rvah_data::{AddonStatus, Database, DiagnosticEvent, FavoriteRecord};
@@ -24,6 +24,10 @@ use crate::playback::{
 };
 
 pub const DEFAULT_INVOKE_TIMEOUT: Duration = Duration::from_secs(2);
+/// A source search waits on every indexer the source asks.
+pub const SOURCES_TIMEOUT: Duration = Duration::from_secs(45);
+/// Playing a release takes a debrid service several requests.
+pub const RELEASE_TIMEOUT: Duration = Duration::from_secs(20);
 /// Consecutive failures before an add-on is quarantined (NFR Reliability).
 pub const QUARANTINE_THRESHOLD: u32 = 3;
 
@@ -63,6 +67,10 @@ pub struct AppCore<B: PlayerBackend> {
     pub player: PlayerController<B>,
     pub nav: NavHistory,
     pub invoke_timeout: Duration,
+    /// For `sources`; never shorter than `invoke_timeout`.
+    pub sources_timeout: Duration,
+    /// For `resolve_release`; never shorter than `invoke_timeout`.
+    pub release_timeout: Duration,
     failures: HashMap<String, u32>,
     playback: Arc<Mutex<PlaybackTracker>>,
     sign_ins: HashMap<String, PendingAuth>,
@@ -84,6 +92,8 @@ impl<B: PlayerBackend> AppCore<B> {
             player: PlayerController::new(backend),
             nav: NavHistory::new(),
             invoke_timeout: DEFAULT_INVOKE_TIMEOUT,
+            sources_timeout: SOURCES_TIMEOUT,
+            release_timeout: RELEASE_TIMEOUT,
             failures: HashMap::new(),
             playback,
             sign_ins: HashMap::new(),
@@ -165,8 +175,13 @@ impl<B: PlayerBackend> AppCore<B> {
             .addons
             .get(addon_id)
             .ok_or_else(|| CoreError::AddonNotFound(addon_id.to_string()))?;
+        let timeout = match &op {
+            AddonOp::Sources { .. } => self.sources_timeout.max(self.invoke_timeout),
+            AddonOp::ResolveRelease { .. } => self.release_timeout.max(self.invoke_timeout),
+            _ => self.invoke_timeout,
+        };
         let ctx = InvocationCtx {
-            timeout: self.invoke_timeout,
+            timeout,
             host: Arc::clone(&addon.host),
         };
         let op_name = match &op {
@@ -178,6 +193,8 @@ impl<B: PlayerBackend> AppCore<B> {
             AddonOp::AuthPoll { .. } => "auth_poll",
             AddonOp::AuthRefresh => "auth_refresh",
             AddonOp::Details { .. } => "details",
+            AddonOp::Sources { .. } => "sources",
+            AddonOp::ResolveRelease { .. } => "resolve_release",
         };
         let started = std::time::Instant::now();
         let result = addon.runtime.invoke(op, &ctx);
@@ -366,6 +383,61 @@ impl<B: PlayerBackend> AppCore<B> {
                 source_id: None,
             },
         )?;
+        self.prepare_resolved(resp, (addon_id, item_id), capabilities)
+    }
+
+    /// Releases of one film or episode from a `sources` add-on, each with a
+    /// well-formed info hash (normalized to lowercase hex), once.
+    pub fn sources(
+        &mut self,
+        addon_id: &str,
+        request: SourceRequest,
+    ) -> Result<Vec<Release>, CoreError> {
+        let releases = match self.invoke(addon_id, AddonOp::Sources { request })? {
+            AddonResponse::Releases(releases) => releases,
+            other => return Err(unexpected_response(&other)),
+        };
+        let mut seen = std::collections::HashSet::new();
+        Ok(releases
+            .into_iter()
+            .filter_map(|mut release| {
+                release.info_hash = normalize_info_hash(&release.info_hash)?;
+                seen.insert(release.info_hash.clone()).then_some(release)
+            })
+            .collect())
+    }
+
+    /// Play `release` through a `debrid` add-on. Progress is kept under
+    /// `title` (the add-on and item the release is of), so resuming works
+    /// whichever release plays next time.
+    pub fn prepare_release(
+        &mut self,
+        debrid_id: &str,
+        release: &Release,
+        season: Option<u32>,
+        episode: Option<u32>,
+        title: (&str, &str),
+        capabilities: PlaybackCapabilities,
+    ) -> Result<PreparedPlayback, CoreError> {
+        let resp = self.invoke(
+            debrid_id,
+            AddonOp::ResolveRelease {
+                release: release.clone(),
+                season,
+                episode,
+            },
+        )?;
+        self.prepare_resolved(resp, title, capabilities)
+    }
+
+    /// A playback session for a resolve answer, tracked under `progress`.
+    fn prepare_resolved(
+        &mut self,
+        resp: AddonResponse,
+        progress: (&str, &str),
+        capabilities: PlaybackCapabilities,
+    ) -> Result<PreparedPlayback, CoreError> {
+        let (addon_id, item_id) = progress;
         let result = match resp {
             AddonResponse::Resolve(r) => r,
             other => {
@@ -688,6 +760,35 @@ impl<B: PlayerBackend> AppCore<B> {
     pub fn vault(&self) -> &Arc<dyn SecretVault> {
         &self.vault
     }
+}
+
+/// A BitTorrent v1 info hash as 40 lowercase hex digits, from hex or the
+/// 32-character base32 form; `None` for anything else.
+fn normalize_info_hash(hash: &str) -> Option<String> {
+    let hash = hash.trim();
+    if hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Some(hash.to_ascii_lowercase());
+    }
+    if hash.len() != 32 {
+        return None;
+    }
+    let mut bits: u64 = 0;
+    let mut count = 0;
+    let mut bytes = Vec::with_capacity(20);
+    for c in hash.bytes() {
+        let value = match c.to_ascii_uppercase() {
+            c @ b'A'..=b'Z' => c - b'A',
+            c @ b'2'..=b'7' => c - b'2' + 26,
+            _ => return None,
+        };
+        bits = (bits << 5) | u64::from(value);
+        count += 5;
+        if count >= 8 {
+            count -= 8;
+            bytes.push((bits >> count) as u8);
+        }
+    }
+    Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 fn unexpected_response(response: &AddonResponse) -> CoreError {

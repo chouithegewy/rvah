@@ -27,6 +27,10 @@ pub enum Capability {
     AccountStatus,
     /// Details pages: genres, trailers, ratings.
     Details,
+    /// Finds releases of a film or episode.
+    Sources,
+    /// Plays a release another add-on found.
+    Debrid,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

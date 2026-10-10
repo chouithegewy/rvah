@@ -295,6 +295,45 @@ pub struct Rating {
     pub value: String,
 }
 
+/// What a `sources` add-on is asked to find: one film or one episode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceRequest {
+    pub kind: SourceKind,
+    /// IMDb id of the film or series, e.g. `tt0133093`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imdb_id: Option<String>,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year: Option<u16>,
+    /// Season and episode numbers, for `episode`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub season: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episode: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    Movie,
+    Episode,
+}
+
+/// One release a `sources` add-on found, which a `debrid` add-on can play.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Release {
+    pub name: String,
+    /// BitTorrent info hash: 40 hex digits (or 32 base32 characters).
+    pub info_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seeders: Option<u32>,
+    /// Where it was found, such as an indexer's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+}
+
 /// What one `auth_poll` saw at the provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", content = "credentials", rename_all = "snake_case")]

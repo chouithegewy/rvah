@@ -187,6 +187,68 @@ pub struct ItemDetailsRecord {
     pub ratings: Vec<RatingRecord>,
 }
 
+/// What to find releases of: a film, or an episode when `season` and
+/// `episode` are set.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SourceQuery {
+    pub imdb_id: Option<String>,
+    pub title: String,
+    pub year: Option<u16>,
+    pub season: Option<u32>,
+    pub episode: Option<u32>,
+}
+
+impl From<SourceQuery> for rvah_addon_sdk::SourceRequest {
+    fn from(query: SourceQuery) -> Self {
+        let kind = match (query.season, query.episode) {
+            (Some(_), Some(_)) => rvah_addon_sdk::SourceKind::Episode,
+            _ => rvah_addon_sdk::SourceKind::Movie,
+        };
+        rvah_addon_sdk::SourceRequest {
+            kind,
+            imdb_id: query.imdb_id,
+            title: query.title,
+            year: query.year,
+            season: query.season,
+            episode: query.episode,
+        }
+    }
+}
+
+/// A release a `sources` add-on found; a `debrid` add-on plays it.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct ReleaseRecord {
+    pub name: String,
+    pub info_hash: String,
+    pub size_bytes: Option<u64>,
+    pub seeders: Option<u32>,
+    pub origin: Option<String>,
+}
+
+impl From<rvah_addon_sdk::Release> for ReleaseRecord {
+    fn from(r: rvah_addon_sdk::Release) -> Self {
+        ReleaseRecord {
+            name: r.name,
+            info_hash: r.info_hash,
+            size_bytes: r.size_bytes,
+            seeders: r.seeders,
+            origin: r.origin,
+        }
+    }
+}
+
+impl From<ReleaseRecord> for rvah_addon_sdk::Release {
+    fn from(r: ReleaseRecord) -> Self {
+        rvah_addon_sdk::Release {
+            name: r.name,
+            info_hash: r.info_hash,
+            size_bytes: r.size_bytes,
+            seeders: r.seeders,
+            origin: r.origin,
+        }
+    }
+}
+
 /// A trailer page, built here from the site's video key.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct TrailerLink {
@@ -803,6 +865,45 @@ impl AndroidCore {
             .map_err(playback_error)
     }
 
+    /// Releases of a film or episode from a `sources` add-on (up to
+    /// `rvah_core::SOURCES_TIMEOUT`; call off the main thread).
+    pub fn sources(
+        &self,
+        addon_id: String,
+        query: SourceQuery,
+    ) -> Result<Vec<ReleaseRecord>, AndroidCoreError> {
+        self.core()
+            .sources(&addon_id, query.into())
+            .map(|releases| releases.into_iter().map(ReleaseRecord::from).collect())
+            .map_err(addon_error)
+    }
+
+    /// Play `release` through the `debrid` add-on `debrid_id`, keeping
+    /// progress under the title it is a release of.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_release(
+        &self,
+        debrid_id: String,
+        release: ReleaseRecord,
+        season: Option<u32>,
+        episode: Option<u32>,
+        title_addon_id: String,
+        title_item_id: String,
+        title: Option<String>,
+    ) -> Result<NativePreparedPlayback, AndroidCoreError> {
+        self.core()
+            .prepare_release(
+                &debrid_id,
+                &release.into(),
+                season,
+                episode,
+                (&title_addon_id, &title_item_id),
+                PlaybackCapabilities::media3(),
+            )
+            .map(|prepared| NativePreparedPlayback::from(prepared).with_title(title))
+            .map_err(playback_error)
+    }
+
     /// Never waits for an in-flight add-on call (see [`AndroidCore`]).
     pub fn report_playback_event(
         &self,
@@ -1043,8 +1144,9 @@ fn load_wasmi_runtime(
     })?;
     let runtime = WasmiRuntime::load(
         &module,
+        // The ceiling; the core gives each call its own, shorter limit.
         WasmiLimits {
-            timeout: Duration::from_secs(30),
+            timeout: rvah_core::SOURCES_TIMEOUT,
             ..Default::default()
         },
     )
@@ -1093,6 +1195,21 @@ mod tests {
             },
             provider_ids: Default::default(),
         }
+    }
+
+    #[test]
+    fn a_query_with_season_and_episode_asks_for_an_episode() {
+        let query = |season, episode| SourceQuery {
+            imdb_id: Some("tt1".into()),
+            title: "Show".into(),
+            year: None,
+            season,
+            episode,
+        };
+        let request = rvah_addon_sdk::SourceRequest::from(query(Some(1), Some(2)));
+        assert_eq!(request.kind, rvah_addon_sdk::SourceKind::Episode);
+        let request = rvah_addon_sdk::SourceRequest::from(query(Some(1), None));
+        assert_eq!(request.kind, rvah_addon_sdk::SourceKind::Movie);
     }
 
     #[test]
