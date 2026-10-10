@@ -1,7 +1,7 @@
 [addon]
 id = "org.themoviedb.discover"
 name = "TMDB Discover"
-version = "0.3.0"
+version = "0.4.0"
 sdk = ">=0.1, <0.2"
 entry = "module.wasm"
 capabilities = ["catalog", "search", "details"]
@@ -21,3 +21,6 @@ secrets = ["tmdb_key", "mdblist_key"]
 region = { type = "string", default = "US" }
 # Titles, synopses and trailers in this language, as IETF tag.
 language = { type = "string", default = "en-US" }
+# Genre columns after the streaming ones, in this order (the TV toggles
+# them; turning one on puts it last).
+genres = { type = "list", default = "Sci-Fi,Anime,Thriller,Action,Comedy,Horror,Drama,Mystery,Crime,Fantasy,Documentary,Romance", enum = ["Sci-Fi", "Anime", "Thriller", "Action", "Comedy", "Horror", "Drama", "Mystery", "Crime", "Fantasy", "Animation", "Documentary", "Romance", "Family", "War", "Western", "History", "Music", "Kids", "Reality"] }

@@ -12,7 +12,10 @@ pub mod trakt;
 use rvah_addon_sdk::guest::{read_op, Host, Op, Response};
 use rvah_addon_sdk::{AddonError, AddonErrorCode};
 
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+#[cfg_attr(
+    any(not(target_arch = "wasm32"), not(feature = "standalone")),
+    allow(dead_code)
+)]
 fn dispatch(input: &[u8], host: &dyn Host) -> Result<Response, AddonError> {
     match read_op(input)? {
         Op::List { path, cursor } => {
@@ -36,6 +39,7 @@ fn dispatch(input: &[u8], host: &dyn Host) -> Result<Response, AddonError> {
     }
 }
 
+#[cfg(feature = "standalone")]
 rvah_addon_sdk::export_guest!(dispatch);
 
 #[cfg(test)]
@@ -109,11 +113,8 @@ mod tests {
             public
         );
         let signed_in = rows(&trakt::list(&host(true), None, None).unwrap());
-        assert_eq!(
-            signed_in[..3],
-            ["Your watchlist", "Recommended films", "Recommended series"]
-        );
-        assert_eq!(signed_in[3..], public);
+        assert_eq!(signed_in[..2], ["You might like", "Your watchlist"]);
+        assert_eq!(signed_in[2..], public);
     }
 
     #[test]
@@ -151,27 +152,6 @@ mod tests {
             !sent.headers.contains_key("authorization"),
             "public lists send no token"
         );
-    }
-
-    #[test]
-    fn recommendations_come_unwrapped_and_page_by_count() {
-        let mut host = host(true);
-        let shows: Vec<Value> = (0..20)
-            .map(|n| media(&format!("Show {n}"), 100 + n, Some(2000 + n)))
-            .collect();
-        host.route(
-            &format!(
-                "{API}/recommendations/shows?extended=full&page=1&limit=20&ignore_collected=true"
-            ),
-            200,
-            &shows,
-        );
-        let page = trakt::list(&host, Some("recommendations/shows"), None).unwrap();
-        assert_eq!(page.items.len(), 20);
-        assert_eq!(items(&page)[0], ("tv:2000".into(), ContentType::Series));
-        // A full page and no count header: there may be more.
-        assert_eq!(page.cursor_next.as_deref(), Some("2"));
-        assert_eq!(host.requests()[0].headers["authorization"], "Bearer at1");
     }
 
     #[test]
@@ -384,5 +364,38 @@ mod tests {
         assert!(host.urls().is_empty());
         trakt::scrobble(&host, ScrobbleAction::Start, &film(), 0.0).unwrap();
         assert_eq!(host.urls(), [format!("{API}/scrobble/start")]);
+    }
+
+    #[test]
+    fn you_might_like_interleaves_recommended_films_and_series() {
+        let mut host = host(true);
+        let films: Vec<Value> = (0..10)
+            .map(|n| media(&format!("Film {n}"), n, Some(100 + n)))
+            .collect();
+        let shows: Vec<Value> = (0..4)
+            .map(|n| media(&format!("Show {n}"), 50 + n, Some(500 + n)))
+            .collect();
+        host.route(
+            &format!(
+                "{API}/recommendations/movies?extended=full&page=1&limit=10&ignore_collected=true"
+            ),
+            200,
+            &films,
+        );
+        host.route(
+            &format!(
+                "{API}/recommendations/shows?extended=full&page=1&limit=10&ignore_collected=true"
+            ),
+            200,
+            &shows,
+        );
+        let page = trakt::list(&host, Some("recommendations"), None).unwrap();
+        let ids: Vec<String> = items(&page).into_iter().map(|(id, _)| id).collect();
+        assert_eq!(ids[..4], ["movie:100", "tv:500", "movie:101", "tv:501"]);
+        assert_eq!(ids.len(), 14);
+        // The films filled their page: there may be more.
+        assert_eq!(page.cursor_next.as_deref(), Some("2"));
+        assert!(trakt::you_might_like(&host).unwrap().is_some());
+        assert!(trakt::you_might_like(&self::host(false)).unwrap().is_none());
     }
 }

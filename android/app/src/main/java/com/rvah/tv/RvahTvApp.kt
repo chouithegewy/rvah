@@ -6,6 +6,8 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -97,7 +99,8 @@ private sealed interface Screen {
     ) : Screen
     data class Details(val addonId: String, val itemId: String, val title: String, val returnTo: Screen) : Screen
     data class Sources(val returnTo: Screen) : Screen
-    data object Settings : Screen
+    /** A folder of folders (a series' seasons, say) as a board of columns. */
+    data class Board(val addonId: String, val path: String, val title: String, val returnTo: Screen) : Screen
     data class AddonSettings(val addon: AddonRecord) : Screen
     data class LinkAccount(val addon: AddonRecord, val returnTo: Screen = AddonSettings(addon)) : Screen
     data object Install : Screen
@@ -224,15 +227,17 @@ private fun AppNavigation(
             }
             .onFailure { addonsError = it.userMessage() }
     }
-    // Discover rows per add-on, kept until Home so Back finds the same poster.
-    val discover = remember { mutableMapOf<String, DiscoverState>() }
     // Where Back leaves Search for, when a details page opened it.
     var searchBack by remember { mutableStateOf<Screen?>(null) }
     // The last source search, kept while its releases play.
     var sources by remember { mutableStateOf<SourcesState?>(null) }
+    // The home screen's tabs and boards, kept while titles are open; the
+    // add-ons' top levels are listed again when the add-ons change.
+    val home = remember(addons.map { it.id to it.status }) { HomeState() }
+    // Boards behind a folder of folders, by add-on and path.
+    val boards = remember { mutableMapOf<String, BoardState>() }
     val goHome = {
         refresh++
-        discover.clear()
         searchBack = null
         sources = null
         screen = Screen.Home
@@ -262,6 +267,18 @@ private fun AppNavigation(
             open(addonId, entry.id, entry.title, from)
         }
     }
+    // A board's title opens like any; a folder opens as a list, or as a
+    // board when it holds folders.
+    val openFromBoard: (ColumnSpec, CatalogEntry, Screen) -> Unit = { spec, entry, from ->
+        when (entry) {
+            is CatalogEntry.Media -> openEntry(spec.addonId, entry, from)
+            is CatalogEntry.Directory -> screen = if (entry.ofDirectories) {
+                Screen.Board(spec.addonId, entry.path, entry.title, from)
+            } else {
+                Screen.Browse(spec.addonId, entry.title, listOf(entry.path), returnTo = from)
+            }
+        }
+    }
     val searchable = addons.filter { it.status == "enabled" && "search" in it.capabilities }
     // Where an add-on's sign-in error leads: device sign-in when it has one.
     val signInFor: (AddonRecord, Screen) -> Pair<String, () -> Unit> = { addon, back ->
@@ -274,19 +291,23 @@ private fun AppNavigation(
 
     when (val current = screen) {
         Screen.Home -> HomeScreen(
-            // Only what can be browsed; the rest (a sources add-on, say)
-            // is in Settings.
-            addons = addons.filter { "catalog" in it.capabilities },
+            core = core,
+            home = home,
+            addons = addons,
             error = addonsError,
-            canSearch = searchable.isNotEmpty(),
-            onOpen = { addon ->
-                screen = if (addon.status == "enabled") {
-                    Screen.Browse(addon.id, addon.name)
-                } else {
-                    Screen.AddonSettings(addon)
-                }
-            },
-            onNavigate = { screen = it },
+            scope = scope,
+            onOpen = { spec, entry -> openFromBoard(spec, entry, Screen.Home) },
+            onInstall = { screen = Screen.Install },
+            onDiagnostics = { screen = Screen.Diagnostics },
+            onAddonSettings = { screen = Screen.AddonSettings(it) },
+        )
+        is Screen.Board -> FolderBoard(
+            core = core,
+            target = current,
+            state = boards.getOrPut(current.addonId + "\u0000" + current.path) { BoardState() },
+            scope = scope,
+            onOpen = { spec, entry -> openFromBoard(spec, entry, current) },
+            onExit = { screen = current.returnTo },
         )
         is Screen.Browse -> BrowseScreen(
             core = core,
@@ -294,7 +315,6 @@ private fun AppNavigation(
             listings = browsed,
             scope = scope,
             signIn = addons.firstOrNull { it.id == current.addonId }?.let { signInFor(it, current) },
-            discover = discover.getOrPut(current.addonId) { DiscoverState(current.addonId) },
             onNavigate = { screen = it },
             onPlay = { entry -> openEntry(current.addonId, entry, current) },
             onExit = { current.returnTo?.let { screen = it } ?: goHome() },
@@ -339,9 +359,9 @@ private fun AppNavigation(
             } else {
                 null
             },
-            // A series: its seasons and episodes, as rows.
+            // A series: its seasons as columns of episodes.
             onEpisodes = { details ->
-                screen = Screen.Browse(current.addonId, details.title, stack = listOf(details.id), returnTo = current)
+                screen = Screen.Board(current.addonId, details.id, details.title, returnTo = current)
             },
             onExit = { screen = current.returnTo },
         )
@@ -414,31 +434,23 @@ private fun AppNavigation(
                 screen = current.returnTo
             },
         )
-        Screen.Settings -> Page("Settings") {
-            BackHandler(onBack = goHome)
-            if (addons.isEmpty()) Body("No add-ons installed.")
-            val first = rememberInitialFocus(addons)
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(addons, key = { it.id }) { addon ->
-                    val modifier = if (addon == addons.first()) Modifier.focusRequester(first) else Modifier
-                    Button(onClick = { screen = Screen.AddonSettings(addon) }, modifier = modifier) {
-                        Text("${addon.name} — ${addon.status}")
-                    }
-                }
-            }
-        }
         is Screen.AddonSettings -> AddonSettingsScreen(
             core = core,
             addon = current.addon,
-            onChanged = { refresh++ },
+            onChanged = {
+                home.forget(current.addon.id)
+                refresh++
+            },
             onLinkAccount = { screen = Screen.LinkAccount(current.addon) },
-            onExit = { screen = Screen.Settings },
+            onExit = { screen = Screen.Home },
         )
         is Screen.LinkAccount -> LinkAccountScreen(
             core = core,
             addon = current.addon,
             scope = scope,
             onExit = {
+                // Linked: the add-on's own columns may show now.
+                home.forget(current.addon.id)
                 refresh++
                 screen = current.returnTo
             },
@@ -455,39 +467,6 @@ private fun AppNavigation(
 }
 
 @Composable
-private fun HomeScreen(
-    addons: List<AddonRecord>,
-    error: String?,
-    canSearch: Boolean,
-    onOpen: (AddonRecord) -> Unit,
-    onNavigate: (Screen) -> Unit,
-) {
-    Page("RVAH") {
-        Body("Your add-ons", Secondary)
-        val first = rememberInitialFocus(addons.size)
-        if (addons.isEmpty()) {
-            Body("No add-ons installed yet. Use Install add-on to add a signed package.")
-        } else {
-            Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                addons.forEachIndexed { index, addon ->
-                    val label = if (addon.status == "enabled") addon.name else "${addon.name} (${addon.status})"
-                    val modifier = if (index == 0) Modifier.focusRequester(first) else Modifier
-                    Button(onClick = { onOpen(addon) }, modifier = modifier) { Text(label) }
-                }
-            }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-            if (canSearch) Button(onClick = { onNavigate(Screen.Search) }) { Text("Search") }
-            Button(onClick = { onNavigate(Screen.Settings) }) { Text("Settings") }
-            val installModifier = if (addons.isEmpty()) Modifier.focusRequester(first) else Modifier
-            Button(onClick = { onNavigate(Screen.Install) }, modifier = installModifier) { Text("Install add-on") }
-            Button(onClick = { onNavigate(Screen.Diagnostics) }) { Text("Diagnostics") }
-        }
-        error?.let { Body(it, ErrorText) }
-    }
-}
-
-@Composable
 private fun BrowseScreen(
     core: AndroidCore,
     browse: Screen.Browse,
@@ -495,8 +474,6 @@ private fun BrowseScreen(
     scope: CoroutineScope,
     /** Label and action offered when the add-on needs an account. */
     signIn: Pair<String, () -> Unit>?,
-    /** Rows state: a first level of only folders shows as poster rows. */
-    discover: DiscoverState?,
     onNavigate: (Screen) -> Unit,
     onPlay: (CatalogEntry.Media) -> Unit,
     onExit: () -> Unit,
@@ -530,19 +507,18 @@ private fun BrowseScreen(
             }
             loaded == null -> Body("Loading…")
             loaded.entries.isEmpty() && !loaded.hasMore -> Body("Nothing here.")
-            discover != null && browse.stack.size == 1 && loaded.entries.all { it is CatalogEntry.Directory } ->
-                DiscoverRows(
-                    core = core,
-                    rows = loaded.entries.filterIsInstance<CatalogEntry.Directory>(),
-                    state = discover,
-                    scope = scope,
-                    onOpen = { entry ->
-                        when (entry) {
-                            is CatalogEntry.Directory -> onNavigate(browse.copy(stack = browse.stack + entry.path))
-                            is CatalogEntry.Media -> onPlay(entry)
-                        }
-                    },
-                )
+            // A first level of only folders: a board of them.
+            browse.stack.size == 1 && loaded.entries.all { it is CatalogEntry.Directory } -> {
+                val board = remember(level) { BoardState() }
+                val columns = loaded.entries.filterIsInstance<CatalogEntry.Directory>()
+                    .map { ColumnSpec(browse.addonId, it.title, null, it.path) }
+                Board(core, columns, board, scope, onOpen = { _, entry ->
+                    when (entry) {
+                        is CatalogEntry.Directory -> onNavigate(browse.copy(stack = browse.stack + entry.path))
+                        is CatalogEntry.Media -> onPlay(entry)
+                    }
+                })
+            }
             // Each level gets its own scroll and focus state.
             else -> key(level) {
                 ListingView(
@@ -825,6 +801,7 @@ private fun PlayerScreen(
 
 private val MediaKeys = setOf(Key.MediaPlayPause, Key.MediaPlay, Key.MediaPause, Key.MediaFastForward, Key.MediaRewind)
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AddonSettingsScreen(
     core: AndroidCore,
@@ -909,6 +886,25 @@ private fun AddonSettingsScreen(
             }
             items(settings, key = { "setting:" + it.key }) { setting ->
                 when {
+                    // Several of the options, in order: a toggle each; on puts it last.
+                    setting.valueType == "list" && setting.options.isNotEmpty() -> Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        val chosen = setting.value.split(',').filter { it.isNotBlank() }
+                        Body("${setting.key}: ${chosen.joinToString(", ").ifEmpty { "none" }}", Secondary)
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            setting.options.forEach { option ->
+                                Button(onClick = {
+                                    act("Saved ${setting.key}.") {
+                                        core.saveSetting(addon.id, setting.key, toggled(setting.value, option))
+                                    }
+                                }) { Text(if (option in chosen) "✓ $option" else option) }
+                            }
+                        }
+                    }
                     setting.options.isNotEmpty() -> Button(onClick = {
                         val next = setting.options[(setting.options.indexOf(setting.value) + 1) % setting.options.size]
                         act("Saved ${setting.key}.") { core.saveSetting(addon.id, setting.key, next) }
@@ -1196,8 +1192,12 @@ internal suspend fun <T> onIo(block: () -> T): Result<T> = try {
 
 @Composable
 internal fun Page(title: String, content: @Composable () -> Unit) {
-    Column(Modifier.fillMaxSize().padding(48.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
-        Text(title, fontSize = 34.sp, color = Primary)
+    // A small title: the screen is for what it lists.
+    Column(
+        Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Text(title, fontSize = 20.sp, color = Secondary)
         content()
     }
 }
@@ -1227,4 +1227,36 @@ internal fun rememberInitialFocus(key: Any?, enabled: Boolean = true): FocusRequ
         }
     }
     return requester
+}
+
+/** A folder of folders (a series' seasons, say): its folders as columns. */
+@Composable
+private fun FolderBoard(
+    core: AndroidCore,
+    target: Screen.Board,
+    state: BoardState,
+    scope: CoroutineScope,
+    onOpen: (ColumnSpec, CatalogEntry) -> Unit,
+    onExit: () -> Unit,
+) {
+    BackHandler(onBack = onExit)
+    var columns by remember(target) { mutableStateOf<List<ColumnSpec>?>(null) }
+    var failure by remember(target) { mutableStateOf<String?>(null) }
+    LaunchedEffect(target) {
+        onIo { core.browse(target.addonId, target.path, null) }
+            .onSuccess { page ->
+                columns = page.entries.filterIsInstance<CatalogEntry.Directory>()
+                    .map { ColumnSpec(target.addonId, it.title, it.subtitle, it.path) }
+            }
+            .onFailure { failure = it.userMessage() }
+    }
+    Column(Modifier.fillMaxSize().padding(top = 16.dp)) {
+        Text(target.title, fontSize = 20.sp, color = Secondary, modifier = Modifier.padding(start = 32.dp, bottom = 8.dp))
+        val shown = columns
+        when {
+            shown != null -> Board(core, shown, state, scope, onOpen)
+            failure != null -> Text(failure.orEmpty(), color = ErrorText, modifier = Modifier.padding(horizontal = 32.dp))
+            else -> Text("Loading…", color = Secondary, modifier = Modifier.padding(horizontal = 32.dp))
+        }
+    }
 }
