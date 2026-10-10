@@ -31,6 +31,8 @@ pub enum Capability {
     Sources,
     /// Plays a release another add-on found.
     Debrid,
+    /// Hears what plays, e.g. to keep a watch history.
+    Scrobble,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

@@ -9,7 +9,8 @@ use rvah_addon_host::{keygen, package_dir, sign_package};
 use rvah_addon_sdk::{
     AccountStatus, AddonError, AddonErrorCode, AddonProvider, Artwork, AuthPoll, Credentials,
     DeviceAuth, DirectoryItem, Filter, HostApi, HttpRequest, HttpResponse, ItemDetails, LogLevel,
-    MediaItem, Page, PageItem, PlayableSource, Protocol, Release, ResolveResult, SourceRequest,
+    MediaItem, Page, PageItem, PlayableSource, Protocol, Release, ResolveResult, ScrobbleAction,
+    ScrobbleItem, SourceRequest,
 };
 
 pub const ECHO_FIXTURE_ID: &str = "com.rvah.fixtures.echo";
@@ -277,6 +278,28 @@ impl AddonProvider for DebridProvider {
             .unwrap()
             .push((release.clone(), season, episode));
         Ok(self.result.clone())
+    }
+}
+
+/// Records every `scrobble` it hears.
+#[derive(Default)]
+pub struct ScrobbleRecorder {
+    pub heard: Mutex<Vec<(ScrobbleAction, ScrobbleItem, f32)>>,
+}
+
+impl AddonProvider for ScrobbleRecorder {
+    fn scrobble(
+        &self,
+        _ctx: &dyn HostApi,
+        action: ScrobbleAction,
+        item: &ScrobbleItem,
+        progress: f32,
+    ) -> Result<(), AddonError> {
+        self.heard
+            .lock()
+            .unwrap()
+            .push((action, item.clone(), progress));
+        Ok(())
     }
 }
 

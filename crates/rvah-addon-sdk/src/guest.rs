@@ -20,7 +20,8 @@ use serde_json::{json, Value};
 
 use crate::{
     AccountStatus, AddonError, AddonErrorCode, AuthPoll, Credentials, DeviceAuth, Filter,
-    HttpResponse, ItemDetails, Page, Release, ResolveResult, SourceRequest,
+    HttpResponse, ItemDetails, Page, Release, ResolveResult, ScrobbleAction, ScrobbleItem,
+    SourceRequest,
 };
 
 pub trait Host {
@@ -407,6 +408,11 @@ pub enum Op {
         season: Option<u32>,
         episode: Option<u32>,
     },
+    Scrobble {
+        action: ScrobbleAction,
+        item: ScrobbleItem,
+        progress: f32,
+    },
 }
 
 /// A guest's answer, in the host's `AddonResponse` wire form.
@@ -421,6 +427,7 @@ pub enum Response {
     Credentials(Credentials),
     Details(Box<ItemDetails>),
     Releases(Vec<Release>),
+    Done,
 }
 
 /// The op the host sent, or a `Malformed` error.

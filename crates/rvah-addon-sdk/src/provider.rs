@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AccountStatus, AddonError, AddonErrorCode, AuthPoll, Credentials, DeviceAuth, Filter,
-    ItemDetails, Page, Release, ResolveResult, SourceRequest,
+    ItemDetails, Page, Release, ResolveResult, ScrobbleAction, ScrobbleItem, SourceRequest,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -113,6 +113,18 @@ pub trait AddonProvider {
         _request: &SourceRequest,
     ) -> Result<Vec<Release>, AddonError> {
         Err(unimplemented_capability("sources"))
+    }
+
+    /// Report playback of `item` at `progress` percent (capability
+    /// `scrobble`), e.g. to a watch-history service.
+    fn scrobble(
+        &self,
+        _ctx: &dyn HostApi,
+        _action: ScrobbleAction,
+        _item: &ScrobbleItem,
+        _progress: f32,
+    ) -> Result<(), AddonError> {
+        Err(unimplemented_capability("scrobble"))
     }
 
     /// Play a release another add-on found (capability `debrid`): a direct

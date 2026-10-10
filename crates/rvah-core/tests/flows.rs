@@ -1108,3 +1108,45 @@ fn a_release_that_is_not_ready_says_so() {
         "{err:?}"
     );
 }
+
+#[test]
+fn playback_is_scrobbled_to_every_enabled_scrobbler() {
+    use rvah_addon_sdk::{ScrobbleAction, ScrobbleItem, SourceKind};
+    let first = Arc::new(rvah_testkit::ScrobbleRecorder::default());
+    let second = Arc::new(rvah_testkit::ScrobbleRecorder::default());
+    let mut w = World::new();
+    w.add_addon(
+        "com.rvah.fixtures.scrobble.a",
+        &["scrobble"],
+        Arc::clone(&first) as Arc<dyn AddonProvider + Send + Sync>,
+        vec![Capability::Scrobble],
+    );
+    w.add_addon(
+        "com.rvah.fixtures.scrobble.b",
+        &["scrobble"],
+        Arc::clone(&second) as Arc<dyn AddonProvider + Send + Sync>,
+        vec![Capability::Scrobble],
+    );
+    w.core
+        .manager
+        .disable("com.rvah.fixtures.scrobble.b")
+        .unwrap();
+    let item = ScrobbleItem {
+        kind: SourceKind::Episode,
+        tmdb_id: "1399".into(),
+        imdb_id: Some("tt0944947".into()),
+        season: Some(1),
+        episode: Some(2),
+    };
+    let results = w.core.scrobble_all(ScrobbleAction::Start, &item, 12.5);
+    assert_eq!(results.len(), 1);
+    assert!(results[0].1.is_ok());
+    assert_eq!(
+        first.heard.lock().unwrap().as_slice(),
+        [(ScrobbleAction::Start, item, 12.5)]
+    );
+    assert!(
+        second.heard.lock().unwrap().is_empty(),
+        "disabled add-ons hear nothing"
+    );
+}

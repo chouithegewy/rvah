@@ -7,7 +7,7 @@ use rvah_addon_host::{
 };
 use rvah_addon_sdk::{
     AccountStatus, AddonError, AddonErrorCode, AuthPoll, Credentials, Filter, HostApi, ItemDetails,
-    Page, Release, ResolveResult, SourceRequest,
+    Page, Release, ResolveResult, ScrobbleAction, ScrobbleItem, SourceRequest,
 };
 use rvah_auth::{DeviceCodeFlow, DeviceCodeState, PollOutcome, SecretVault};
 use rvah_data::{AddonStatus, Database, DiagnosticEvent, FavoriteRecord};
@@ -195,6 +195,7 @@ impl<B: PlayerBackend> AppCore<B> {
             AddonOp::Details { .. } => "details",
             AddonOp::Sources { .. } => "sources",
             AddonOp::ResolveRelease { .. } => "resolve_release",
+            AddonOp::Scrobble { .. } => "scrobble",
         };
         let started = std::time::Instant::now();
         let result = addon.runtime.invoke(op, &ctx);
@@ -345,6 +346,43 @@ impl<B: PlayerBackend> AppCore<B> {
         let manifest = self.installed_manifest(addon_id)?;
         crate::artwork::screen_page(&mut page, &manifest.permissions.network);
         Ok(page)
+    }
+
+    /// Tell every enabled add-on declaring `scrobble` that playback of
+    /// `item` started, paused or stopped at `progress` percent. Each answer
+    /// is returned; one failing does not keep the others from hearing.
+    pub fn scrobble_all(
+        &mut self,
+        action: ScrobbleAction,
+        item: &ScrobbleItem,
+        progress: f32,
+    ) -> Vec<(String, Result<(), CoreError>)> {
+        let scrobblers: Vec<String> = match self.db.list_addons() {
+            Ok(addons) => addons
+                .into_iter()
+                .filter(|a| {
+                    a.status == AddonStatus::Enabled
+                        && a.capabilities.iter().any(|c| c == "scrobble")
+                })
+                .map(|a| a.id)
+                .collect(),
+            Err(e) => return vec![("host".into(), Err(e.into()))],
+        };
+        scrobblers
+            .into_iter()
+            .map(|id| {
+                let op = AddonOp::Scrobble {
+                    action,
+                    item: item.clone(),
+                    progress: progress.clamp(0.0, 100.0),
+                };
+                let result = self.invoke(&id, op).and_then(|resp| match resp {
+                    AddonResponse::Done => Ok(()),
+                    other => Err(unexpected_response(&other)),
+                });
+                (id, result)
+            })
+            .collect()
     }
 
     /// Fan a query out to every enabled add-on declaring search (FR-044).
