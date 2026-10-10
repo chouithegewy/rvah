@@ -2,6 +2,7 @@ package com.rvah.tv
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,6 +38,7 @@ import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -563,7 +565,6 @@ private fun PlayerScreen(
     target: Screen.Player,
     onExit: () -> Unit,
 ) {
-    BackHandler(onBack = onExit)
     var started by remember(target) { mutableStateOf(false) }
     LaunchedEffect(target) {
         onIo { core.preparePlayback(target.addonId, target.itemId, target.title) }.onSuccess {
@@ -572,11 +573,36 @@ private fun PlayerScreen(
         }.onFailure { owner.fail(it.userMessage()) }
     }
     val ui = owner.ui
-    val primary = rememberInitialFocus(Unit)
+    // The controls hide after a quiet spell while playing, or on Back; any
+    // key brings them back. `touched` restarts the countdown.
+    var controls by remember(target) { mutableStateOf(true) }
+    var touched by remember(target) { mutableStateOf(0) }
+    val autoHide = controlsAutoHide(started, ui.isPlaying, ui.failure != null)
+    LaunchedEffect(controls, touched, autoHide) {
+        if (controls && autoHide) {
+            delay(CONTROLS_HIDE_AFTER_MS)
+            controls = false
+        }
+    }
+    BackHandler { if (controls) controls = false else onExit() }
+    val primary = rememberInitialFocus(controls, enabled = controls)
+    // With the controls gone, the screen itself holds focus for key events.
+    val screen = rememberInitialFocus(controls, enabled = !controls)
     Box(
         Modifier
             .fillMaxSize()
             .background(Color.Black)
+            .focusRequester(screen)
+            .focusable()
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                touched++
+                if (controls || event.key == Key.Back) return@onPreviewKeyEvent false
+                controls = true
+                // The first D-pad or Select press only reveals the controls;
+                // media keys also act (below).
+                event.key !in MediaKeys
+            }
             // Bubbling (not preview) handler: D-pad and Select reach the
             // focused button first; only media keys are handled here.
             .onKeyEvent { event ->
@@ -592,7 +618,7 @@ private fun PlayerScreen(
             },
     ) {
         PlayerSurface(player = owner.player, modifier = Modifier.fillMaxSize())
-        Column(
+        if (controls) Column(
             Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(40.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -617,6 +643,8 @@ private fun PlayerScreen(
         }
     }
 }
+
+private val MediaKeys = setOf(Key.MediaPlayPause, Key.MediaPlay, Key.MediaPause, Key.MediaFastForward, Key.MediaRewind)
 
 @Composable
 private fun AddonSettingsScreen(
