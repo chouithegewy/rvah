@@ -24,11 +24,29 @@ android {
         val trustedKeys = (project.findProperty("rvah.trustedKeys") as String?).orEmpty()
             .filter { it in '0'..'9' || it.lowercaseChar() in 'a'..'f' || it == ',' }
         buildConfigField("String", "TRUSTED_KEYS", "\"$trustedKeys\"")
+        buildConfigField("String", "DEV_SECRETS", "\"\"")
     }
 
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
+            // Add-on API keys from the repository's .env (gitignored), which
+            // the debug app stores in the matching add-on's vault when unset;
+            // see DevSecrets.kt. Only TMDB_*, MDBLIST_* and TRAKT_* variables,
+            // with values filtered to token characters so they cannot inject
+            // code. Release builds get none.
+            val env = rootProject.projectDir.parentFile.resolve(".env")
+            val devSecrets = if (env.isFile) {
+                env.readLines()
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() && !it.startsWith("#") && '=' in it }
+                    .map { it.removePrefix("export ").substringBefore('=').trim() to it.substringAfter('=').trim().trim('"', '\'') }
+                    .filter { (name, value) -> Regex("(TMDB|MDBLIST|TRAKT)_[A-Z0-9_]+").matches(name) && value.isNotEmpty() }
+                    .joinToString(";") { (name, value) -> "$name=" + value.filter { it.isLetterOrDigit() || it in "._-" } }
+            } else {
+                ""
+            }
+            buildConfigField("String", "DEV_SECRETS", "\"$devSecrets\"")
         }
         release {
             isMinifyEnabled = true

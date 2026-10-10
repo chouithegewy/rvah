@@ -193,7 +193,10 @@ private fun AppNavigation(
         if (base != Screen.Search) search = SearchModel()
     }
     LaunchedEffect(refresh) {
-        onIo { core.addons() }
+        onIo {
+            seedDevSecrets(core)
+            core.addons()
+        }
             .onSuccess {
                 addons = it
                 addonsError = null
