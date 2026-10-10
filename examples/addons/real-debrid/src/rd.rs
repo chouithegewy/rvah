@@ -51,15 +51,21 @@ fn token(host: &dyn Host) -> Result<String, AddonError> {
     })
 }
 
-fn api_get(host: &dyn Host, path_query: &str) -> Result<HttpResponse, AddonError> {
-    let mut headers = BTreeMap::new();
-    headers.insert(
+pub(crate) fn api_url(path_query: &str) -> String {
+    format!("{API}{path_query}")
+}
+
+/// The Authorization header for the REST API.
+pub(crate) fn bearer(host: &dyn Host) -> Result<BTreeMap<String, String>, AddonError> {
+    Ok(BTreeMap::from([(
         "authorization".to_string(),
         format!("Bearer {}", token(host)?),
-    );
-    let resp = host::http_get(host, &format!("{API}{path_query}"), headers)?;
-    match resp.status {
-        200..=299 => Ok(resp),
+    )]))
+}
+
+pub(crate) fn check_status(status: u16) -> Result<(), AddonError> {
+    match status {
+        200..=299 => Ok(()),
         // Also how an expired device-link access token shows up; the host
         // then asks `auth::refresh` for a new one and retries.
         401 => Err(auth_error("Real-Debrid rejected the access token (401)")),
@@ -71,6 +77,12 @@ fn api_get(host: &dyn Host, path_query: &str) -> Result<HttpResponse, AddonError
             format!("Real-Debrid API returned {status}"),
         )),
     }
+}
+
+fn api_get(host: &dyn Host, path_query: &str) -> Result<HttpResponse, AddonError> {
+    let resp = host::http_get(host, &api_url(path_query), bearer(host)?)?;
+    check_status(resp.status)?;
+    Ok(resp)
 }
 
 fn downloads_page(
@@ -201,7 +213,7 @@ pub fn search(host: &dyn Host, query: &str, cursor: Option<&str>) -> Result<Page
     })
 }
 
-fn source_for(url: String) -> PlayableSource {
+pub(crate) fn source_for(url: String) -> PlayableSource {
     PlayableSource {
         protocol: Protocol::from_url(&url).unwrap_or(Protocol::Https),
         url,

@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 
 use crate::{
     AccountStatus, AddonError, AddonErrorCode, AuthPoll, Credentials, DeviceAuth, Filter,
-    HttpResponse, ItemDetails, Page, ResolveResult,
+    HttpResponse, ItemDetails, Page, Release, ResolveResult, SourceRequest,
 };
 
 pub trait Host {
@@ -154,9 +154,25 @@ pub fn http_get(
     url: &str,
     headers: BTreeMap<String, String>,
 ) -> Result<HttpResponse, AddonError> {
+    http_send(host, "GET", url, headers, None)
+}
+
+/// Any request: `DELETE`, `PUT`, a `POST` with a JSON body, …
+pub fn http_send(
+    host: &dyn Host,
+    method: &str,
+    url: &str,
+    headers: BTreeMap<String, String>,
+    body: Option<Vec<u8>>,
+) -> Result<HttpResponse, AddonError> {
     let resp = host.call(json!({
         "fn": "http_fetch",
-        "req": { "method": "GET", "url": url, "headers": headers },
+        "req": crate::HttpRequest {
+            method: method.to_string(),
+            url: url.to_string(),
+            headers,
+            body,
+        },
     }))?;
     http_response(&resp)
 }
@@ -167,17 +183,17 @@ pub fn http_post_form(
     url: &str,
     fields: &[(&str, &str)],
 ) -> Result<HttpResponse, AddonError> {
-    let body = form_encode(fields).into_bytes();
-    let resp = host.call(json!({
-        "fn": "http_fetch",
-        "req": {
-            "method": "POST",
-            "url": url,
-            "headers": { "content-type": "application/x-www-form-urlencoded" },
-            "body": body,
-        },
-    }))?;
-    http_response(&resp)
+    let headers = BTreeMap::from([(
+        "content-type".to_string(),
+        "application/x-www-form-urlencoded".to_string(),
+    )]);
+    http_send(
+        host,
+        "POST",
+        url,
+        headers,
+        Some(form_encode(fields).into_bytes()),
+    )
 }
 
 /// `k=v&k=v` with RFC 3986 unreserved characters kept and everything else
@@ -383,6 +399,14 @@ pub enum Op {
     Details {
         item_id: String,
     },
+    Sources {
+        request: SourceRequest,
+    },
+    ResolveRelease {
+        release: Release,
+        season: Option<u32>,
+        episode: Option<u32>,
+    },
 }
 
 /// A guest's answer, in the host's `AddonResponse` wire form.
@@ -396,6 +420,7 @@ pub enum Response {
     AuthPoll(AuthPoll),
     Credentials(Credentials),
     Details(Box<ItemDetails>),
+    Releases(Vec<Release>),
 }
 
 /// The op the host sent, or a `Malformed` error.

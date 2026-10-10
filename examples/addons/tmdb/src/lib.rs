@@ -382,4 +382,156 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.code, AddonErrorCode::Internal);
     }
+
+    fn show() -> Value {
+        json!({
+            "id": 1399, "name": "Acme Corp", "first_air_date": "2011-04-17",
+            "poster_path": "/show.jpg", "backdrop_path": "/showb.jpg",
+            "genres": [{ "id": 18, "name": "Drama" }],
+            "external_ids": { "imdb_id": "tt0944947" },
+            "seasons": [
+                { "season_number": 0, "name": "Specials", "episode_count": 3, "poster_path": "/s0.jpg", "air_date": "2010-12-05" },
+                { "season_number": 1, "name": "Season 1", "episode_count": 10, "poster_path": "/s1.jpg", "air_date": "2011-04-17" },
+                { "season_number": 2, "name": "Season 2", "episode_count": 10, "poster_path": null, "air_date": "2012-04-01" }
+            ]
+        })
+    }
+
+    #[test]
+    fn a_series_lists_its_seasons_specials_last() {
+        let mut host = host_with(V3_KEY);
+        host.route(
+            &format!("https://api.themoviedb.org/3/tv/1399?api_key={V3_KEY}&language=en-US"),
+            200,
+            &show(),
+        );
+        let seasons = tmdb::list(&host, Some("tv:1399"), None).unwrap();
+        let rows: Vec<(String, String, Option<String>)> = seasons
+            .items
+            .iter()
+            .map(|item| match item {
+                PageItem::Directory(d) => (d.title.clone(), d.path.clone(), d.subtitle.clone()),
+                other => panic!("expected seasons, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (
+                    "Season 1".into(),
+                    "tv:1399/season/1".into(),
+                    Some("10 episodes · 2011".into())
+                ),
+                (
+                    "Season 2".into(),
+                    "tv:1399/season/2".into(),
+                    Some("10 episodes · 2012".into())
+                ),
+                (
+                    "Specials".into(),
+                    "tv:1399/season/0".into(),
+                    Some("3 episodes · 2010".into())
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_season_lists_its_episodes() {
+        let mut host = host_with(V3_KEY);
+        host.route(
+            &format!("https://api.themoviedb.org/3/tv/1399/season/1?api_key={V3_KEY}&language=en-US"),
+            200,
+            &json!({ "season_number": 1, "episodes": [
+                { "episode_number": 1, "season_number": 1, "name": "Pilot", "overview": "It begins.",
+                  "still_path": "/e1.jpg", "air_date": "2011-04-17", "runtime": 62, "vote_average": 8.1, "vote_count": 300 },
+                { "episode_number": 2, "season_number": 1, "name": "The Next One", "overview": "",
+                  "still_path": null, "air_date": "2011-04-24", "runtime": null, "vote_average": 0.0, "vote_count": 0 }
+            ] }),
+        );
+        let episodes = tmdb::list(&host, Some("tv:1399/season/1"), None).unwrap();
+        let first = media(&episodes.items[0]);
+        assert_eq!(first.id, "tv:1399:s1e1");
+        assert_eq!(first.title, "1. Pilot");
+        assert_eq!((first.season, first.episode), (Some(1), Some(1)));
+        assert_eq!(first.content_type, ContentType::Episode);
+        assert_eq!(first.runtime_secs, Some(62 * 60));
+        assert_eq!(
+            first.artwork.poster.as_deref(),
+            Some("https://image.tmdb.org/t/p/w300/e1.jpg")
+        );
+        assert_eq!(media(&episodes.items[1]).synopsis, None);
+        assert_eq!(episodes.cursor_next, None);
+    }
+
+    #[test]
+    fn an_episode_page_names_its_series_for_finding_sources() {
+        let mut host = host_with(V3_KEY);
+        host.route(
+            &format!("https://api.themoviedb.org/3/tv/1399/season/1/episode/2?api_key={V3_KEY}&language=en-US"),
+            200,
+            &json!({ "episode_number": 2, "season_number": 1, "name": "The Next One",
+                     "overview": "It continues.", "still_path": "/e2.jpg", "air_date": "2011-04-24",
+                     "runtime": 56, "vote_average": 8.0, "vote_count": 120 }),
+        );
+        host.route(
+            &format!("https://api.themoviedb.org/3/tv/1399?api_key={V3_KEY}&language=en-US&append_to_response=external_ids"),
+            200,
+            &show(),
+        );
+        let details = tmdb::details(&host, "tv:1399:s1e2").unwrap();
+        assert_eq!(details.series_title.as_deref(), Some("Acme Corp"));
+        assert_eq!(details.item.title, "The Next One");
+        assert_eq!(details.item.content_type, ContentType::Episode);
+        assert_eq!(
+            (details.item.season, details.item.episode),
+            (Some(1), Some(2))
+        );
+        assert_eq!(details.item.provider_ids["imdb"], "tt0944947");
+        assert_eq!(details.item.runtime_secs, Some(56 * 60));
+        assert_eq!(details.released.as_deref(), Some("2011-04-24"));
+        assert_eq!(details.genres, ["Drama"]);
+        assert_eq!(
+            details.item.artwork.fanart.as_deref(),
+            Some("https://image.tmdb.org/t/p/w780/e2.jpg")
+        );
+        assert_eq!(
+            details.item.artwork.poster.as_deref(),
+            Some("https://image.tmdb.org/t/p/w342/show.jpg")
+        );
+        assert_eq!(details.ratings[0].value, "8.0/10");
+    }
+
+    #[test]
+    fn season_and_episode_ids_are_checked() {
+        let host = host_with(V3_KEY);
+        for path in [
+            "tv:",
+            "tv:13a",
+            "tv:1/season/",
+            "tv:1/season/x",
+            "tv:1/episodes",
+            "movie:1/season/1",
+        ] {
+            assert_eq!(
+                tmdb::list(&host, Some(path), None).unwrap_err().code,
+                AddonErrorCode::NotFound,
+                "{path}"
+            );
+        }
+        for id in [
+            "tv:1:s1",
+            "tv:1:e2",
+            "tv:1:s1e",
+            "tv:1:sxe2",
+            "movie:1:s1e2",
+        ] {
+            assert_eq!(
+                tmdb::details(&host, id).unwrap_err().code,
+                AddonErrorCode::NotFound,
+                "{id}"
+            );
+        }
+        assert!(host.urls().is_empty());
+    }
 }

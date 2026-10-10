@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AccountStatus, AddonError, AddonErrorCode, AuthPoll, Credentials, DeviceAuth, Filter,
-    ItemDetails, Page, ResolveResult,
+    ItemDetails, Page, Release, ResolveResult, SourceRequest,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -104,6 +104,28 @@ pub trait AddonProvider {
     /// Details-page information for one item (capability `details`).
     fn details(&self, _ctx: &dyn HostApi, _item_id: &str) -> Result<ItemDetails, AddonError> {
         Err(unimplemented_capability("details"))
+    }
+
+    /// Releases of one film or episode (capability `sources`).
+    fn sources(
+        &self,
+        _ctx: &dyn HostApi,
+        _request: &SourceRequest,
+    ) -> Result<Vec<Release>, AddonError> {
+        Err(unimplemented_capability("sources"))
+    }
+
+    /// Play a release another add-on found (capability `debrid`): a direct
+    /// source when it is ready at once, `Unavailable` otherwise. `season`
+    /// and `episode` pick the file out of a season pack.
+    fn resolve_release(
+        &self,
+        _ctx: &dyn HostApi,
+        _release: &Release,
+        _season: Option<u32>,
+        _episode: Option<u32>,
+    ) -> Result<ResolveResult, AddonError> {
+        Err(unimplemented_capability("debrid"))
     }
 
     /// Start a device-code sign-in (UC-04, capability `auth`).

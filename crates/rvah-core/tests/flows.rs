@@ -905,6 +905,7 @@ fn details_get_the_same_artwork_rule_and_only_plain_trailer_keys() {
             ),
             provider_ids: Default::default(),
         },
+        series_title: None,
         tagline: None,
         genres: vec!["Comedy".into()],
         released: Some("2026-03-14".into()),
@@ -947,4 +948,163 @@ fn details_get_the_same_artwork_rule_and_only_plain_trailer_keys() {
     // An add-on without the capability is refused before any call.
     let err = w.core.details(ECHO_FIXTURE_ID, "m1").unwrap_err();
     assert!(matches!(err, CoreError::Provider(e) if e.code == AddonErrorCode::PermissionDenied));
+}
+
+const SOURCES_ID: &str = "com.rvah.fixtures.sources";
+const DEBRID_ID: &str = "com.rvah.fixtures.debrid";
+
+fn release(name: &str, info_hash: &str) -> rvah_addon_sdk::Release {
+    rvah_addon_sdk::Release {
+        name: name.into(),
+        info_hash: info_hash.into(),
+        size_bytes: Some(4 << 30),
+        seeders: Some(120),
+        origin: Some("Indexer".into()),
+    }
+}
+
+fn episode_request() -> rvah_addon_sdk::SourceRequest {
+    rvah_addon_sdk::SourceRequest {
+        kind: rvah_addon_sdk::SourceKind::Episode,
+        imdb_id: Some("tt0944947".into()),
+        title: "Acme Corp".into(),
+        year: None,
+        season: Some(1),
+        episode: Some(2),
+    }
+}
+
+#[test]
+fn sources_keep_one_of_each_well_formed_release() {
+    let hex = "0123456789ABCDEF0123456789abcdef01234567";
+    // The same hash in base32 (RFC 4648), as some indexers write it.
+    let base32 = "AERUKZ4JVPG66AJDIVTYTK6N54ASGRLH";
+    let releases = vec![
+        release("Acme.Corp.S01E02.1080p", hex),
+        release("Acme.Corp.S01E02.1080p.again", base32),
+        release(
+            "Acme.Corp.S01E02.720p",
+            "ffffffffffffffffffffffffffffffffffffffff",
+        ),
+        release("broken", "not-a-hash"),
+        release("too short", "abc123"),
+    ];
+    let mut w = World::new();
+    w.add_addon(
+        SOURCES_ID,
+        &["sources"],
+        Arc::new(rvah_testkit::StaticSourcesProvider {
+            releases,
+            delay: std::time::Duration::ZERO,
+        }),
+        vec![Capability::Sources],
+    );
+    let found = w.core.sources(SOURCES_ID, episode_request()).unwrap();
+    let hashes: Vec<&str> = found.iter().map(|r| r.info_hash.as_str()).collect();
+    assert_eq!(
+        hashes,
+        [
+            "0123456789abcdef0123456789abcdef01234567",
+            "ffffffffffffffffffffffffffffffffffffffff"
+        ]
+    );
+}
+
+#[test]
+fn a_source_search_may_take_longer_than_other_calls() {
+    let mut w = World::new();
+    w.add_addon(
+        SOURCES_ID,
+        &["sources"],
+        Arc::new(rvah_testkit::StaticSourcesProvider {
+            releases: vec![],
+            delay: std::time::Duration::from_millis(150),
+        }),
+        vec![Capability::Sources],
+    );
+    w.core.invoke_timeout = std::time::Duration::from_millis(50);
+    w.core.sources_timeout = std::time::Duration::from_millis(1_000);
+    assert!(w.core.sources(SOURCES_ID, episode_request()).is_ok());
+    w.core.sources_timeout = std::time::Duration::from_millis(60);
+    let err = w.core.sources(SOURCES_ID, episode_request()).unwrap_err();
+    assert!(matches!(err, CoreError::Provider(e) if e.code == AddonErrorCode::Timeout));
+}
+
+#[test]
+fn a_release_plays_through_the_debrid_add_on_and_resumes_by_title() {
+    let debrid = Arc::new(rvah_testkit::DebridProvider::new(
+        rvah_addon_sdk::ResolveResult::Playables(vec![rvah_testkit::mp4_source(
+            "https://cdn.example.com/acme-s01e02.mp4",
+        )]),
+    ));
+    let mut w = World::new();
+    w.add_addon(
+        DEBRID_ID,
+        &["debrid"],
+        Arc::clone(&debrid) as Arc<dyn AddonProvider + Send + Sync>,
+        vec![Capability::Debrid],
+    );
+    // Watched before, through another release of the same episode.
+    w.core
+        .db()
+        .set_watch_state(&rvah_data::WatchState {
+            addon_id: "org.themoviedb.discover".into(),
+            item_id: "tv:1399:s1e2".into(),
+            position_secs: 120.0,
+            duration_secs: 3000.0,
+            watched: false,
+            last_played_at: 1,
+        })
+        .unwrap();
+    let chosen = release("Acme.Corp.S01.1080p", &"c".repeat(40));
+    let prepared = w
+        .core
+        .prepare_release(
+            DEBRID_ID,
+            &chosen,
+            Some(1),
+            Some(2),
+            ("org.themoviedb.discover", "tv:1399:s1e2"),
+            rvah_core::PlaybackCapabilities::media3(),
+        )
+        .unwrap();
+    assert_eq!(
+        prepared.source.url,
+        "https://cdn.example.com/acme-s01e02.mp4"
+    );
+    assert_eq!(prepared.resume_position_secs, 120.0);
+    assert_eq!(
+        debrid.seen.lock().unwrap().as_slice(),
+        [(chosen, Some(1), Some(2))]
+    );
+}
+
+#[test]
+fn a_release_that_is_not_ready_says_so() {
+    let mut w = World::new();
+    w.add_addon(
+        DEBRID_ID,
+        &["debrid"],
+        Arc::new(rvah_testkit::DebridProvider::new(
+            rvah_addon_sdk::ResolveResult::Unavailable {
+                reason: "not cached on Real-Debrid".into(),
+            },
+        )),
+        vec![Capability::Debrid],
+    );
+    let err = w
+        .core
+        .prepare_release(
+            DEBRID_ID,
+            &release("Film.2026.2160p", &"d".repeat(40)),
+            None,
+            None,
+            ("org.themoviedb.discover", "movie:1"),
+            rvah_core::PlaybackCapabilities::media3(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&err, CoreError::Provider(e) if e.code == AddonErrorCode::NotFound && e.user_visible && e.message.contains("not cached")),
+        "{err:?}"
+    );
 }

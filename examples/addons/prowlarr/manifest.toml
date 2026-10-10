@@ -1,0 +1,18 @@
+[addon]
+id = "com.rvah.sources.prowlarr"
+name = "Prowlarr Sources"
+version = "0.1.0"
+sdk = ">=0.1, <0.2"
+entry = "module.wasm"
+capabilities = ["sources"]
+
+[permissions]
+# Your Prowlarr; build.sh puts its host here from PROWLARR_URL.
+network = ["prowlarr.example.com"]
+storage = "64KiB"
+# api_key: Prowlarr's, from Settings > General > Security.
+secrets = ["api_key"]
+
+[settings]
+# Your Prowlarr's address; build.sh sets the default from PROWLARR_URL.
+url = { type = "string", default = "https://prowlarr.example.com" }

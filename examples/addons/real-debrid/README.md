@@ -14,6 +14,13 @@ crate compiled to `wasm32-unknown-unknown`, speaking ABI v0.1
 - **resolve** — the cached direct URL (RD download entries are already
   unrestricted), with a history re-scan fallback.
 - **account_status** — `GET /rest/1.0/user`.
+- **debrid** — plays a release another add-on found (such as the Prowlarr
+  add-on), instant only: add its magnet, pick the largest video that is not
+  a sample (for a season and episode, the file named for it: `S01E02`,
+  `1x02`), select it, and play it only if Real-Debrid has it ready at once.
+  Real-Debrid dropped its instant-availability check in 2024, so adding is
+  the only way to know; a release it would still have to fetch is deleted
+  again and reported as not cached, so you can pick another.
 - **auth** — device-code sign-in with Real-Debrid's open-source client id:
   the app shows a code, you enter it at <https://real-debrid.com/device>,
   and the host stores the access token as `api_token` and the refresh
@@ -46,7 +53,7 @@ printf '%s' "$YOUR_TOKEN" | rvah secret-set com.real-debrid.downloads api_token 
 The permission grant covers exactly `api.real-debrid.com`, 64 KiB of
 storage, and the two named secrets. Version 0.2.0 adds `auth` and
 `oauth_client`, so updating from 0.1.0 asks for approval again; 0.3.0 adds
-search without new permissions.
+search without new permissions; 0.4.0 adds debrid, also without.
 
 Each call gets 50M instructions of fuel and 2 s. Host answers arrive as
 JSON with HTTP bodies as arrays of byte values, so `host.rs` decodes them

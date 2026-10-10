@@ -233,6 +233,13 @@ pub fn list(host: &dyn Host, path: Option<&str>, cursor: Option<&str>) -> Result
             total_hint: None,
         });
     };
+    // A series lists its seasons; a season, its episodes.
+    if let Some(series) = path.strip_prefix("tv:") {
+        return match series.split_once("/season/") {
+            None => seasons(host, digits(series)?),
+            Some((id, number)) => episodes(host, digits(id)?, digits(number)?),
+        };
+    }
     let &(_, path, regional) = ROWS
         .iter()
         .find(|(_, row, _)| *row == path)
@@ -345,6 +352,23 @@ fn trailers(videos: Vec<Video>) -> Vec<Trailer> {
 /// A details page: TMDB's details and trailers, then ratings from MDBList
 /// when an `mdblist_key` is set. MDBList failing costs only its ratings.
 pub fn details(host: &dyn Host, item_id: &str) -> Result<ItemDetails, AddonError> {
+    // An episode: tv:<id>:s<season>e<episode>.
+    if let Some((id, numbers)) = item_id
+        .strip_prefix("tv:")
+        .and_then(|rest| rest.split_once(':'))
+    {
+        let (season, episode) = numbers
+            .strip_prefix('s')
+            .and_then(|rest| rest.split_once('e'))
+            .ok_or_else(|| not_found(format!("not a TMDB episode: {item_id}")))?;
+        return episode_details(
+            host,
+            item_id,
+            digits(id)?,
+            digits(season)?,
+            digits(episode)?,
+        );
+    }
     let (kind, id) = parse_id(item_id)?;
     let append = match kind {
         // Films carry their IMDb id at the top level.
@@ -385,6 +409,7 @@ pub fn details(host: &dyn Host, item_id: &str) -> Result<ItemDetails, AddonError
     }
     Ok(ItemDetails {
         item,
+        series_title: None,
         tagline: non_empty(detailed.tagline),
         genres: detailed.genres.into_iter().map(|g| g.name).collect(),
         released: non_empty(released),
@@ -407,10 +432,10 @@ struct MdbMedia {
 }
 
 /// How a rating prints: `93%`, `7.8/10`.
-type Show = fn(f64) -> String;
+type Format = fn(f64) -> String;
 
 /// MDBList's sources we show, in order: (its name, ours, how to print).
-const MDBLIST_SOURCES: &[(&str, &str, Show)] = &[
+const MDBLIST_SOURCES: &[(&str, &str, Format)] = &[
     ("tomatoes", "rotten_tomatoes", |v| format!("{v:.0}%")),
     ("popcorn", "rt_audience", |v| format!("{v:.0}%")),
     ("imdb", "imdb", |v| format!("{v:.1}/10")),
@@ -462,4 +487,191 @@ fn mdblist_ratings(host: &dyn Host, kind: Kind, id: &str) -> Vec<Rating> {
             })
         })
         .collect()
+}
+
+/// `text` when it is a plain number (an id, a season), so it can go into a
+/// TMDB path unchecked.
+fn digits(text: &str) -> Result<&str, AddonError> {
+    if !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) {
+        Ok(text)
+    } else {
+        Err(not_found(format!("not a TMDB number: {text}")))
+    }
+}
+
+#[derive(Deserialize)]
+struct SeasonInfo {
+    season_number: u32,
+    name: String,
+    #[serde(default)]
+    episode_count: Option<u32>,
+    #[serde(default)]
+    poster_path: Option<String>,
+    #[serde(default)]
+    air_date: Option<String>,
+}
+
+/// `/tv/{id}` (fields we use).
+#[derive(Deserialize)]
+struct Show {
+    name: String,
+    #[serde(default)]
+    poster_path: Option<String>,
+    #[serde(default)]
+    genres: Vec<Genre>,
+    #[serde(default)]
+    external_ids: ExternalIds,
+    #[serde(default)]
+    seasons: Vec<SeasonInfo>,
+}
+
+#[derive(Deserialize)]
+struct Episode {
+    episode_number: u32,
+    season_number: u32,
+    name: String,
+    #[serde(default)]
+    overview: Option<String>,
+    #[serde(default)]
+    still_path: Option<String>,
+    #[serde(default)]
+    air_date: Option<String>,
+    #[serde(default)]
+    runtime: Option<u32>,
+    #[serde(default)]
+    vote_average: Option<f32>,
+    #[serde(default)]
+    vote_count: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct Season {
+    episodes: Vec<Episode>,
+}
+
+/// A series' seasons in order, specials (season 0) last.
+fn seasons(host: &dyn Host, id: &str) -> Result<Page, AddonError> {
+    let mut show: Show = get(host, &format!("tv/{id}"), &[])?;
+    show.seasons
+        .sort_by_key(|s| (s.season_number == 0, s.season_number));
+    Ok(Page {
+        items: show
+            .seasons
+            .into_iter()
+            .map(|season| {
+                let count = season
+                    .episode_count
+                    .map(|n| format!("{n} episode{}", if n == 1 { "" } else { "s" }));
+                let subtitle = [
+                    count,
+                    year(season.air_date.as_deref()).map(|y| y.to_string()),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · ");
+                let path = format!("tv:{id}/season/{}", season.season_number);
+                PageItem::Directory(DirectoryItem {
+                    id: path.clone(),
+                    title: season.name,
+                    subtitle: (!subtitle.is_empty()).then_some(subtitle),
+                    artwork: Artwork {
+                        poster: image("w342", season.poster_path),
+                        fanart: None,
+                        thumb: None,
+                    },
+                    path,
+                    badges: vec![],
+                })
+            })
+            .collect(),
+        cursor_next: None,
+        total_hint: None,
+    })
+}
+
+fn episode_item(series: &str, episode: Episode) -> MediaItem {
+    MediaItem {
+        id: format!(
+            "tv:{series}:s{}e{}",
+            episode.season_number, episode.episode_number
+        ),
+        content_type: ContentType::Episode,
+        title: episode.name,
+        year: year(episode.air_date.as_deref()),
+        season: Some(episode.season_number),
+        episode: Some(episode.episode_number),
+        runtime_secs: episode.runtime.filter(|m| *m > 0).map(|m| m * 60),
+        synopsis: non_empty(episode.overview),
+        rating: score(episode.vote_average, episode.vote_count),
+        artwork: Artwork {
+            poster: image("w300", episode.still_path.clone()),
+            fanart: image("w780", episode.still_path),
+            thumb: None,
+        },
+        provider_ids: BTreeMap::from([("tmdb".to_string(), series.to_string())]),
+    }
+}
+
+/// A season's episodes, titled with their number.
+fn episodes(host: &dyn Host, id: &str, season: &str) -> Result<Page, AddonError> {
+    let season: Season = get(host, &format!("tv/{id}/season/{season}"), &[])?;
+    Ok(Page {
+        items: season
+            .episodes
+            .into_iter()
+            .map(|episode| {
+                let number = episode.episode_number;
+                let mut item = episode_item(id, episode);
+                item.title = format!("{number}. {}", item.title);
+                PageItem::Media(item)
+            })
+            .collect(),
+        cursor_next: None,
+        total_hint: None,
+    })
+}
+
+/// An episode's page, with its series' name and IMDb id, which finding
+/// sources for it needs.
+fn episode_details(
+    host: &dyn Host,
+    item_id: &str,
+    id: &str,
+    season: &str,
+    number: &str,
+) -> Result<ItemDetails, AddonError> {
+    let episode: Episode = get(
+        host,
+        &format!("tv/{id}/season/{season}/episode/{number}"),
+        &[],
+    )?;
+    let show: Show = get(
+        host,
+        &format!("tv/{id}"),
+        &[("append_to_response", "external_ids")],
+    )?;
+    let tmdb_score = score(episode.vote_average, episode.vote_count);
+    let released = non_empty(episode.air_date.clone());
+    let mut item = episode_item(id, episode);
+    item.id = item_id.to_string();
+    item.artwork.poster = image("w342", show.poster_path);
+    if let Some(imdb) = show.external_ids.imdb_id.filter(|i| !i.is_empty()) {
+        item.provider_ids.insert("imdb".into(), imdb);
+    }
+    Ok(ItemDetails {
+        item,
+        series_title: Some(show.name),
+        tagline: None,
+        genres: show.genres.into_iter().map(|g| g.name).collect(),
+        released,
+        trailers: vec![],
+        ratings: tmdb_score
+            .map(|score| Rating {
+                source: "tmdb".into(),
+                value: format!("{score:.1}/10"),
+            })
+            .into_iter()
+            .collect(),
+    })
 }

@@ -8,6 +8,7 @@
 pub mod auth;
 pub mod host;
 pub mod rd;
+pub mod torrents;
 
 use rvah_addon_sdk::guest::{read_op, Op, Response};
 use rvah_addon_sdk::AddonError;
@@ -26,9 +27,14 @@ fn dispatch(input: &[u8], host: &dyn Host) -> Result<Response, AddonError> {
         Op::AuthBegin => auth::begin(host).map(Response::DeviceAuth),
         Op::AuthPoll { device_code } => auth::poll(host, &device_code).map(Response::AuthPoll),
         Op::AuthRefresh => auth::refresh(host).map(Response::Credentials),
-        Op::Details { .. } => Err(AddonError::new(
+        Op::ResolveRelease {
+            release,
+            season,
+            episode,
+        } => torrents::resolve_release(host, &release, season, episode).map(Response::Resolve),
+        other => Err(AddonError::new(
             rvah_addon_sdk::AddonErrorCode::Internal,
-            "capability not implemented: details",
+            format!("not an operation this add-on declares: {other:?}"),
         )),
     }
 }
@@ -45,6 +51,9 @@ mod tests {
 
     /// Scripted host: canned HTTP responses per URL, in-memory storage and
     /// secrets, recorded requests.
+    /// An HTTP status and body.
+    type Answer = (u16, Vec<u8>);
+
     #[derive(Default)]
     struct MockHost {
         secrets: BTreeMap<String, String>,
@@ -53,9 +62,22 @@ mod tests {
         http_calls: Mutex<Vec<String>>,
         /// (method, url, body) of every request, in order.
         requests: Mutex<Vec<(String, String, String)>>,
+        /// Answers given in turn for a URL, before `http`'s.
+        sequences: Mutex<BTreeMap<String, std::collections::VecDeque<Answer>>>,
     }
 
     impl MockHost {
+        /// Answer `url` with each of `answers` in turn.
+        fn route_seq(&mut self, url: &str, answers: Vec<(u16, Value)>) {
+            self.sequences.lock().unwrap().insert(
+                url.into(),
+                answers
+                    .into_iter()
+                    .map(|(status, body)| (status, serde_json::to_vec(&body).unwrap()))
+                    .collect(),
+            );
+        }
+
         fn route(&mut self, url: &str, status: u16, body: Value) {
             self.http
                 .insert(url.into(), (status, serde_json::to_vec(&body).unwrap()));
@@ -96,11 +118,18 @@ mod tests {
                         String::from_utf8(body).unwrap(),
                     ));
                     self.http_calls.lock().unwrap().push(url.clone());
-                    let (status, body) = self
-                        .http
-                        .get(&url)
-                        .cloned()
-                        .unwrap_or((404, b"not routed".to_vec()));
+                    let next = self
+                        .sequences
+                        .lock()
+                        .unwrap()
+                        .get_mut(&url)
+                        .and_then(|answers| answers.pop_front());
+                    let (status, body) = next.unwrap_or_else(|| {
+                        self.http
+                            .get(&url)
+                            .cloned()
+                            .unwrap_or((404, b"not routed".to_vec()))
+                    });
                     Ok(json!({ "status": status, "headers": {}, "body": body }))
                 }
                 "secret_get" => {
@@ -546,5 +575,188 @@ mod tests {
         .unwrap();
         assert_eq!(out["kind"], "page");
         assert_eq!(out["value"]["items"].as_array().unwrap().len(), 1);
+    }
+
+    const REST: &str = "https://api.real-debrid.com/rest/1.0";
+    const HASH: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    fn chosen(name: &str) -> rvah_addon_sdk::Release {
+        rvah_addon_sdk::Release {
+            name: name.into(),
+            info_hash: HASH.into(),
+            size_bytes: None,
+            seeders: None,
+            origin: None,
+        }
+    }
+
+    fn torrent(status: &str, files: Value, links: Value) -> Value {
+        json!({ "id": "T1", "hash": HASH, "status": status, "files": files, "links": links })
+    }
+
+    fn file(id: u64, path: &str, gib: u64) -> Value {
+        json!({ "id": id, "path": path, "bytes": gib << 30, "selected": 0 })
+    }
+
+    fn release_host(infos: Vec<Value>) -> MockHost {
+        let mut host = rd_host();
+        host.route(
+            &format!("{REST}/torrents/addMagnet"),
+            201,
+            json!({ "id": "T1", "uri": format!("{REST}/torrents/info/T1") }),
+        );
+        host.route_seq(
+            &format!("{REST}/torrents/info/T1"),
+            infos.into_iter().map(|info| (200, info)).collect(),
+        );
+        host.route(&format!("{REST}/torrents/selectFiles/T1"), 204, json!(null));
+        host.route(&format!("{REST}/torrents/delete/T1"), 204, json!(null));
+        host.route(
+            &format!("{REST}/unrestrict/link"),
+            200,
+            json!({ "id": "U1", "filename": "f.mkv", "download": "https://abc.download.real-debrid.com/d/U1/f.mkv", "streamable": 1 }),
+        );
+        host
+    }
+
+    fn calls(host: &MockHost) -> Vec<String> {
+        host.requests()
+            .into_iter()
+            .map(|(method, url, body)| {
+                let path = url.trim_start_matches(REST).to_string();
+                if body.is_empty() {
+                    format!("{method} {path}")
+                } else {
+                    format!("{method} {path} {body}")
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_cached_film_plays_its_largest_video() {
+        let files = json!([
+            file(1, "/Film.2026.2160p/Sample/film-sample.mkv", 0),
+            file(2, "/Film.2026.2160p/Film.2026.2160p.mkv", 20),
+            file(3, "/Film.2026.2160p/Film.2026.nfo", 0),
+        ]);
+        let host = release_host(vec![
+            torrent("waiting_files_selection", files.clone(), json!([])),
+            torrent("downloaded", files, json!(["https://real-debrid.com/d/L2"])),
+        ]);
+        let result =
+            torrents::resolve_release(&host, &chosen("Film.2026.2160p"), None, None).unwrap();
+        let ResolveResult::Playables(sources) = result else {
+            panic!("expected playables, got {result:?}");
+        };
+        assert_eq!(
+            sources[0].url,
+            "https://abc.download.real-debrid.com/d/U1/f.mkv"
+        );
+        assert_eq!(
+            calls(&host),
+            [
+                format!("POST /torrents/addMagnet magnet=magnet%3A%3Fxt%3Durn%3Abtih%3A{HASH}"),
+                "GET /torrents/info/T1".to_string(),
+                "POST /torrents/selectFiles/T1 files=2".to_string(),
+                "GET /torrents/info/T1".to_string(),
+                "POST /unrestrict/link link=https%3A%2F%2Freal-debrid.com%2Fd%2FL2".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_season_pack_plays_the_asked_episode() {
+        let files = json!([
+            file(1, "/Show.S01/Show.S01E01.1080p.mkv", 2),
+            file(2, "/Show.S01/Show.S01E02.1080p.mkv", 2),
+            file(3, "/Show.S01/Show.S01E12.1080p.mkv", 3),
+        ]);
+        let host = release_host(vec![
+            torrent("waiting_files_selection", files.clone(), json!([])),
+            // Real-Debrid can take a moment to report the selection ready.
+            torrent("waiting_files_selection", files.clone(), json!([])),
+            torrent("downloaded", files, json!(["https://real-debrid.com/d/L2"])),
+        ]);
+        let result =
+            torrents::resolve_release(&host, &chosen("Show.S01.1080p"), Some(1), Some(2)).unwrap();
+        assert!(matches!(result, ResolveResult::Playables(_)), "{result:?}");
+        assert!(calls(&host).contains(&"POST /torrents/selectFiles/T1 files=2".to_string()));
+    }
+
+    #[test]
+    fn a_release_real_debrid_has_to_fetch_is_deleted_again() {
+        // Not cached: Real-Debrid has to fetch even the file list.
+        let host = release_host(vec![torrent("magnet_conversion", json!([]), json!([]))]);
+        let result = torrents::resolve_release(&host, &chosen("Film"), None, None).unwrap();
+        let ResolveResult::Unavailable { reason } = result else {
+            panic!("expected unavailable");
+        };
+        assert!(reason.contains("not cached"));
+        assert_eq!(calls(&host).last().unwrap(), "DELETE /torrents/delete/T1");
+
+        // Known, but still to download after selecting the file.
+        let files = json!([file(1, "/Film.mkv", 4)]);
+        let host = release_host(vec![
+            torrent("waiting_files_selection", files.clone(), json!([])),
+            torrent("queued", files, json!([])),
+        ]);
+        let result = torrents::resolve_release(&host, &chosen("Film"), None, None).unwrap();
+        assert!(matches!(result, ResolveResult::Unavailable { .. }));
+        assert_eq!(calls(&host).last().unwrap(), "DELETE /torrents/delete/T1");
+    }
+
+    #[test]
+    fn a_pack_without_the_episode_says_which_is_missing() {
+        let files = json!([
+            file(1, "/Show.S01E01.mkv", 2),
+            file(2, "/Show.S01E02.mkv", 2)
+        ]);
+        let host = release_host(vec![torrent("waiting_files_selection", files, json!([]))]);
+        let result =
+            torrents::resolve_release(&host, &chosen("Show.S01"), Some(1), Some(5)).unwrap();
+        let ResolveResult::Unavailable { reason } = result else {
+            panic!("expected unavailable");
+        };
+        assert_eq!(reason, "no file for S01E05 in this release");
+        assert_eq!(calls(&host).last().unwrap(), "DELETE /torrents/delete/T1");
+    }
+
+    #[test]
+    fn episode_names_are_recognized() {
+        for (name, s, e) in [
+            ("Show.S01E02.1080p.mkv", 1, 2),
+            ("show s1e2 web.mkv", 1, 2),
+            ("Show.S01E01E02.mkv", 1, 2),
+            ("Show.1x02.HDTV.mkv", 1, 2),
+            ("/Show.S03/Show.S03E10.mkv", 3, 10),
+        ] {
+            assert!(torrents::episode_matches(name, s, e), "{name}");
+        }
+        for (name, s, e) in [
+            ("Show.S01E12.mkv", 1, 2),
+            ("Show.S02E02.mkv", 1, 2),
+            ("Show.2026.1080p.mkv", 1, 2),
+            ("/Show.S01E02/Show.S01E03.mkv", 1, 2),
+        ] {
+            assert!(!torrents::episode_matches(name, s, e), "{name}");
+        }
+    }
+
+    #[test]
+    fn dispatch_plays_releases() {
+        let files = json!([file(1, "/Film.mkv", 4)]);
+        let host = release_host(vec![
+            torrent("waiting_files_selection", files.clone(), json!([])),
+            torrent("downloaded", files, json!(["https://real-debrid.com/d/L1"])),
+        ]);
+        let op = json!({
+            "op": "resolve_release",
+            "release": { "name": "Film", "info_hash": HASH },
+            "season": null, "episode": null
+        });
+        let out = serde_json::to_value(dispatch(&serde_json::to_vec(&op).unwrap(), &host).unwrap())
+            .unwrap();
+        assert_eq!(out["kind"], "resolve");
     }
 }

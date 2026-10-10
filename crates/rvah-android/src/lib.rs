@@ -172,7 +172,15 @@ pub enum CatalogEntry {
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ItemDetailsRecord {
     pub id: String,
+    /// `movie`, `series`, `episode`, …
+    pub kind: String,
     pub title: String,
+    /// For an episode, its series; sources are searched by it.
+    pub series_title: Option<String>,
+    /// The film's or series' IMDb id.
+    pub imdb_id: Option<String>,
+    pub season: Option<u32>,
+    pub episode: Option<u32>,
     pub year: Option<u16>,
     pub synopsis: Option<String>,
     pub runtime_secs: Option<u32>,
@@ -185,6 +193,68 @@ pub struct ItemDetailsRecord {
     pub released: Option<String>,
     pub trailers: Vec<TrailerLink>,
     pub ratings: Vec<RatingRecord>,
+}
+
+/// What to find releases of: a film, or an episode when `season` and
+/// `episode` are set.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SourceQuery {
+    pub imdb_id: Option<String>,
+    pub title: String,
+    pub year: Option<u16>,
+    pub season: Option<u32>,
+    pub episode: Option<u32>,
+}
+
+impl From<SourceQuery> for rvah_addon_sdk::SourceRequest {
+    fn from(query: SourceQuery) -> Self {
+        let kind = match (query.season, query.episode) {
+            (Some(_), Some(_)) => rvah_addon_sdk::SourceKind::Episode,
+            _ => rvah_addon_sdk::SourceKind::Movie,
+        };
+        rvah_addon_sdk::SourceRequest {
+            kind,
+            imdb_id: query.imdb_id,
+            title: query.title,
+            year: query.year,
+            season: query.season,
+            episode: query.episode,
+        }
+    }
+}
+
+/// A release a `sources` add-on found; a `debrid` add-on plays it.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct ReleaseRecord {
+    pub name: String,
+    pub info_hash: String,
+    pub size_bytes: Option<u64>,
+    pub seeders: Option<u32>,
+    pub origin: Option<String>,
+}
+
+impl From<rvah_addon_sdk::Release> for ReleaseRecord {
+    fn from(r: rvah_addon_sdk::Release) -> Self {
+        ReleaseRecord {
+            name: r.name,
+            info_hash: r.info_hash,
+            size_bytes: r.size_bytes,
+            seeders: r.seeders,
+            origin: r.origin,
+        }
+    }
+}
+
+impl From<ReleaseRecord> for rvah_addon_sdk::Release {
+    fn from(r: ReleaseRecord) -> Self {
+        rvah_addon_sdk::Release {
+            name: r.name,
+            info_hash: r.info_hash,
+            size_bytes: r.size_bytes,
+            seeders: r.seeders,
+            origin: r.origin,
+        }
+    }
 }
 
 /// A trailer page, built here from the site's video key.
@@ -205,7 +275,15 @@ impl From<rvah_addon_sdk::ItemDetails> for ItemDetailsRecord {
         let item = details.item;
         ItemDetailsRecord {
             id: item.id,
+            kind: serde_json::to_value(item.content_type)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default(),
             title: item.title,
+            series_title: details.series_title,
+            imdb_id: item.provider_ids.get("imdb").cloned(),
+            season: item.season,
+            episode: item.episode,
             year: item.year,
             synopsis: item.synopsis,
             runtime_secs: item.runtime_secs,
@@ -803,6 +881,45 @@ impl AndroidCore {
             .map_err(playback_error)
     }
 
+    /// Releases of a film or episode from a `sources` add-on (up to
+    /// `rvah_core::SOURCES_TIMEOUT`; call off the main thread).
+    pub fn sources(
+        &self,
+        addon_id: String,
+        query: SourceQuery,
+    ) -> Result<Vec<ReleaseRecord>, AndroidCoreError> {
+        self.core()
+            .sources(&addon_id, query.into())
+            .map(|releases| releases.into_iter().map(ReleaseRecord::from).collect())
+            .map_err(addon_error)
+    }
+
+    /// Play `release` through the `debrid` add-on `debrid_id`, keeping
+    /// progress under the title it is a release of.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_release(
+        &self,
+        debrid_id: String,
+        release: ReleaseRecord,
+        season: Option<u32>,
+        episode: Option<u32>,
+        title_addon_id: String,
+        title_item_id: String,
+        title: Option<String>,
+    ) -> Result<NativePreparedPlayback, AndroidCoreError> {
+        self.core()
+            .prepare_release(
+                &debrid_id,
+                &release.into(),
+                season,
+                episode,
+                (&title_addon_id, &title_item_id),
+                PlaybackCapabilities::media3(),
+            )
+            .map(|prepared| NativePreparedPlayback::from(prepared).with_title(title))
+            .map_err(playback_error)
+    }
+
     /// Never waits for an in-flight add-on call (see [`AndroidCore`]).
     pub fn report_playback_event(
         &self,
@@ -1043,8 +1160,9 @@ fn load_wasmi_runtime(
     })?;
     let runtime = WasmiRuntime::load(
         &module,
+        // The ceiling; the core gives each call its own, shorter limit.
         WasmiLimits {
-            timeout: Duration::from_secs(30),
+            timeout: rvah_core::SOURCES_TIMEOUT,
             ..Default::default()
         },
     )
@@ -1096,6 +1214,21 @@ mod tests {
     }
 
     #[test]
+    fn a_query_with_season_and_episode_asks_for_an_episode() {
+        let query = |season, episode| SourceQuery {
+            imdb_id: Some("tt1".into()),
+            title: "Show".into(),
+            year: None,
+            season,
+            episode,
+        };
+        let request = rvah_addon_sdk::SourceRequest::from(query(Some(1), Some(2)));
+        assert_eq!(request.kind, rvah_addon_sdk::SourceKind::Episode);
+        let request = rvah_addon_sdk::SourceRequest::from(query(Some(1), None));
+        assert_eq!(request.kind, rvah_addon_sdk::SourceKind::Movie);
+    }
+
+    #[test]
     fn catalog_entries_carry_artwork_and_rating() {
         let CatalogEntry::Media {
             poster,
@@ -1121,6 +1254,7 @@ mod tests {
     fn details_build_the_trailer_link_from_the_key() {
         let record = ItemDetailsRecord::from(rvah_addon_sdk::ItemDetails {
             item: movie(),
+            series_title: None,
             tagline: Some("Beep beep.".into()),
             genres: vec!["Comedy".into(), "Animation".into()],
             released: Some("2026-03-14".into()),
@@ -1135,6 +1269,8 @@ mod tests {
             }],
         });
         assert_eq!(record.title, "Coyote vs. Acme");
+        assert_eq!(record.kind, "movie");
+        assert_eq!(record.series_title, None);
         assert_eq!(record.year, Some(2026));
         assert_eq!(record.genres, ["Comedy", "Animation"]);
         assert_eq!(record.trailers[0].name, "Official Trailer");

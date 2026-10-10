@@ -60,6 +60,8 @@ import uniffi.rvah_android.AccountState
 import uniffi.rvah_android.AddonRecord
 import uniffi.rvah_android.AndroidCore
 import uniffi.rvah_android.AndroidCoreException
+import uniffi.rvah_android.NativePreparedPlayback
+import uniffi.rvah_android.SourceQuery
 import uniffi.rvah_android.CatalogEntry
 import uniffi.rvah_android.DiagnosticRecord
 import uniffi.rvah_android.InstallPreview
@@ -76,10 +78,24 @@ internal val ErrorText = Color(0xFFFF8A80)
 /** Navigation state. Browse keeps its directory stack so Back from the player returns to it. */
 private sealed interface Screen {
     data object Home : Screen
-    data class Browse(val addonId: String, val addonName: String, val stack: List<String?> = listOf(null)) : Screen
+    /** [returnTo]: where Back from the first level goes (Home when null). */
+    data class Browse(
+        val addonId: String,
+        val addonName: String,
+        val stack: List<String?> = listOf(null),
+        val returnTo: Screen? = null,
+    ) : Screen
     data object Search : Screen
-    data class Player(val addonId: String, val itemId: String, val title: String, val returnTo: Screen) : Screen
+    /** A catalog item, or with [release] a release of it through a debrid add-on. */
+    data class Player(
+        val addonId: String,
+        val itemId: String,
+        val title: String,
+        val returnTo: Screen,
+        val release: ReleasePick? = null,
+    ) : Screen
     data class Details(val addonId: String, val itemId: String, val title: String, val returnTo: Screen) : Screen
+    data class Sources(val returnTo: Screen) : Screen
     data object Settings : Screen
     data class AddonSettings(val addon: AddonRecord) : Screen
     data class LinkAccount(val addon: AddonRecord, val returnTo: Screen = AddonSettings(addon)) : Screen
@@ -91,6 +107,7 @@ private sealed interface Screen {
 private val Screen.base: Screen get() = when (this) {
     is Screen.Player -> returnTo.base
     is Screen.Details -> returnTo.base
+    is Screen.Sources -> returnTo.base
     is Screen.LinkAccount -> returnTo.base
     else -> this
 }
@@ -210,11 +227,17 @@ private fun AppNavigation(
     val discover = remember { mutableMapOf<String, DiscoverState>() }
     // Where Back leaves Search for, when a details page opened it.
     var searchBack by remember { mutableStateOf<Screen?>(null) }
+    // The last source search, kept while its releases play.
+    var sources by remember { mutableStateOf<SourcesState?>(null) }
     val goHome = {
         refresh++
         discover.clear()
         searchBack = null
+        sources = null
         screen = Screen.Home
+    }
+    val enabledWith: (String) -> AddonRecord? = { capability ->
+        addons.firstOrNull { it.status == "enabled" && capability in it.capabilities }
     }
     val hasDetails: (String) -> Boolean = { id -> addons.any { it.id == id && "details" in it.capabilities } }
     // A title opens its details page when its add-on has them; else it plays.
@@ -258,7 +281,7 @@ private fun AppNavigation(
             discover = if (hasDetails(current.addonId)) discover.getOrPut(current.addonId) { DiscoverState(current.addonId) } else null,
             onNavigate = { screen = it },
             onPlay = { itemId, title -> open(current.addonId, itemId, title, current) },
-            onExit = goHome,
+            onExit = { current.returnTo?.let { screen = it } ?: goHome() },
         )
         is Screen.Details -> DetailsScreen(
             core = core,
@@ -279,8 +302,54 @@ private fun AppNavigation(
                 searchBack = current
                 screen = Screen.Search
             },
+            // A film or episode: find releases, when an add-on can find them
+            // and another can play them.
+            onFindSources = if (enabledWith("sources") != null && enabledWith("debrid") != null) {
+                { details ->
+                    val query = SourceQuery(
+                        imdbId = details.imdbId,
+                        title = details.seriesTitle ?: details.title,
+                        year = details.year.takeIf { details.kind == "movie" },
+                        season = details.season,
+                        episode = details.episode,
+                    )
+                    val heading = sourcesTitle(details.title, details.seriesTitle, details.season, details.episode)
+                    sources = SourcesState(SourcesTarget(current.addonId, details.id, heading, query))
+                    screen = Screen.Sources(returnTo = current)
+                }
+            } else {
+                null
+            },
+            // A series: its seasons and episodes, as rows.
+            onEpisodes = { details ->
+                screen = Screen.Browse(current.addonId, details.title, stack = listOf(details.id), returnTo = current)
+            },
             onExit = { screen = current.returnTo },
         )
+        is Screen.Sources -> {
+            val state = sources
+            val source = enabledWith("sources")
+            val debrid = enabledWith("debrid")
+            if (state == null || source == null || debrid == null) {
+                LaunchedEffect(Unit) { screen = current.returnTo }
+            } else {
+                SourcesScreen(
+                    core = core,
+                    state = state,
+                    source = source,
+                    onPlay = { release ->
+                        screen = Screen.Player(
+                            addonId = state.target.titleAddonId,
+                            itemId = state.target.titleItemId,
+                            title = state.target.heading,
+                            returnTo = current,
+                            release = ReleasePick(debrid.id, release, state.target),
+                        )
+                    },
+                    onExit = { screen = current.returnTo },
+                )
+            }
+        }
         Screen.Search -> SearchScreen(
             core = core,
             addons = searchable,
@@ -295,9 +364,32 @@ private fun AppNavigation(
             },
         )
         is Screen.Player -> PlayerScreen(
-            core = core,
             owner = owner,
             target = current,
+            prepare = {
+                val pick = current.release
+                if (pick == null) {
+                    core.preparePlayback(current.addonId, current.itemId, current.title)
+                } else {
+                    core.prepareRelease(
+                        pick.debridId,
+                        pick.release,
+                        pick.target.query.season,
+                        pick.target.query.episode,
+                        pick.target.titleAddonId,
+                        pick.target.titleItemId,
+                        current.title,
+                    )
+                }
+            },
+            // A release that cannot play (not cached, say) goes back to the
+            // list, marked, so another can be picked.
+            onPrepareFailed = current.release?.let { pick ->
+                { message: String ->
+                    sources?.tried?.set(pick.release.infoHash, message)
+                    screen = current.returnTo
+                }
+            },
             onExit = {
                 owner.stop()
                 screen = current.returnTo
@@ -622,17 +714,23 @@ private fun SearchScreen(
 
 @Composable
 private fun PlayerScreen(
-    core: AndroidCore,
     owner: RvahPlayerOwner,
     target: Screen.Player,
+    /** Resolve what to play (on an IO thread). */
+    prepare: () -> NativePreparedPlayback,
+    /** When set, a failure to prepare goes here instead of the player's status. */
+    onPrepareFailed: ((String) -> Unit)?,
     onExit: () -> Unit,
 ) {
     var started by remember(target) { mutableStateOf(false) }
     LaunchedEffect(target) {
-        onIo { core.preparePlayback(target.addonId, target.itemId, target.title) }.onSuccess {
+        onIo { prepare() }.onSuccess {
             started = true
             owner.play(it.toSpec())
-        }.onFailure { owner.fail(it.userMessage()) }
+        }.onFailure { error ->
+            val message = error.userMessage()
+            if (onPrepareFailed != null) onPrepareFailed(message) else owner.fail(message)
+        }
     }
     val ui = owner.ui
     // The controls hide after a quiet spell while playing, or on Back; any
