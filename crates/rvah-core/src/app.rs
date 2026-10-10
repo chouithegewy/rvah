@@ -199,9 +199,13 @@ impl<B: PlayerBackend> AppCore<B> {
         };
         let started = std::time::Instant::now();
         let result = addon.runtime.invoke(op, &ctx);
+        // Debug builds only; an add-on's error messages carry no secrets.
         crate::debug_log!(
             "{addon_id} {op_name}: {} in {:.3}s",
-            if result.is_ok() { "ok" } else { "error" },
+            match &result {
+                Ok(_) => "ok".to_string(),
+                Err(e) => format!("error ({:?}: {})", e.code, e.message),
+            },
             started.elapsed().as_secs_f64()
         );
         Ok(result)

@@ -76,8 +76,36 @@ fn send_raw(
         form_encode(fields).into_bytes()
     });
     let resp = host::http_send(host, method, &api_url(path), headers, body)?;
-    check_status(resp.status)?;
+    if resp.status == 451 {
+        return Err(refused());
+    }
+    if let Err(mut err) = check_status(resp.status) {
+        // Real-Debrid names the problem: {"error": "too_many_active_downloads", …}.
+        #[derive(Deserialize)]
+        struct Problem {
+            error: String,
+        }
+        if let Ok(problem) = serde_json::from_slice::<Problem>(&resp.body) {
+            err.message = format!("{} ({})", err.message, problem.error);
+        }
+        return Err(err);
+    }
     Ok(resp.body)
+}
+
+const REFUSED: &str =
+    "Real-Debrid won't serve this release (it is flagged as infringing); pick another";
+
+/// Real-Debrid answers 451 for releases it has blocked: not a failure of
+/// the add-on, just a release that cannot play.
+fn refused() -> AddonError {
+    let mut err = AddonError::new(AddonErrorCode::NotFound, REFUSED);
+    err.user_visible = true;
+    err
+}
+
+fn is_refused(err: &AddonError) -> bool {
+    err.code == AddonErrorCode::NotFound && err.message == REFUSED
 }
 
 fn info(host: &dyn Host, id: &str) -> Result<TorrentInfo, AddonError> {
@@ -172,12 +200,30 @@ pub fn resolve_release(
         return Err(malformed("release", "not an info hash"));
     }
     let magnet = format!("magnet:?xt=urn:btih:{}", release.info_hash);
-    let added: Added = send(
+    let added: Added = match send(
         host,
         "POST",
         "/torrents/addMagnet",
         Some(&[("magnet", &magnet)]),
-    )?;
+    ) {
+        Ok(added) => added,
+        Err(e) if is_refused(&e) => return Ok(ResolveResult::Unavailable { reason: e.message }),
+        Err(e) => return Err(e),
+    };
+    match play_added(host, &added.id, season, episode) {
+        Err(e) if is_refused(&e) => not_ready(host, &added.id, e.message),
+        other => other,
+    }
+}
+
+/// The rest, once the torrent is in the account as `id`.
+fn play_added(
+    host: &dyn Host,
+    id: &str,
+    season: Option<u32>,
+    episode: Option<u32>,
+) -> Result<ResolveResult, AddonError> {
+    let added = Added { id: id.to_string() };
     let torrent = info(host, &added.id)?;
     match torrent.status.as_str() {
         // Real-Debrid already holds this one in full.
