@@ -25,6 +25,8 @@ pub enum Capability {
     Resolve,
     Auth,
     AccountStatus,
+    /// Details pages: genres, trailers, ratings.
+    Details,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

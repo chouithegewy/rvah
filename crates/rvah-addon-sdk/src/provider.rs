@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AccountStatus, AddonError, AddonErrorCode, AuthPoll, Credentials, DeviceAuth, Filter, Page,
-    ResolveResult,
+    AccountStatus, AddonError, AddonErrorCode, AuthPoll, Credentials, DeviceAuth, Filter,
+    ItemDetails, Page, ResolveResult,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -99,6 +99,11 @@ pub trait AddonProvider {
 
     fn account_status(&self, _ctx: &dyn HostApi) -> Result<AccountStatus, AddonError> {
         Err(unimplemented_capability("account_status"))
+    }
+
+    /// Details-page information for one item (capability `details`).
+    fn details(&self, _ctx: &dyn HostApi, _item_id: &str) -> Result<ItemDetails, AddonError> {
+        Err(unimplemented_capability("details"))
     }
 
     /// Start a device-code sign-in (UC-04, capability `auth`).

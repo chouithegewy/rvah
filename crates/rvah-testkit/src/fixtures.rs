@@ -8,8 +8,8 @@ use ed25519_dalek::VerifyingKey;
 use rvah_addon_host::{keygen, package_dir, sign_package};
 use rvah_addon_sdk::{
     AccountStatus, AddonError, AddonErrorCode, AddonProvider, Artwork, AuthPoll, Credentials,
-    DeviceAuth, DirectoryItem, Filter, HostApi, HttpRequest, HttpResponse, LogLevel, MediaItem,
-    Page, PageItem, PlayableSource, Protocol, ResolveResult,
+    DeviceAuth, DirectoryItem, Filter, HostApi, HttpRequest, HttpResponse, ItemDetails, LogLevel,
+    MediaItem, Page, PageItem, PlayableSource, Protocol, ResolveResult,
 };
 
 pub const ECHO_FIXTURE_ID: &str = "com.rvah.fixtures.echo";
@@ -216,6 +216,15 @@ impl AddonProvider for StaticPageProvider {
         _filters: &[Filter],
         _cursor: Option<&str>,
     ) -> Result<Page, AddonError> {
+        Ok(self.0.clone())
+    }
+}
+
+/// Answers every `details` call with the same details.
+pub struct StaticDetailsProvider(pub ItemDetails);
+
+impl AddonProvider for StaticDetailsProvider {
+    fn details(&self, _ctx: &dyn HostApi, _item_id: &str) -> Result<ItemDetails, AddonError> {
         Ok(self.0.clone())
     }
 }

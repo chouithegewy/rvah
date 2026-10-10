@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use rvah_addon_sdk::{
     AccountStatus, AddonError, AddonErrorCode, AddonProvider, AuthPoll, Credentials, DeviceAuth,
-    Filter, HostApi, Page, ResolveResult,
+    Filter, HostApi, ItemDetails, Page, ResolveResult,
 };
 
 use crate::manifest::Capability;
@@ -34,6 +34,9 @@ pub enum AddonOp {
     },
     /// Trade stored refresh material for fresh credentials.
     AuthRefresh,
+    Details {
+        item_id: String,
+    },
 }
 
 impl AddonOp {
@@ -47,6 +50,7 @@ impl AddonOp {
             AddonOp::AuthBegin | AddonOp::AuthPoll { .. } | AddonOp::AuthRefresh => {
                 Capability::Auth
             }
+            AddonOp::Details { .. } => Capability::Details,
         }
     }
 }
@@ -60,6 +64,7 @@ pub enum AddonResponse {
     DeviceAuth(DeviceAuth),
     AuthPoll(AuthPoll),
     Credentials(Credentials),
+    Details(Box<ItemDetails>),
 }
 
 /// Per-invocation environment: deadline plus the capability-checked host API.
@@ -163,6 +168,9 @@ impl AddonRuntime for InProcessRuntime {
                 AddonOp::AuthRefresh => provider
                     .auth_refresh(host.as_ref())
                     .map(AddonResponse::Credentials),
+                AddonOp::Details { item_id } => provider
+                    .details(host.as_ref(), &item_id)
+                    .map(|details| AddonResponse::Details(Box::new(details))),
             };
             let _ = tx.send(result);
         });
@@ -335,6 +343,92 @@ mod tests {
         );
         let begin = serde_json::to_value(AddonOp::AuthBegin).unwrap();
         assert_eq!(begin, serde_json::json!({ "op": "auth_begin" }));
+    }
+
+    struct DetailsProvider;
+    impl AddonProvider for DetailsProvider {
+        fn details(
+            &self,
+            _ctx: &dyn HostApi,
+            item_id: &str,
+        ) -> Result<rvah_addon_sdk::ItemDetails, AddonError> {
+            Ok(rvah_addon_sdk::ItemDetails {
+                item: rvah_addon_sdk::MediaItem {
+                    id: item_id.into(),
+                    content_type: rvah_addon_sdk::ContentType::Movie,
+                    title: "Detailed".into(),
+                    year: Some(2026),
+                    season: None,
+                    episode: None,
+                    runtime_secs: None,
+                    synopsis: None,
+                    rating: None,
+                    artwork: Default::default(),
+                    provider_ids: Default::default(),
+                },
+                tagline: None,
+                genres: vec!["Comedy".into()],
+                released: Some("2026-03-14".into()),
+                trailers: vec![rvah_addon_sdk::Trailer {
+                    name: "Official Trailer".into(),
+                    site: rvah_addon_sdk::VideoSite::YouTube,
+                    key: "abc123XYZ_-".into(),
+                }],
+                ratings: vec![rvah_addon_sdk::Rating {
+                    source: "rotten_tomatoes".into(),
+                    value: "93%".into(),
+                }],
+            })
+        }
+    }
+
+    #[test]
+    fn details_needs_the_details_capability() {
+        let op = || AddonOp::Details {
+            item_id: "movie:1".into(),
+        };
+        let rt = InProcessRuntime::new(Arc::new(DetailsProvider), vec![Capability::Details]);
+        let AddonResponse::Details(details) = rt.invoke(op(), &ctx(1_000)).unwrap() else {
+            panic!("expected details");
+        };
+        assert_eq!(details.item.id, "movie:1");
+        let undeclared =
+            InProcessRuntime::new(Arc::new(DetailsProvider), vec![Capability::Catalog]);
+        let err = undeclared.invoke(op(), &ctx(1_000)).unwrap_err();
+        assert_eq!(err.code, AddonErrorCode::PermissionDenied);
+    }
+
+    #[test]
+    fn details_wire_format() {
+        let wire = serde_json::to_value(AddonOp::Details {
+            item_id: "movie:1".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({ "op": "details", "item_id": "movie:1" })
+        );
+        let rt = InProcessRuntime::new(Arc::new(DetailsProvider), vec![Capability::Details]);
+        let response = rt
+            .invoke(
+                AddonOp::Details {
+                    item_id: "movie:1".into(),
+                },
+                &ctx(1_000),
+            )
+            .unwrap();
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(wire["kind"], "details");
+        assert_eq!(
+            wire["value"]["trailers"][0],
+            serde_json::json!({ "name": "Official Trailer", "site": "youtube", "key": "abc123XYZ_-" })
+        );
+        assert_eq!(
+            wire["value"]["ratings"][0],
+            serde_json::json!({ "source": "rotten_tomatoes", "value": "93%" })
+        );
+        let manifest_caps: Vec<Capability> = serde_json::from_str(r#"["details"]"#).unwrap();
+        assert_eq!(manifest_caps, [Capability::Details]);
     }
 
     #[test]

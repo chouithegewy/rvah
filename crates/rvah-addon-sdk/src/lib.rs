@@ -12,8 +12,8 @@ pub use error::{AddonError, AddonErrorCode};
 pub use provider::{AddonProvider, HostApi, HttpRequest, HttpResponse, LogLevel};
 pub use types::{
     AccountStatus, Artwork, AuthPoll, ContentType, Credentials, DeviceAuth, DirectoryItem,
-    DrmScheme, Filter, MediaItem, Page, PageItem, PlayableSource, Protocol, ResolveResult,
-    SubtitleFormat, SubtitleTrack,
+    DrmScheme, Filter, ItemDetails, MediaItem, Page, PageItem, PlayableSource, Protocol, Rating,
+    ResolveResult, SubtitleFormat, SubtitleTrack, Trailer, VideoSite,
 };
 
 /// SDK version implemented by this crate. Hosts check manifests' `sdk` range

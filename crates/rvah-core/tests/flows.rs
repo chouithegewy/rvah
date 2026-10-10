@@ -878,3 +878,73 @@ fn artwork_reaches_the_ui_only_over_https_from_declared_hosts() {
         );
     }
 }
+
+#[test]
+fn details_get_the_same_artwork_rule_and_only_plain_trailer_keys() {
+    use rvah_addon_sdk::{ContentType, ItemDetails, MediaItem, Rating, Trailer, VideoSite};
+    let trailer = |key: &str| Trailer {
+        name: format!("Trailer {key}"),
+        site: VideoSite::YouTube,
+        key: key.into(),
+    };
+    let details = ItemDetails {
+        item: MediaItem {
+            id: "movie:1".into(),
+            content_type: ContentType::Movie,
+            title: "Detailed".into(),
+            year: Some(2026),
+            season: None,
+            episode: None,
+            runtime_secs: Some(5400),
+            synopsis: Some("A coyote sues.".into()),
+            rating: Some(7.4),
+            artwork: with_artwork(
+                "https://img.example.com/p.jpg",
+                "https://img.example.com/f.jpg",
+                "https://elsewhere.example.net/t.jpg",
+            ),
+            provider_ids: Default::default(),
+        },
+        tagline: None,
+        genres: vec!["Comedy".into()],
+        released: Some("2026-03-14".into()),
+        trailers: vec![
+            trailer("dQw4w9WgXcQ"),
+            trailer("x?list=evil"),
+            trailer("../watch"),
+            trailer(""),
+            trailer("a_b-C9"),
+        ],
+        ratings: vec![Rating {
+            source: "rotten_tomatoes".into(),
+            value: "93%".into(),
+        }],
+    };
+    let mut w = World::new();
+    w.add_addon_with_permissions(
+        ART_ID,
+        &["details"],
+        &["img.example.com"],
+        &[],
+        Arc::new(rvah_testkit::StaticDetailsProvider(details)),
+        vec![Capability::Details],
+    );
+    let shown = w.core.details(ART_ID, "movie:1").unwrap();
+    assert_eq!(shown.item.title, "Detailed");
+    assert_eq!(
+        shown.item.artwork.poster.as_deref(),
+        Some("https://img.example.com/p.jpg")
+    );
+    assert_eq!(
+        shown.item.artwork.fanart.as_deref(),
+        Some("https://img.example.com/f.jpg")
+    );
+    assert_eq!(shown.item.artwork.thumb, None);
+    let keys: Vec<&str> = shown.trailers.iter().map(|t| t.key.as_str()).collect();
+    assert_eq!(keys, ["dQw4w9WgXcQ", "a_b-C9"]);
+    assert_eq!(shown.ratings[0].value, "93%");
+
+    // An add-on without the capability is refused before any call.
+    let err = w.core.details(ECHO_FIXTURE_ID, "m1").unwrap_err();
+    assert!(matches!(err, CoreError::Provider(e) if e.code == AddonErrorCode::PermissionDenied));
+}
