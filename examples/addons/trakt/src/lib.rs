@@ -373,4 +373,16 @@ mod tests {
             .unwrap();
         assert_eq!(out, json!({ "kind": "done" }));
     }
+
+    #[test]
+    fn pauses_and_stops_under_one_percent_are_not_sent() {
+        // Trakt answers those with 422 and ignores them.
+        let mut host = host(true);
+        host.route(&format!("{API}/scrobble/start"), 201, &json!({}));
+        trakt::scrobble(&host, ScrobbleAction::Pause, &film(), 0.6).unwrap();
+        trakt::scrobble(&host, ScrobbleAction::Stop, &film(), 0.0).unwrap();
+        assert!(host.urls().is_empty());
+        trakt::scrobble(&host, ScrobbleAction::Start, &film(), 0.0).unwrap();
+        assert_eq!(host.urls(), [format!("{API}/scrobble/start")]);
+    }
 }

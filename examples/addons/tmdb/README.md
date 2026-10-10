@@ -11,6 +11,10 @@ playable: the TV's details page finds the title in your other add-ons
   popular and top rated series), paged by TMDB's page numbers. Only those
   rows can be listed. "In theaters" and "Coming soon" follow the `region`
   setting (default `US`); everything follows `language` (default `en-US`).
+- **genres** — "Films by genre" and "Series by genre" close the root,
+  each a folder of folders (`of_directories`), so the TV shows one column
+  per TMDB genre; a genre lists its popular titles (`/discover`, at least
+  100 votes for films and 50 for series).
 - **search** — TMDB's multi search, films and series only.
 - **seasons and episodes** — a series (`tv:<id>`) lists its seasons,
   specials last; a season (`tv:<id>/season/<n>`) lists its episodes

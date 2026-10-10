@@ -116,6 +116,7 @@ fn directory(id: &str, title: &str, path: &str) -> PageItem {
         subtitle: None,
         artwork: Artwork::default(),
         path: path.into(),
+        of_directories: false,
         badges: vec![],
     })
 }

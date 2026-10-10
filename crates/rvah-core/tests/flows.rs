@@ -836,6 +836,7 @@ fn artwork_reaches_the_ui_only_over_https_from_declared_hosts() {
                     "not a url",
                 ),
                 path: "/d1".into(),
+                of_directories: false,
                 badges: vec![],
             }),
         ],

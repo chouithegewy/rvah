@@ -231,6 +231,7 @@ fn rows(signed_in: bool) -> Page {
                     subtitle: None,
                     artwork: Artwork::default(),
                     path: path.to_string(),
+                    of_directories: false,
                     badges: vec![],
                 })
             })
@@ -437,6 +438,10 @@ pub fn scrobble(
     let Some(token) = access_token(host)? else {
         return Ok(());
     };
+    // Trakt ignores a pause or stop under 1% (answering 422): nothing to say.
+    if action != ScrobbleAction::Start && progress < 1.0 {
+        return Ok(());
+    }
     let Ok(tmdb) = item.tmdb_id.parse::<u64>() else {
         guest::log(host, &format!("not a TMDB id: {}", item.tmdb_id));
         return Ok(());
@@ -465,7 +470,10 @@ pub fn scrobble(
         200..=299 => Ok(()),
         401 => Err(failed("scrobble", 401)),
         status => {
-            guest::log(host, &format!("Trakt scrobble {verb}: {status}"));
+            guest::log(
+                host,
+                &format!("Trakt scrobble {verb} at {progress:.1}%: {status}"),
+            );
             Ok(())
         }
     }

@@ -759,4 +759,56 @@ mod tests {
             .unwrap();
         assert_eq!(out["kind"], "resolve");
     }
+
+    #[test]
+    fn a_release_real_debrid_refuses_is_reported_not_failed() {
+        // Refused at once: nothing was added.
+        let mut host = rd_host();
+        host.route(
+            &format!("{REST}/torrents/addMagnet"),
+            451,
+            json!({ "error": "infringing_file", "error_code": 35 }),
+        );
+        let result = torrents::resolve_release(&host, &chosen("Film"), None, None).unwrap();
+        let ResolveResult::Unavailable { reason } = result else {
+            panic!("expected unavailable, got {result:?}");
+        };
+        assert!(reason.contains("won't serve this release"), "{reason}");
+        assert_eq!(calls(&host).len(), 1);
+
+        // Refused when unrestricting: the added torrent goes again.
+        let files = json!([file(1, "/Film.mkv", 4)]);
+        let mut host = release_host(vec![
+            torrent("waiting_files_selection", files.clone(), json!([])),
+            torrent("downloaded", files, json!(["https://real-debrid.com/d/L1"])),
+        ]);
+        host.route(
+            &format!("{REST}/unrestrict/link"),
+            451,
+            json!({ "error": "infringing_file", "error_code": 35 }),
+        );
+        let result = torrents::resolve_release(&host, &chosen("Film"), None, None).unwrap();
+        assert!(
+            matches!(result, ResolveResult::Unavailable { .. }),
+            "{result:?}"
+        );
+        assert_eq!(calls(&host).last().unwrap(), "DELETE /torrents/delete/T1");
+    }
+
+    #[test]
+    fn other_refusals_name_real_debrids_reason() {
+        let mut host = rd_host();
+        host.route(
+            &format!("{REST}/torrents/addMagnet"),
+            503,
+            json!({ "error": "too_many_active_downloads", "error_code": 21 }),
+        );
+        let err = torrents::resolve_release(&host, &chosen("Film"), None, None).unwrap_err();
+        assert_eq!(err.code, AddonErrorCode::Network);
+        assert!(
+            err.message.contains("too_many_active_downloads"),
+            "{}",
+            err.message
+        );
+    }
 }

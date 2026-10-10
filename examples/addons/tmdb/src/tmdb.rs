@@ -17,6 +17,12 @@ const IMAGES: &str = "https://image.tmdb.org/t/p";
 const MAX_PAGES: u32 = 50;
 const MAX_TRAILERS: usize = 3;
 
+/// Groups of rows after the root rows: (title, path).
+const GENRE_BOARDS: &[(&str, &str)] = &[
+    ("Films by genre", "genres/movie"),
+    ("Series by genre", "genres/tv"),
+];
+
 /// The root rows: (title, list path, whether the list is per region).
 const ROWS: &[(&str, &str, bool)] = &[
     ("Trending this week", "trending/all/week", false),
@@ -215,24 +221,28 @@ fn page_number(cursor: Option<&str>) -> Result<String, AddonError> {
 /// listed, so a path never reaches TMDB's URL unchecked.
 pub fn list(host: &dyn Host, path: Option<&str>, cursor: Option<&str>) -> Result<Page, AddonError> {
     let Some(path) = path.filter(|p| *p != "/") else {
+        let rows = ROWS
+            .iter()
+            .map(|(title, path, _)| folder(title, path, false));
+        let boards = GENRE_BOARDS
+            .iter()
+            .map(|(title, path)| folder(title, path, true));
         return Ok(Page {
-            items: ROWS
-                .iter()
-                .map(|(title, path, _)| {
-                    PageItem::Directory(DirectoryItem {
-                        id: path.to_string(),
-                        title: title.to_string(),
-                        subtitle: None,
-                        artwork: Artwork::default(),
-                        path: path.to_string(),
-                        badges: vec![],
-                    })
-                })
-                .collect(),
+            items: rows.chain(boards).collect(),
             cursor_next: None,
             total_hint: None,
         });
     };
+    // Genres: a board of them, then each genre's popular titles.
+    if let Some(kind) = path.strip_prefix("genres/") {
+        return genres(host, media_kind(kind)?);
+    }
+    if let Some((kind, id)) = path
+        .strip_prefix("genre/")
+        .and_then(|rest| rest.split_once('/'))
+    {
+        return genre(host, media_kind(kind)?, digits(id)?, cursor);
+    }
     // A series lists its seasons; a season, its episodes.
     if let Some(series) = path.strip_prefix("tv:") {
         return match series.split_once("/season/") {
@@ -581,6 +591,7 @@ fn seasons(host: &dyn Host, id: &str) -> Result<Page, AddonError> {
                         thumb: None,
                     },
                     path,
+                    of_directories: false,
                     badges: vec![],
                 })
             })
@@ -674,4 +685,73 @@ fn episode_details(
             .into_iter()
             .collect(),
     })
+}
+
+fn folder(title: &str, path: &str, of_directories: bool) -> PageItem {
+    PageItem::Directory(DirectoryItem {
+        id: path.to_string(),
+        title: title.to_string(),
+        subtitle: None,
+        artwork: Artwork::default(),
+        path: path.to_string(),
+        of_directories,
+        badges: vec![],
+    })
+}
+
+fn media_kind(segment: &str) -> Result<Kind, AddonError> {
+    Kind::from_media_type(segment)
+        .ok_or_else(|| not_found(format!("not films or series: {segment}")))
+}
+
+#[derive(Deserialize)]
+struct Genres {
+    genres: Vec<GenreId>,
+}
+
+#[derive(Deserialize)]
+struct GenreId {
+    id: u32,
+    name: String,
+}
+
+/// TMDB's genres for films or series, each a folder of its titles.
+fn genres(host: &dyn Host, kind: Kind) -> Result<Page, AddonError> {
+    let genres: Genres = get(host, &format!("genre/{}/list", kind.segment()), &[])?;
+    Ok(Page {
+        items: genres
+            .genres
+            .into_iter()
+            .map(|g| {
+                folder(
+                    &g.name,
+                    &format!("genre/{}/{}", kind.segment(), g.id),
+                    false,
+                )
+            })
+            .collect(),
+        cursor_next: None,
+        total_hint: None,
+    })
+}
+
+/// A genre's popular titles, leaving out those too few people rated.
+fn genre(host: &dyn Host, kind: Kind, id: &str, cursor: Option<&str>) -> Result<Page, AddonError> {
+    let page = page_number(cursor)?;
+    let min_votes = match kind {
+        Kind::Movie => "100",
+        Kind::Tv => "50",
+    };
+    let listing: Listing = get(
+        host,
+        &format!("discover/{}", kind.segment()),
+        &[
+            ("with_genres", id),
+            ("sort_by", "popularity.desc"),
+            ("vote_count.gte", min_votes),
+            ("include_adult", "false"),
+            ("page", &page),
+        ],
+    )?;
+    Ok(to_page(listing, Some(kind)))
 }

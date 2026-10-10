@@ -1,6 +1,6 @@
 [package]
 name = "rvah-addon-trakt"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "RVAH add-on: your Trakt watchlist and recommendations, and scrobbling"
