@@ -8,6 +8,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
@@ -215,7 +217,8 @@ private fun CatalogEntry.poster(): String? = when (this) {
 
 @Composable
 private fun PosterCard(entry: CatalogEntry, modifier: Modifier, onClick: () -> Unit) {
-    Column(Modifier.width(PosterWidth), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    // Room below the card for it to grow into when focused, over its title.
+    Column(Modifier.width(PosterWidth), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Card(onClick = onClick, modifier = modifier.width(PosterWidth).aspectRatio(2f / 3f)) {
             val poster = entry.poster()
             if (poster != null) {
@@ -259,6 +262,7 @@ internal data class Finder(val addon: AddonRecord, val query: String)
  * A details page: backdrop, poster, facts, ratings, synopsis, then actions —
  * find the title in each add-on that can play it, and its trailers.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun DetailsScreen(
     core: AndroidCore,
@@ -310,12 +314,18 @@ internal fun DetailsScreen(
                     val facts = detailsLine(shown.year, shown.runtimeSecs, shown.genres)
                     if (facts.isNotEmpty()) Text(facts, color = Secondary, fontSize = 18.sp)
                     if (shown.ratings.isNotEmpty()) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        // Wraps to a second line rather than squeezing a chip.
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
                             shown.ratings.forEach { rating ->
                                 Text(
                                     "${ratingLabel(rating.source)}  ${rating.value}",
                                     color = Primary,
                                     fontSize = 16.sp,
+                                    maxLines = 1,
+                                    softWrap = false,
                                     modifier = Modifier
                                         .background(Color(0x33FFFFFF), RoundedCornerShape(6.dp))
                                         .padding(horizontal = 10.dp, vertical = 4.dp),
@@ -323,13 +333,11 @@ internal fun DetailsScreen(
                             }
                         }
                     }
-                    shown.synopsis?.let {
-                        Text(it, color = Primary, fontSize = 18.sp, maxLines = 7, overflow = TextOverflow.Ellipsis)
-                    }
                 } else if (failure == null) {
                     Body("Loading…", Secondary)
                 }
                 failure?.let { Body(it.userMessage(), ErrorText) }
+                // Actions before the synopsis, so they are always on screen.
                 val first = rememberInitialFocus(shown != null)
                 val title = shown?.title ?: fallbackTitle
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -352,6 +360,9 @@ internal fun DetailsScreen(
                             modifier = if (index == 0 && players.isEmpty()) Modifier.focusRequester(first) else Modifier,
                         ) { Text(if (index == 0) "Play trailer" else trailer.name) }
                     }
+                }
+                shown?.synopsis?.let {
+                    Text(it, color = Primary, fontSize = 18.sp, maxLines = 6, overflow = TextOverflow.Ellipsis)
                 }
                 notice?.let { Body(it, ErrorText) }
                 if (players.isEmpty() && shown != null) {
