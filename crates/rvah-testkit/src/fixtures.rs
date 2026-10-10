@@ -8,8 +8,8 @@ use ed25519_dalek::VerifyingKey;
 use rvah_addon_host::{keygen, package_dir, sign_package};
 use rvah_addon_sdk::{
     AccountStatus, AddonError, AddonErrorCode, AddonProvider, Artwork, AuthPoll, Credentials,
-    DeviceAuth, DirectoryItem, Filter, HostApi, HttpRequest, HttpResponse, LogLevel, MediaItem,
-    Page, PageItem, PlayableSource, Protocol, ResolveResult,
+    DeviceAuth, DirectoryItem, Filter, HostApi, HttpRequest, HttpResponse, ItemDetails, LogLevel,
+    MediaItem, Page, PageItem, PlayableSource, Protocol, ResolveResult,
 };
 
 pub const ECHO_FIXTURE_ID: &str = "com.rvah.fixtures.echo";
@@ -65,11 +65,23 @@ pub fn write_fixture_package_with_secrets(
     caps: &[&str],
     secrets: &[&str],
 ) -> (PathBuf, [u8; 64], VerifyingKey) {
+    write_fixture_package_with_permissions(dir, id, caps, &[], secrets)
+}
+
+/// Same as [`write_fixture_package_with_secrets`], also declaring the
+/// `network` hosts the add-on may reach.
+pub fn write_fixture_package_with_permissions(
+    dir: &Path,
+    id: &str,
+    caps: &[&str],
+    network: &[&str],
+    secrets: &[&str],
+) -> (PathBuf, [u8; 64], VerifyingKey) {
     let src = dir.join(format!("{id}-src"));
     std::fs::create_dir_all(&src).expect("fixture src dir");
     std::fs::write(
         src.join("manifest.toml"),
-        fixture_manifest(id, caps, &[], secrets),
+        fixture_manifest(id, caps, network, secrets),
     )
     .expect("fixture manifest");
     std::fs::write(src.join("main"), "fixture entry").expect("fixture entry");
@@ -181,6 +193,39 @@ impl AddonProvider for CatalogEchoProvider {
 
     fn account_status(&self, _ctx: &dyn HostApi) -> Result<AccountStatus, AddonError> {
         Ok(AccountStatus::SignedOut)
+    }
+}
+
+/// Answers every `list` and `search` with the same page.
+pub struct StaticPageProvider(pub Page);
+
+impl AddonProvider for StaticPageProvider {
+    fn list(
+        &self,
+        _ctx: &dyn HostApi,
+        _path: Option<&str>,
+        _cursor: Option<&str>,
+    ) -> Result<Page, AddonError> {
+        Ok(self.0.clone())
+    }
+
+    fn search(
+        &self,
+        _ctx: &dyn HostApi,
+        _query: &str,
+        _filters: &[Filter],
+        _cursor: Option<&str>,
+    ) -> Result<Page, AddonError> {
+        Ok(self.0.clone())
+    }
+}
+
+/// Answers every `details` call with the same details.
+pub struct StaticDetailsProvider(pub ItemDetails);
+
+impl AddonProvider for StaticDetailsProvider {
+    fn details(&self, _ctx: &dyn HostApi, _item_id: &str) -> Result<ItemDetails, AddonError> {
+        Ok(self.0.clone())
     }
 }
 

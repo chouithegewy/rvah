@@ -154,13 +154,89 @@ pub enum CatalogEntry {
         title: String,
         subtitle: Option<String>,
         path: String,
+        poster: Option<String>,
     },
+    /// Artwork URLs are https on a host the add-on declared (core rule).
     Media {
         id: String,
         title: String,
         synopsis: Option<String>,
         year: Option<u16>,
+        rating: Option<f32>,
+        poster: Option<String>,
+        fanart: Option<String>,
     },
+}
+
+/// A details page (capability `details`).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ItemDetailsRecord {
+    pub id: String,
+    pub title: String,
+    pub year: Option<u16>,
+    pub synopsis: Option<String>,
+    pub runtime_secs: Option<u32>,
+    pub rating: Option<f32>,
+    pub poster: Option<String>,
+    pub fanart: Option<String>,
+    pub tagline: Option<String>,
+    pub genres: Vec<String>,
+    /// ISO 8601 date.
+    pub released: Option<String>,
+    pub trailers: Vec<TrailerLink>,
+    pub ratings: Vec<RatingRecord>,
+}
+
+/// A trailer page, built here from the site's video key.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct TrailerLink {
+    pub name: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct RatingRecord {
+    pub source: String,
+    pub value: String,
+}
+
+impl From<rvah_addon_sdk::ItemDetails> for ItemDetailsRecord {
+    fn from(details: rvah_addon_sdk::ItemDetails) -> Self {
+        let item = details.item;
+        ItemDetailsRecord {
+            id: item.id,
+            title: item.title,
+            year: item.year,
+            synopsis: item.synopsis,
+            runtime_secs: item.runtime_secs,
+            rating: item.rating,
+            poster: item.artwork.poster,
+            fanart: item.artwork.fanart,
+            tagline: details.tagline,
+            genres: details.genres,
+            released: details.released,
+            trailers: details
+                .trailers
+                .into_iter()
+                .map(|trailer| TrailerLink {
+                    url: match trailer.site {
+                        rvah_addon_sdk::VideoSite::YouTube => {
+                            format!("https://www.youtube.com/watch?v={}", trailer.key)
+                        }
+                    },
+                    name: trailer.name,
+                })
+                .collect(),
+            ratings: details
+                .ratings
+                .into_iter()
+                .map(|rating| RatingRecord {
+                    source: rating.source,
+                    value: rating.value,
+                })
+                .collect(),
+        }
+    }
 }
 
 /// What the TV shows to finish linking an account by device code (UC-04).
@@ -778,6 +854,18 @@ impl AndroidCore {
         )
     }
 
+    /// Details-page information for one item (capability `details`).
+    pub fn details(
+        &self,
+        addon_id: String,
+        item_id: String,
+    ) -> Result<ItemDetailsRecord, AndroidCoreError> {
+        self.core()
+            .details(&addon_id, &item_id)
+            .map(ItemDetailsRecord::from)
+            .map_err(addon_error)
+    }
+
     /// Never waits for an in-flight add-on call (see [`AndroidCore`]).
     pub fn stop_playback(&self, session_id: u64) -> Result<bool, AndroidCoreError> {
         Ok(lock_tracker(&self.playback).stop(PlaybackSessionId(session_id)))
@@ -854,12 +942,16 @@ fn catalog_entry(item: PageItem) -> CatalogEntry {
             title: item.title,
             subtitle: item.subtitle,
             path: item.path,
+            poster: item.artwork.poster,
         },
         PageItem::Media(item) => CatalogEntry::Media {
             id: item.id,
             title: item.title,
             synopsis: item.synopsis,
             year: item.year,
+            rating: item.rating,
+            poster: item.artwork.poster,
+            fanart: item.artwork.fanart,
         },
     }
 }
@@ -981,6 +1073,81 @@ mod tests {
         assert!(rvah_core::debug::enabled());
         set_debug_logging(false);
         assert!(!rvah_core::debug::enabled());
+    }
+
+    fn movie() -> rvah_addon_sdk::MediaItem {
+        rvah_addon_sdk::MediaItem {
+            id: "movie:1".into(),
+            content_type: rvah_addon_sdk::ContentType::Movie,
+            title: "Coyote vs. Acme".into(),
+            year: Some(2026),
+            season: None,
+            episode: None,
+            runtime_secs: Some(5400),
+            synopsis: Some("A coyote sues.".into()),
+            rating: Some(7.4),
+            artwork: rvah_addon_sdk::Artwork {
+                poster: Some("https://image.tmdb.org/t/p/w342/p.jpg".into()),
+                fanart: Some("https://image.tmdb.org/t/p/w780/f.jpg".into()),
+                thumb: None,
+            },
+            provider_ids: Default::default(),
+        }
+    }
+
+    #[test]
+    fn catalog_entries_carry_artwork_and_rating() {
+        let CatalogEntry::Media {
+            poster,
+            fanart,
+            rating,
+            ..
+        } = catalog_entry(PageItem::Media(movie()))
+        else {
+            panic!("expected media");
+        };
+        assert_eq!(
+            poster.as_deref(),
+            Some("https://image.tmdb.org/t/p/w342/p.jpg")
+        );
+        assert_eq!(
+            fanart.as_deref(),
+            Some("https://image.tmdb.org/t/p/w780/f.jpg")
+        );
+        assert_eq!(rating, Some(7.4));
+    }
+
+    #[test]
+    fn details_build_the_trailer_link_from_the_key() {
+        let record = ItemDetailsRecord::from(rvah_addon_sdk::ItemDetails {
+            item: movie(),
+            tagline: Some("Beep beep.".into()),
+            genres: vec!["Comedy".into(), "Animation".into()],
+            released: Some("2026-03-14".into()),
+            trailers: vec![rvah_addon_sdk::Trailer {
+                name: "Official Trailer".into(),
+                site: rvah_addon_sdk::VideoSite::YouTube,
+                key: "dQw4w9WgXcQ".into(),
+            }],
+            ratings: vec![rvah_addon_sdk::Rating {
+                source: "rotten_tomatoes".into(),
+                value: "93%".into(),
+            }],
+        });
+        assert_eq!(record.title, "Coyote vs. Acme");
+        assert_eq!(record.year, Some(2026));
+        assert_eq!(record.genres, ["Comedy", "Animation"]);
+        assert_eq!(record.trailers[0].name, "Official Trailer");
+        assert_eq!(
+            record.trailers[0].url,
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        );
+        assert_eq!(record.ratings[0].source, "rotten_tomatoes");
+        assert_eq!(record.ratings[0].value, "93%");
+        assert_eq!(
+            record.fanart.as_deref(),
+            Some("https://image.tmdb.org/t/p/w780/f.jpg")
+        );
     }
 
     #[test]

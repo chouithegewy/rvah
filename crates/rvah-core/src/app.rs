@@ -6,8 +6,8 @@ use rvah_addon_host::{
     AddonManager, AddonOp, AddonResponse, AddonRuntime, Capability, InvocationCtx, Manifest,
 };
 use rvah_addon_sdk::{
-    AccountStatus, AddonError, AddonErrorCode, AuthPoll, Credentials, Filter, HostApi, Page,
-    ResolveResult,
+    AccountStatus, AddonError, AddonErrorCode, AuthPoll, Credentials, Filter, HostApi, ItemDetails,
+    Page, ResolveResult,
 };
 use rvah_auth::{DeviceCodeFlow, DeviceCodeState, PollOutcome, SecretVault};
 use rvah_data::{AddonStatus, Database, DiagnosticEvent, FavoriteRecord};
@@ -177,6 +177,7 @@ impl<B: PlayerBackend> AppCore<B> {
             AddonOp::AuthBegin => "auth_begin",
             AddonOp::AuthPoll { .. } => "auth_poll",
             AddonOp::AuthRefresh => "auth_refresh",
+            AddonOp::Details { .. } => "details",
         };
         let started = std::time::Instant::now();
         let result = addon.runtime.invoke(op, &ctx);
@@ -283,6 +284,7 @@ impl<B: PlayerBackend> AppCore<B> {
                 cursor,
             },
         )?)?;
+        let page = self.screened(addon_id, page)?;
         if !follow_up {
             self.nav
                 .push(format!("{addon_id}:{}", path.as_deref().unwrap_or("/")));
@@ -302,7 +304,30 @@ impl<B: PlayerBackend> AppCore<B> {
             filters: Vec::<Filter>::new(),
             cursor,
         };
-        Self::expect_page(self.invoke(addon_id, op)?)
+        let page = Self::expect_page(self.invoke(addon_id, op)?)?;
+        self.screened(addon_id, page)
+    }
+
+    /// Details-page information for one item (capability `details`), with
+    /// the listing artwork rule and only plain trailer keys.
+    pub fn details(&mut self, addon_id: &str, item_id: &str) -> Result<ItemDetails, CoreError> {
+        let op = AddonOp::Details {
+            item_id: item_id.to_string(),
+        };
+        let mut details = match self.invoke(addon_id, op)? {
+            AddonResponse::Details(details) => *details,
+            other => return Err(unexpected_response(&other)),
+        };
+        let manifest = self.installed_manifest(addon_id)?;
+        crate::artwork::screen_details(&mut details, &manifest.permissions.network);
+        Ok(details)
+    }
+
+    /// `page` with only the artwork the UI may load (see `artwork`).
+    fn screened(&self, addon_id: &str, mut page: Page) -> Result<Page, CoreError> {
+        let manifest = self.installed_manifest(addon_id)?;
+        crate::artwork::screen_page(&mut page, &manifest.permissions.network);
+        Ok(page)
     }
 
     /// Fan a query out to every enabled add-on declaring search (FR-044).

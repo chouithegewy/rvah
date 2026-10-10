@@ -9,63 +9,14 @@ pub mod auth;
 pub mod host;
 pub mod rd;
 
-use rvah_addon_sdk::{
-    AccountStatus, AddonError, AddonErrorCode, AuthPoll, Credentials, DeviceAuth, Filter, Page,
-    ResolveResult,
-};
-use serde::{Deserialize, Serialize};
+use rvah_addon_sdk::guest::{read_op, Op, Response};
+use rvah_addon_sdk::AddonError;
 
 use host::Host;
 
-/// Mirror of the host's `AddonOp` wire shape (`rvah-addon-host`).
-// Only `rvah_invoke` (wasm32) reaches these outside of tests.
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-#[derive(Debug, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
-enum Op {
-    List {
-        #[allow(dead_code)]
-        path: Option<String>,
-        cursor: Option<String>,
-    },
-    Search {
-        query: String,
-        #[allow(dead_code)]
-        #[serde(default)]
-        filters: Vec<Filter>,
-        cursor: Option<String>,
-    },
-    Resolve {
-        item_id: String,
-        #[allow(dead_code)]
-        source_id: Option<String>,
-    },
-    AccountStatus,
-    AuthBegin,
-    AuthPoll {
-        device_code: String,
-    },
-    AuthRefresh,
-}
-
-/// Mirror of the host's `AddonResponse` wire shape.
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-enum Response {
-    Page(Page),
-    Resolve(ResolveResult),
-    Account(AccountStatus),
-    DeviceAuth(DeviceAuth),
-    AuthPoll(AuthPoll),
-    Credentials(Credentials),
-}
-
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 fn dispatch(input: &[u8], host: &dyn Host) -> Result<Response, AddonError> {
-    let op: Op = serde_json::from_slice(input)
-        .map_err(|e| AddonError::new(AddonErrorCode::Malformed, format!("op: {e}")))?;
-    match op {
+    match read_op(input)? {
         Op::List { cursor, .. } => rd::list(host, cursor.as_deref()).map(Response::Page),
         Op::Search { query, cursor, .. } => {
             rd::search(host, &query, cursor.as_deref()).map(Response::Page)
@@ -75,40 +26,19 @@ fn dispatch(input: &[u8], host: &dyn Host) -> Result<Response, AddonError> {
         Op::AuthBegin => auth::begin(host).map(Response::DeviceAuth),
         Op::AuthPoll { device_code } => auth::poll(host, &device_code).map(Response::AuthPoll),
         Op::AuthRefresh => auth::refresh(host).map(Response::Credentials),
+        Op::Details { .. } => Err(AddonError::new(
+            rvah_addon_sdk::AddonErrorCode::Internal,
+            "capability not implemented: details",
+        )),
     }
 }
 
-// ---- ABI v0.1 exports (wasm32) ----
-
-#[no_mangle]
-pub extern "C" fn rvah_alloc(len: i32) -> i32 {
-    let mut buf = vec![0u8; len.max(0) as usize];
-    let ptr = buf.as_mut_ptr();
-    // Leaked on purpose: the store lives for one invocation only.
-    std::mem::forget(buf);
-    ptr as i32
-}
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn rvah_invoke(ptr: i32, len: i32) -> i64 {
-    let input = unsafe { std::slice::from_raw_parts(ptr as *const u8, len.max(0) as usize) };
-    let result: Result<Response, AddonError> = dispatch(input, &host::WasmHost);
-    let out = serde_json::to_vec(&result).unwrap_or_default();
-    if out.is_empty() {
-        return 0;
-    }
-    let out_ptr = rvah_alloc(out.len() as i32);
-    unsafe {
-        std::ptr::copy_nonoverlapping(out.as_ptr(), out_ptr as *mut u8, out.len());
-    }
-    (((out_ptr as u64) << 32) | out.len() as u64) as i64
-}
+rvah_addon_sdk::export_guest!(dispatch);
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rvah_addon_sdk::{AuthPoll, PageItem};
+    use rvah_addon_sdk::{AccountStatus, AddonErrorCode, AuthPoll, Page, PageItem, ResolveResult};
     use serde_json::{json, Value};
     use std::collections::BTreeMap;
     use std::sync::Mutex;

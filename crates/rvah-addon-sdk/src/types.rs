@@ -251,6 +251,50 @@ impl fmt::Debug for Credentials {
     }
 }
 
+/// Everything a details page shows about one item (capability `details`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ItemDetails {
+    pub item: MediaItem,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tagline: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub genres: Vec<String>,
+    /// Release (or first air) date, ISO 8601: `2026-03-14`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trailers: Vec<Trailer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ratings: Vec<Rating>,
+}
+
+/// A trailer on a video site, named by the site's own video key; the host
+/// builds the link, so an add-on cannot send the viewer to any other page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Trailer {
+    pub name: String,
+    pub site: VideoSite,
+    /// The site's video id, e.g. YouTube's `dQw4w9WgXcQ`.
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoSite {
+    #[serde(rename = "youtube")]
+    YouTube,
+}
+
+/// One score from one source, ready to show.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rating {
+    /// Who rated: `tmdb`, `imdb`, `rotten_tomatoes`, `rt_audience`,
+    /// `metacritic`, … Hosts may show a badge for sources they know.
+    pub source: String,
+    /// The score as shown: `93%`, `8.1/10`.
+    pub value: String,
+}
+
 /// What one `auth_poll` saw at the provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", content = "credentials", rename_all = "snake_case")]

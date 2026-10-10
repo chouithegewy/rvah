@@ -30,4 +30,6 @@ wasm-wasmi = ["dep:wasmi"]
 
 [dev-dependencies]
 tempfile.workspace = true
+# The guest's wire types, checked against the host's.
+rvah-addon-sdk = { workspace = true, features = ["guest"] }
 proptest = { workspace = true }

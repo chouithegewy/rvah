@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Guest-side helpers for add-ons compiled to wasm (`rvah_addon_sdk::guest`).
+guest = ["serde_json/raw_value"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

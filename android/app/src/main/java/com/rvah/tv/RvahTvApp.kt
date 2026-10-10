@@ -68,10 +68,10 @@ import uniffi.rvah_android.SettingRecord
 import uniffi.rvah_android.SignInPrompt
 import uniffi.rvah_android.SignInState
 
-private val Background = Color(0xFF0B0F14)
-private val Primary = Color.White
-private val Secondary = Color.LightGray
-private val ErrorText = Color(0xFFFF8A80)
+internal val Background = Color(0xFF0B0F14)
+internal val Primary = Color.White
+internal val Secondary = Color.LightGray
+internal val ErrorText = Color(0xFFFF8A80)
 
 /** Navigation state. Browse keeps its directory stack so Back from the player returns to it. */
 private sealed interface Screen {
@@ -79,6 +79,7 @@ private sealed interface Screen {
     data class Browse(val addonId: String, val addonName: String, val stack: List<String?> = listOf(null)) : Screen
     data object Search : Screen
     data class Player(val addonId: String, val itemId: String, val title: String, val returnTo: Screen) : Screen
+    data class Details(val addonId: String, val itemId: String, val title: String, val returnTo: Screen) : Screen
     data object Settings : Screen
     data class AddonSettings(val addon: AddonRecord) : Screen
     data class LinkAccount(val addon: AddonRecord, val returnTo: Screen = AddonSettings(addon)) : Screen
@@ -86,14 +87,15 @@ private sealed interface Screen {
     data object Diagnostics : Screen
 }
 
-/** The screen Back eventually leads to: the player and Link account return to where they were opened. */
+/** The screen Back eventually leads to: the player, details and Link account return to where they were opened. */
 private val Screen.base: Screen get() = when (this) {
     is Screen.Player -> returnTo.base
+    is Screen.Details -> returnTo.base
     is Screen.LinkAccount -> returnTo.base
     else -> this
 }
 
-private data class BrowseKey(val addonId: String, val path: String?)
+internal data class BrowseKey(val addonId: String, val path: String?)
 
 /** Submitted search: Load more repeats this query, not whatever is typed now. */
 private data class SearchResults(
@@ -131,6 +133,7 @@ fun RvahTvApp(
     packagesDir: File?,
     trustedKeys: List<String>,
 ) {
+    ArtworkLoader()
     RvahTheme {
         Box(Modifier.fillMaxSize().background(Background)) {
             var core by remember { mutableStateOf<AndroidCore?>(null) }
@@ -193,16 +196,34 @@ private fun AppNavigation(
         if (base != Screen.Search) search = SearchModel()
     }
     LaunchedEffect(refresh) {
-        onIo { core.addons() }
+        onIo {
+            seedDevSecrets(core)
+            core.addons()
+        }
             .onSuccess {
                 addons = it
                 addonsError = null
             }
             .onFailure { addonsError = it.userMessage() }
     }
+    // Discover rows per add-on, kept until Home so Back finds the same poster.
+    val discover = remember { mutableMapOf<String, DiscoverState>() }
+    // Where Back leaves Search for, when a details page opened it.
+    var searchBack by remember { mutableStateOf<Screen?>(null) }
     val goHome = {
         refresh++
+        discover.clear()
+        searchBack = null
         screen = Screen.Home
+    }
+    val hasDetails: (String) -> Boolean = { id -> addons.any { it.id == id && "details" in it.capabilities } }
+    // A title opens its details page when its add-on has them; else it plays.
+    val open: (String, String, String, Screen) -> Unit = { addonId, itemId, title, from ->
+        screen = if (hasDetails(addonId)) {
+            Screen.Details(addonId, itemId, title, from)
+        } else {
+            Screen.Player(addonId, itemId, title, from)
+        }
     }
     val searchable = addons.filter { it.status == "enabled" && "search" in it.capabilities }
     // Where an add-on's sign-in error leads: device sign-in when it has one.
@@ -234,9 +255,31 @@ private fun AppNavigation(
             listings = browsed,
             scope = scope,
             signIn = addons.firstOrNull { it.id == current.addonId }?.let { signInFor(it, current) },
+            discover = if (hasDetails(current.addonId)) discover.getOrPut(current.addonId) { DiscoverState(current.addonId) } else null,
             onNavigate = { screen = it },
-            onPlay = { itemId, title -> screen = Screen.Player(current.addonId, itemId, title, current) },
+            onPlay = { itemId, title -> open(current.addonId, itemId, title, current) },
             onExit = goHome,
+        )
+        is Screen.Details -> DetailsScreen(
+            core = core,
+            addonId = current.addonId,
+            itemId = current.itemId,
+            fallbackTitle = current.title,
+            // Add-ons that can find and play the title.
+            players = addons.filter {
+                it.id != current.addonId && it.status == "enabled" &&
+                    "search" in it.capabilities && "resolve" in it.capabilities
+            },
+            onFind = { finder ->
+                search = SearchModel().apply {
+                    addonId = finder.addon.id
+                    query = finder.query
+                    retryQuery = finder.query
+                }
+                searchBack = current
+                screen = Screen.Search
+            },
+            onExit = { screen = current.returnTo },
         )
         Screen.Search -> SearchScreen(
             core = core,
@@ -244,8 +287,12 @@ private fun AppNavigation(
             model = search,
             scope = scope,
             signIn = { addon -> signInFor(addon, Screen.Search) },
-            onPlay = { addonId, itemId, title -> screen = Screen.Player(addonId, itemId, title, Screen.Search) },
-            onExit = goHome,
+            onPlay = { addonId, itemId, title -> open(addonId, itemId, title, Screen.Search) },
+            onExit = {
+                val back = searchBack
+                searchBack = null
+                if (back != null) screen = back else goHome()
+            },
         )
         is Screen.Player -> PlayerScreen(
             core = core,
@@ -337,6 +384,8 @@ private fun BrowseScreen(
     scope: CoroutineScope,
     /** Label and action offered when the add-on needs an account. */
     signIn: Pair<String, () -> Unit>?,
+    /** Set for add-ons with details pages: their root shows as poster rows. */
+    discover: DiscoverState?,
     onNavigate: (Screen) -> Unit,
     onPlay: (itemId: String, title: String) -> Unit,
     onExit: () -> Unit,
@@ -370,6 +419,19 @@ private fun BrowseScreen(
             }
             loaded == null -> Body("Loading…")
             loaded.entries.isEmpty() && !loaded.hasMore -> Body("Nothing here.")
+            discover != null && browse.stack.size == 1 && loaded.entries.all { it is CatalogEntry.Directory } ->
+                DiscoverRows(
+                    core = core,
+                    rows = loaded.entries.filterIsInstance<CatalogEntry.Directory>(),
+                    state = discover,
+                    scope = scope,
+                    onOpen = { entry ->
+                        when (entry) {
+                            is CatalogEntry.Directory -> onNavigate(browse.copy(stack = browse.stack + entry.path))
+                            is CatalogEntry.Media -> onPlay(entry.id, entry.title)
+                        }
+                    },
+                )
             // Each level gets its own scroll and focus state.
             else -> key(level) {
                 ListingView(
@@ -443,7 +505,7 @@ private fun entryLabel(entry: CatalogEntry): String = when (entry) {
  * applies to whatever the listing is by then; [update] skips a listing that
  * is gone, and [Listing.appended] skips one reloaded meanwhile.
  */
-private fun <T> CoroutineScope.loadMore(
+internal fun <T> CoroutineScope.loadMore(
     update: ((Listing<T>) -> Listing<T>) -> Unit,
     fetch: (cursor: String) -> Pair<List<T>, String?>,
 ) {
@@ -1007,7 +1069,7 @@ private fun DiagnosticsScreen(core: AndroidCore, onExit: () -> Unit) {
  * rethrows cancellation, so leaving a screen never reports "cancelled" as a
  * failure into shared state such as the player.
  */
-private suspend fun <T> onIo(block: () -> T): Result<T> = try {
+internal suspend fun <T> onIo(block: () -> T): Result<T> = try {
     Result.success(withContext(Dispatchers.IO) { block() })
 } catch (cancelled: CancellationException) {
     throw cancelled
@@ -1016,7 +1078,7 @@ private suspend fun <T> onIo(block: () -> T): Result<T> = try {
 }
 
 @Composable
-private fun Page(title: String, content: @Composable () -> Unit) {
+internal fun Page(title: String, content: @Composable () -> Unit) {
     Column(Modifier.fillMaxSize().padding(48.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
         Text(title, fontSize = 34.sp, color = Primary)
         content()
@@ -1024,7 +1086,7 @@ private fun Page(title: String, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun Body(text: String, color: Color = Primary) {
+internal fun Body(text: String, color: Color = Primary) {
     Text(text, color = color, fontSize = 18.sp)
 }
 
@@ -1033,7 +1095,7 @@ private fun Body(text: String, color: Color = Primary) {
  * whenever [key] changes, so every screen starts with a focused control.
  */
 @Composable
-private fun rememberInitialFocus(key: Any?, enabled: Boolean = true): FocusRequester {
+internal fun rememberInitialFocus(key: Any?, enabled: Boolean = true): FocusRequester {
     val requester = remember { FocusRequester() }
     LaunchedEffect(key, enabled) {
         if (!enabled) return@LaunchedEffect
