@@ -1238,6 +1238,7 @@ mod tests {
     fn details_build_the_trailer_link_from_the_key() {
         let record = ItemDetailsRecord::from(rvah_addon_sdk::ItemDetails {
             item: movie(),
+            series_title: None,
             tagline: Some("Beep beep.".into()),
             genres: vec!["Comedy".into(), "Animation".into()],
             released: Some("2026-03-14".into()),

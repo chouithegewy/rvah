@@ -255,6 +255,9 @@ impl fmt::Debug for Credentials {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ItemDetails {
     pub item: MediaItem,
+    /// For an episode, the series it belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tagline: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

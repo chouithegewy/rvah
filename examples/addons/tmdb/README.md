@@ -12,6 +12,10 @@ playable: the TV's details page finds the title in your other add-ons
   rows can be listed. "In theaters" and "Coming soon" follow the `region`
   setting (default `US`); everything follows `language` (default `en-US`).
 - **search** — TMDB's multi search, films and series only.
+- **seasons and episodes** — a series (`tv:<id>`) lists its seasons,
+  specials last; a season (`tv:<id>/season/<n>`) lists its episodes
+  (`tv:<id>:s<n>e<m>`), whose details page names the series and carries
+  its IMDb id, so a sources add-on can find releases of the episode.
 - **details** — `/movie/{id}` or `/tv/{id}` with videos: genres, runtime,
   tagline, release date, IMDb id, and up to three YouTube trailers or
   teasers (official trailers first). The TV builds the YouTube link from

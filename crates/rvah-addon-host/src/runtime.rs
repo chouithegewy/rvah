@@ -387,6 +387,7 @@ mod tests {
                     artwork: Default::default(),
                     provider_ids: Default::default(),
                 },
+                series_title: None,
                 tagline: None,
                 genres: vec!["Comedy".into()],
                 released: Some("2026-03-14".into()),
