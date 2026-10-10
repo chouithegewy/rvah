@@ -361,12 +361,13 @@ internal fun DetailsScreen(
                         ) { Text(if (index == 0) "Play trailer" else trailer.name) }
                     }
                 }
-                shown?.synopsis?.let {
-                    Text(it, color = Primary, fontSize = 18.sp, maxLines = 6, overflow = TextOverflow.Ellipsis)
-                }
                 notice?.let { Body(it, ErrorText) }
                 if (players.isEmpty() && shown != null) {
-                    Body("Install an add-on that can search and play, such as Real-Debrid, to watch this.", Secondary)
+                    // Real-Debrid before 0.3.0, say, plays but cannot search.
+                    Body("To watch this, install or update an add-on that can search and play, such as Real-Debrid.", Secondary)
+                }
+                shown?.synopsis?.let {
+                    Text(it, color = Primary, fontSize = 18.sp, maxLines = 6, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
