@@ -1,10 +1,10 @@
 [addon]
 id = "com.real-debrid.downloads"
 name = "Real-Debrid Downloads"
-version = "0.2.0"
+version = "0.3.0"
 sdk = ">=0.1, <0.2"
 entry = "module.wasm"
-capabilities = ["catalog", "resolve", "account_status", "auth"]
+capabilities = ["catalog", "search", "resolve", "account_status", "auth"]
 
 [permissions]
 network = ["api.real-debrid.com"]

@@ -29,12 +29,10 @@ enum Op {
         cursor: Option<String>,
     },
     Search {
-        #[allow(dead_code)]
         query: String,
         #[allow(dead_code)]
         #[serde(default)]
         filters: Vec<Filter>,
-        #[allow(dead_code)]
         cursor: Option<String>,
     },
     Resolve {
@@ -69,10 +67,9 @@ fn dispatch(input: &[u8], host: &dyn Host) -> Result<Response, AddonError> {
         .map_err(|e| AddonError::new(AddonErrorCode::Malformed, format!("op: {e}")))?;
     match op {
         Op::List { cursor, .. } => rd::list(host, cursor.as_deref()).map(Response::Page),
-        Op::Search { .. } => Err(AddonError::new(
-            AddonErrorCode::Internal,
-            "search is not declared by this add-on",
-        )),
+        Op::Search { query, cursor, .. } => {
+            rd::search(host, &query, cursor.as_deref()).map(Response::Page)
+        }
         Op::Resolve { item_id, .. } => rd::resolve(host, &item_id).map(Response::Resolve),
         Op::AccountStatus => rd::account(host).map(Response::Account),
         Op::AuthBegin => auth::begin(host).map(Response::DeviceAuth),
@@ -140,7 +137,14 @@ mod tests {
     }
 
     impl Host for MockHost {
-        fn call(&self, request: Value) -> Result<Value, AddonError> {
+        fn call(&self, request: Value) -> Result<Vec<u8>, AddonError> {
+            self.answer(request)
+                .map(|payload| serde_json::to_vec(&payload).unwrap())
+        }
+    }
+
+    impl MockHost {
+        fn answer(&self, request: Value) -> Result<Value, AddonError> {
             match request["fn"].as_str().unwrap() {
                 "http_fetch" => {
                     let url = request["req"]["url"].as_str().unwrap().to_string();
@@ -322,9 +326,9 @@ mod tests {
         assert_eq!(wire["kind"], "page");
         assert_eq!(wire["value"]["items"][0]["kind"], "media");
 
-        // Undeclared op → structured error, not a panic.
-        let err = dispatch(br#"{"op":"search","query":"x","cursor":null}"#, &host).unwrap_err();
-        assert_eq!(err.code, AddonErrorCode::Internal);
+        // Unknown op → structured error, not a panic.
+        let err = dispatch(br#"{"op":"subtitles","item_id":"x"}"#, &host).unwrap_err();
+        assert_eq!(err.code, AddonErrorCode::Malformed);
     }
 
     const CODE_URL: &str =
@@ -471,5 +475,146 @@ mod tests {
         // A device link can be refreshed, so report it as an auth failure.
         host.secrets.insert("oauth_client".into(), "{}".into());
         assert_eq!(rd::account(&host).unwrap_err().code, AddonErrorCode::Auth);
+    }
+
+    fn search_url(page: u32) -> String {
+        format!("https://api.real-debrid.com/rest/1.0/downloads?page={page}&limit=100")
+    }
+
+    /// One page of `count` downloads named `prefix.N.mkv`, ids `prefix-N`.
+    fn history(prefix: &str, count: usize) -> Value {
+        Value::Array(
+            (0..count)
+                .map(|n| {
+                    entry(
+                        &format!("{prefix}-{n}"),
+                        &format!("{prefix}.{n}.mkv"),
+                        &format!("https://x.download.real-debrid.com/{prefix}-{n}"),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn titles(page: &Page) -> Vec<String> {
+        page.items
+            .iter()
+            .map(|item| match item {
+                PageItem::Media(m) => m.title.clone(),
+                other => panic!("expected media, got {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn search_matches_every_word_in_any_order_ignoring_case_and_separators() {
+        let name = "Coyote.vs.Acme.2026.2160p.WEB-DL.mkv";
+        assert!(rd::Query::new("coyote acme").matches(name));
+        assert!(rd::Query::new("ACME Coyote").matches(name));
+        assert!(rd::Query::new("coyote vs. acme (2026)").matches(name));
+        assert!(rd::Query::new("2160").matches(name));
+        assert!(rd::Query::new("web dl").matches(name));
+        assert!(!rd::Query::new("coyote roadrunner").matches(name));
+        assert!(!rd::Query::new("2025").matches(name));
+    }
+
+    #[test]
+    fn search_scans_the_history_and_returns_only_matches() {
+        let mut host = rd_host();
+        let mut first = history("Other", 100);
+        first[3] = entry(
+            "m1",
+            "Coyote.vs.Acme.2026.mkv",
+            "https://x.download.real-debrid.com/m1",
+        );
+        first[60] = entry(
+            "m2",
+            "coyote_vs_acme_extras.mp4",
+            "https://x.download.real-debrid.com/m2",
+        );
+        host.route(&search_url(1), 200, first);
+        let mut last = history("More", 7);
+        last[6] = entry(
+            "m3",
+            "Acme Coyote Shorts.mkv",
+            "https://x.download.real-debrid.com/m3",
+        );
+        host.route(&search_url(2), 200, last);
+
+        let page = rd::search(&host, "coyote acme", None).unwrap();
+        assert_eq!(
+            titles(&page),
+            [
+                "Coyote.vs.Acme.2026.mkv",
+                "coyote_vs_acme_extras.mp4",
+                "Acme Coyote Shorts.mkv"
+            ]
+        );
+        // Page 2 was short: the whole history has been searched.
+        assert_eq!(page.cursor_next, None);
+
+        // Matches resolve from the cache, without another scan.
+        let before = host.http_calls.lock().unwrap().len();
+        let ResolveResult::Playables(sources) = rd::resolve(&host, "m3").unwrap() else {
+            panic!("expected playables");
+        };
+        assert_eq!(sources[0].url, "https://x.download.real-debrid.com/m3");
+        assert_eq!(host.http_calls.lock().unwrap().len(), before);
+    }
+
+    #[test]
+    fn search_reads_a_bounded_number_of_pages_per_call() {
+        let mut host = rd_host();
+        for page in 1..=rd::SEARCH_SCAN_PAGES + 1 {
+            host.route(&search_url(page), 200, history(&format!("P{page}"), 100));
+        }
+        // Past the end of the history.
+        host.route(&search_url(rd::SEARCH_SCAN_PAGES + 2), 200, json!([]));
+        let page = rd::search(&host, "nothing matches", None).unwrap();
+        assert!(page.items.is_empty());
+        let next = (rd::SEARCH_SCAN_PAGES + 1).to_string();
+        assert_eq!(page.cursor_next.as_deref(), Some(next.as_str()));
+        assert_eq!(
+            host.http_calls.lock().unwrap().len(),
+            rd::SEARCH_SCAN_PAGES as usize
+        );
+
+        // "Load more" carries on from the next unread page.
+        let last = rd::SEARCH_SCAN_PAGES + 1;
+        let more = rd::search(&host, &format!("p{last}.71"), Some(&next)).unwrap();
+        assert_eq!(titles(&more), [format!("P{last}.71.mkv")]);
+    }
+
+    #[test]
+    fn a_query_without_words_finds_nothing_without_calling_the_api() {
+        let host = rd_host();
+        let page = rd::search(&host, " .-_ ", None).unwrap();
+        assert!(page.items.is_empty());
+        assert_eq!(page.cursor_next, None);
+        assert!(host.http_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn dispatch_answers_search_with_a_page() {
+        let mut host = rd_host();
+        host.route(
+            &search_url(1),
+            200,
+            json!([entry(
+                "d1",
+                "Movie.One.2024.mkv",
+                "https://x.download.real-debrid.com/d1"
+            )]),
+        );
+        let out = serde_json::to_value(
+            dispatch(
+                br#"{"op":"search","query":"movie one","cursor":null}"#,
+                &host,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(out["kind"], "page");
+        assert_eq!(out["value"]["items"].as_array().unwrap().len(), 1);
     }
 }

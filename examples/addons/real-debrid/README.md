@@ -7,6 +7,10 @@ crate compiled to `wasm32-unknown-unknown`, speaking ABI v0.1
 
 - **catalog** — `GET /rest/1.0/downloads`, paged by RD's page numbers
   (the RVAH cursor); item id → direct URL is cached in add-on storage.
+- **search** — RD cannot search the history, so the add-on reads it newest
+  first, 200 entries per call, and returns the downloads whose file name
+  contains every word of the query, in any order (`coyote acme` finds
+  `Coyote.vs.Acme.2026.mkv`). **Load more** reads the next 200.
 - **resolve** — the cached direct URL (RD download entries are already
   unrestricted), with a history re-scan fallback.
 - **account_status** — `GET /rest/1.0/user`.
@@ -41,7 +45,13 @@ printf '%s' "$YOUR_TOKEN" | rvah secret-set com.real-debrid.downloads api_token 
 
 The permission grant covers exactly `api.real-debrid.com`, 64 KiB of
 storage, and the two named secrets. Version 0.2.0 adds `auth` and
-`oauth_client`, so updating from 0.1.0 asks for approval again.
+`oauth_client`, so updating from 0.1.0 asks for approval again; 0.3.0 adds
+search without new permissions.
+
+Each call gets 50M instructions of fuel and 2 s. Host answers arrive as
+JSON with HTTP bodies as arrays of byte values, so `host.rs` decodes them
+without `serde_json::Value` and reads each body once; that keeps a page of
+100 history entries near 12M fuel.
 
 ## Tests
 

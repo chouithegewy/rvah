@@ -1,6 +1,6 @@
 [package]
 name = "rvah-addon-real-debrid"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "RVAH add-on: browse and play your Real-Debrid downloads history"
@@ -12,7 +12,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 rvah-addon-sdk = { path = "../../../crates/rvah-addon-sdk" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# raw_value: host answers are decoded once, straight into their types.
+serde_json = { version = "1", features = ["raw_value"] }
 
 # Standalone crate: not part of the host workspace.
 [workspace]

@@ -15,6 +15,13 @@ use crate::host::{self, Host};
 
 const API: &str = "https://api.real-debrid.com/rest/1.0";
 const PAGE_LIMIT: usize = 50;
+/// Search reads the history in pages of RD's default size.
+const SEARCH_PAGE_LIMIT: usize = 100;
+/// History pages one search call reads. A call gets 50M fuel and 2 s; a
+/// page of 100 typical entries takes about 12M fuel under Wasmi, plus a
+/// request, and a Shield TV runs Wasmi roughly ten times slower than a
+/// desktop. Two pages leave room for long file names and a slow network.
+pub(crate) const SEARCH_SCAN_PAGES: u32 = 2;
 /// How many history pages `resolve` will scan when the storage cache misses.
 const RESOLVE_SCAN_PAGES: u32 = 10;
 
@@ -66,8 +73,12 @@ fn api_get(host: &dyn Host, path_query: &str) -> Result<HttpResponse, AddonError
     }
 }
 
-fn downloads_page(host: &dyn Host, page: u32) -> Result<Vec<DownloadEntry>, AddonError> {
-    let resp = api_get(host, &format!("/downloads?page={page}&limit={PAGE_LIMIT}"))?;
+fn downloads_page(
+    host: &dyn Host,
+    page: u32,
+    limit: usize,
+) -> Result<Vec<DownloadEntry>, AddonError> {
+    let resp = api_get(host, &format!("/downloads?page={page}&limit={limit}"))?;
     if resp.body.is_empty() {
         // RD answers 204 with an empty body past the last page.
         return Ok(Vec::new());
@@ -107,16 +118,21 @@ fn to_item(entry: &DownloadEntry) -> MediaItem {
     }
 }
 
+/// The history page a cursor names: RD's own page numbers.
+fn page_number(cursor: Option<&str>) -> Result<u32, AddonError> {
+    match cursor {
+        Some(c) => c
+            .parse()
+            .map_err(|_| AddonError::new(AddonErrorCode::Malformed, "bad cursor")),
+        None => Ok(1),
+    }
+}
+
 /// Catalog: one flat listing of the account's downloads history, paged by
 /// RD's own page numbers (the cursor).
 pub fn list(host: &dyn Host, cursor: Option<&str>) -> Result<Page, AddonError> {
-    let page_no: u32 = match cursor {
-        Some(c) => c
-            .parse()
-            .map_err(|_| AddonError::new(AddonErrorCode::Malformed, "bad cursor"))?,
-        None => 1,
-    };
-    let entries = downloads_page(host, page_no)?;
+    let page_no = page_number(cursor)?;
+    let entries = downloads_page(host, page_no, PAGE_LIMIT)?;
     for entry in &entries {
         remember(host, entry);
     }
@@ -127,6 +143,61 @@ pub fn list(host: &dyn Host, cursor: Option<&str>) -> Result<Page, AddonError> {
             .iter()
             .map(|e| PageItem::Media(to_item(e)))
             .collect(),
+    })
+}
+
+/// A search query as lowercase words. Anything but a letter or digit
+/// separates words, so "coyote vs. acme" and "Coyote.vs.Acme_2026" compare.
+pub(crate) struct Query(Vec<String>);
+
+impl Query {
+    pub(crate) fn new(text: &str) -> Self {
+        Query(
+            text.split(|c: char| !c.is_alphanumeric())
+                .filter(|word| !word.is_empty())
+                .map(str::to_lowercase)
+                .collect(),
+        )
+    }
+
+    /// Every query word appears in the file name, in any order; a word may
+    /// be the start or part of a longer one ("2160" finds "2160p").
+    pub(crate) fn matches(&self, filename: &str) -> bool {
+        let name = Query::new(filename).0.join(" ");
+        self.0.iter().all(|word| name.contains(word.as_str()))
+    }
+}
+
+/// Search: RD cannot search the history itself, so read it newest first,
+/// [`SEARCH_SCAN_PAGES`] pages per call, keeping the downloads whose file
+/// name has every query word. The cursor is the next unread page.
+pub fn search(host: &dyn Host, query: &str, cursor: Option<&str>) -> Result<Page, AddonError> {
+    let query = Query::new(query);
+    let mut items = Vec::new();
+    let mut next = None;
+    if !query.0.is_empty() {
+        let first = page_number(cursor)?;
+        for page_no in first..first + SEARCH_SCAN_PAGES {
+            let entries = downloads_page(host, page_no, SEARCH_PAGE_LIMIT)?;
+            for entry in entries.iter().filter(|e| query.matches(&e.filename)) {
+                // Only matches: resolve needs them, and each write is a host call.
+                remember(host, entry);
+                items.push(PageItem::Media(to_item(entry)));
+            }
+            if entries.len() < SEARCH_PAGE_LIMIT {
+                next = None;
+                break;
+            }
+            next = Some(page_no + 1);
+            if items.len() >= PAGE_LIMIT {
+                break;
+            }
+        }
+    }
+    Ok(Page {
+        items,
+        cursor_next: next.map(|page| page.to_string()),
+        total_hint: None,
     })
 }
 
@@ -151,7 +222,7 @@ pub fn resolve(host: &dyn Host, item_id: &str) -> Result<ResolveResult, AddonErr
         }
     }
     for page in 1..=RESOLVE_SCAN_PAGES {
-        let entries = downloads_page(host, page)?;
+        let entries = downloads_page(host, page, PAGE_LIMIT)?;
         let last_page = entries.len() < PAGE_LIMIT;
         for entry in &entries {
             remember(host, entry);
