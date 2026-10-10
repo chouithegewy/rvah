@@ -273,6 +273,9 @@ internal fun DetailsScreen(
     fallbackTitle: String,
     players: List<AddonRecord>,
     onFind: (Finder) -> Unit,
+    /** Null when no add-ons can find and play releases. */
+    onFindSources: ((ItemDetailsRecord) -> Unit)?,
+    onEpisodes: (ItemDetailsRecord) -> Unit,
     onExit: () -> Unit,
 ) {
     BackHandler(onBack = onExit)
@@ -355,10 +358,24 @@ internal fun DetailsScreen(
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    // The first action takes focus: Episodes for a series,
+                    // else Find sources, else the first Find in.
+                    val series = shown?.kind == "series"
+                    val sourcesFirst = shown != null && !series && onFindSources != null
+                    if (shown != null && series) {
+                        Button(onClick = { onEpisodes(shown) }, modifier = Modifier.focusRequester(first)) {
+                            Text("Episodes", maxLines = 1, softWrap = false)
+                        }
+                    }
+                    if (sourcesFirst && onFindSources != null && shown != null) {
+                        Button(onClick = { onFindSources(shown) }, modifier = Modifier.focusRequester(first)) {
+                            Text("Find sources", maxLines = 1, softWrap = false)
+                        }
+                    }
                     players.forEachIndexed { index, player ->
                         Button(
-                            onClick = { onFind(Finder(player, findQuery(title, shown?.year))) },
-                            modifier = if (index == 0) Modifier.focusRequester(first) else Modifier,
+                            onClick = { onFind(Finder(player, findQuery(shown?.seriesTitle ?: title, shown?.year))) },
+                            modifier = if (index == 0 && !series && !sourcesFirst) Modifier.focusRequester(first) else Modifier,
                         ) { Text("Find in ${player.name}", maxLines = 1, softWrap = false) }
                     }
                     shown?.trailers?.forEachIndexed { index, trailer ->
@@ -371,7 +388,7 @@ internal fun DetailsScreen(
                                     "No app on this TV opens YouTube links."
                                 }
                             },
-                            modifier = if (index == 0 && players.isEmpty()) Modifier.focusRequester(first) else Modifier,
+                            modifier = if (index == 0 && players.isEmpty() && !series && !sourcesFirst) Modifier.focusRequester(first) else Modifier,
                         ) { Text(if (index == 0) "Play trailer" else trailer.name, maxLines = 1, softWrap = false) }
                     }
                 }

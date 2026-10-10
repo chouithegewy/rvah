@@ -26,5 +26,9 @@ class DevSecretsTest {
         )
         assertEquals(listOf(SeedSecret(TMDB_ADDON, "tmdb_key", "key")), devSecrets(mapOf("TMDB_API_KEY" to "key")))
         assertEquals(emptyList<SeedSecret>(), devSecrets(mapOf("OTHER" to "x")))
+        assertEquals(
+            listOf(SeedSecret(PROWLARR_ADDON, "api_key", "pk")),
+            devSecrets(mapOf("PROWLARR_API_KEY" to "pk", "PROWLARR_URL" to "https://x")),
+        )
     }
 }

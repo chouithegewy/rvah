@@ -7,6 +7,7 @@ import uniffi.rvah_android.AndroidCore
 data class SeedSecret(val addonId: String, val name: String, val value: String)
 
 const val TMDB_ADDON = "org.themoviedb.discover"
+const val PROWLARR_ADDON = "com.rvah.sources.prowlarr"
 
 /**
  * Which `.env` variable feeds which add-on secret. For the same secret the
@@ -16,6 +17,7 @@ private val SEEDS = listOf(
     Triple("TMDB_READ_ACCESS_TOKEN", TMDB_ADDON, "tmdb_key"),
     Triple("TMDB_API_KEY", TMDB_ADDON, "tmdb_key"),
     Triple("MDBLIST_API_KEY", TMDB_ADDON, "mdblist_key"),
+    Triple("PROWLARR_API_KEY", PROWLARR_ADDON, "api_key"),
 )
 
 /** `NAME=value;NAME=value`, as Gradle writes `BuildConfig.DEV_SECRETS`. */

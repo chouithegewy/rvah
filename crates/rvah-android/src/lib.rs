@@ -172,7 +172,15 @@ pub enum CatalogEntry {
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ItemDetailsRecord {
     pub id: String,
+    /// `movie`, `series`, `episode`, …
+    pub kind: String,
     pub title: String,
+    /// For an episode, its series; sources are searched by it.
+    pub series_title: Option<String>,
+    /// The film's or series' IMDb id.
+    pub imdb_id: Option<String>,
+    pub season: Option<u32>,
+    pub episode: Option<u32>,
     pub year: Option<u16>,
     pub synopsis: Option<String>,
     pub runtime_secs: Option<u32>,
@@ -267,7 +275,15 @@ impl From<rvah_addon_sdk::ItemDetails> for ItemDetailsRecord {
         let item = details.item;
         ItemDetailsRecord {
             id: item.id,
+            kind: serde_json::to_value(item.content_type)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default(),
             title: item.title,
+            series_title: details.series_title,
+            imdb_id: item.provider_ids.get("imdb").cloned(),
+            season: item.season,
+            episode: item.episode,
             year: item.year,
             synopsis: item.synopsis,
             runtime_secs: item.runtime_secs,
@@ -1253,6 +1269,8 @@ mod tests {
             }],
         });
         assert_eq!(record.title, "Coyote vs. Acme");
+        assert_eq!(record.kind, "movie");
+        assert_eq!(record.series_title, None);
         assert_eq!(record.year, Some(2026));
         assert_eq!(record.genres, ["Comedy", "Animation"]);
         assert_eq!(record.trailers[0].name, "Official Trailer");
