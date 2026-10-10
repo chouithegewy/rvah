@@ -274,7 +274,9 @@ private fun AppNavigation(
 
     when (val current = screen) {
         Screen.Home -> HomeScreen(
-            addons = addons,
+            // Only what can be browsed; the rest (a sources add-on, say)
+            // is in Settings.
+            addons = addons.filter { "catalog" in it.capabilities },
             error = addonsError,
             canSearch = searchable.isNotEmpty(),
             onOpen = { addon ->
