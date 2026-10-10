@@ -5,6 +5,8 @@
 //! [`HostApi`], which the host capability-checks at runtime.
 
 mod error;
+#[cfg(feature = "guest")]
+pub mod guest;
 mod provider;
 mod types;
 

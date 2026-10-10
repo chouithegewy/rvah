@@ -431,6 +431,56 @@ mod tests {
         assert_eq!(manifest_caps, [Capability::Details]);
     }
 
+    /// The SDK's guest mirrors must read every op the host sends, and the
+    /// host must read every answer a guest sends.
+    #[test]
+    fn guest_wire_types_match_the_host() {
+        use rvah_addon_sdk::guest::{Op, Response};
+        let ops = [
+            AddonOp::List {
+                path: Some("/a".into()),
+                cursor: Some("2".into()),
+            },
+            AddonOp::Search {
+                query: "q".into(),
+                filters: vec![],
+                cursor: None,
+            },
+            AddonOp::Resolve {
+                item_id: "i".into(),
+                source_id: None,
+            },
+            AddonOp::AccountStatus,
+            AddonOp::AuthBegin,
+            AddonOp::AuthPoll {
+                device_code: "d".into(),
+            },
+            AddonOp::AuthRefresh,
+            AddonOp::Details {
+                item_id: "i".into(),
+            },
+        ];
+        for op in ops {
+            let wire = serde_json::to_vec(&op).unwrap();
+            let guest: Op = serde_json::from_slice(&wire).unwrap();
+            assert_eq!(
+                format!("{op:?}").split([' ', '{']).next(),
+                format!("{guest:?}").split([' ', '{']).next()
+            );
+        }
+        let answers = [
+            Response::Page(Page::default()),
+            Response::Account(AccountStatus::SignedOut),
+            Response::AuthPoll(AuthPoll::Pending),
+            Response::Credentials(Credentials::default()),
+        ];
+        for answer in answers {
+            let wire = serde_json::to_vec(&answer).unwrap();
+            let host: AddonResponse = serde_json::from_slice(&wire).unwrap();
+            assert_eq!(serde_json::to_vec(&host).unwrap(), wire);
+        }
+    }
+
     #[test]
     fn capability_gate_denies_undeclared_op() {
         // Provider implements list, but the manifest never declared catalog.
