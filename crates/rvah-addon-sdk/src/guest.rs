@@ -302,6 +302,8 @@ fn ok_payload(response: &[u8]) -> Result<Vec<u8>, AddonError> {
 #[derive(Default)]
 pub struct ScriptedHost {
     pub http: BTreeMap<String, (u16, Vec<u8>)>,
+    /// Response headers for a routed URL.
+    pub response_headers: BTreeMap<String, BTreeMap<String, String>>,
     pub secrets: BTreeMap<String, String>,
     pub settings: BTreeMap<String, String>,
     pub storage: std::sync::Mutex<BTreeMap<String, Vec<u8>>>,
@@ -313,6 +315,24 @@ impl ScriptedHost {
     pub fn route(&mut self, url: &str, status: u16, body: &impl Serialize) {
         let body = serde_json::to_vec(body).expect("route body serializes");
         self.http.insert(url.to_string(), (status, body));
+    }
+
+    /// Like [`route`](Self::route), also answering with `headers`.
+    pub fn route_with_headers(
+        &mut self,
+        url: &str,
+        status: u16,
+        headers: &[(&str, &str)],
+        body: &impl Serialize,
+    ) {
+        self.route(url, status, body);
+        self.response_headers.insert(
+            url.to_string(),
+            headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        );
     }
 
     /// Every request so far, in order.
@@ -337,10 +357,15 @@ impl Host for ScriptedHost {
                     .get(&req.url)
                     .cloned()
                     .unwrap_or((404, b"not routed".to_vec()));
+                let headers = self
+                    .response_headers
+                    .get(&req.url)
+                    .cloned()
+                    .unwrap_or_default();
                 self.requests.lock().expect("requests lock").push(req);
                 serde_json::to_value(HttpResponse {
                     status,
-                    headers: BTreeMap::new(),
+                    headers,
                     body,
                 })
                 .expect("answer serializes")
