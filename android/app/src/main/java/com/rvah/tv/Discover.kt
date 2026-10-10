@@ -308,7 +308,15 @@ internal fun DetailsScreen(
                 }
             }
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                Text(shown?.title ?: fallbackTitle, fontSize = 36.sp, color = Primary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                // The theme's line height suits body text; a wrapped title needs its own.
+                Text(
+                    shown?.title ?: fallbackTitle,
+                    fontSize = 36.sp,
+                    lineHeight = 44.sp,
+                    color = Primary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 shown?.tagline?.let { Text(it, color = Secondary, fontStyle = FontStyle.Italic, fontSize = 18.sp) }
                 if (shown != null) {
                     val facts = detailsLine(shown.year, shown.runtimeSecs, shown.genres)
@@ -340,12 +348,16 @@ internal fun DetailsScreen(
                 // Actions before the synopsis, so they are always on screen.
                 val first = rememberInitialFocus(shown != null)
                 val title = shown?.title ?: fallbackTitle
-                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                // Wraps like the ratings: a long trailer name must not squeeze a button.
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
                     players.forEachIndexed { index, player ->
                         Button(
                             onClick = { onFind(Finder(player, findQuery(title, shown?.year))) },
                             modifier = if (index == 0) Modifier.focusRequester(first) else Modifier,
-                        ) { Text("Find in ${player.name}") }
+                        ) { Text("Find in ${player.name}", maxLines = 1, softWrap = false) }
                     }
                     shown?.trailers?.forEachIndexed { index, trailer ->
                         Button(
@@ -358,7 +370,7 @@ internal fun DetailsScreen(
                                 }
                             },
                             modifier = if (index == 0 && players.isEmpty()) Modifier.focusRequester(first) else Modifier,
-                        ) { Text(if (index == 0) "Play trailer" else trailer.name) }
+                        ) { Text(if (index == 0) "Play trailer" else trailer.name, maxLines = 1, softWrap = false) }
                     }
                 }
                 notice?.let { Body(it, ErrorText) }
