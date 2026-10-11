@@ -24,6 +24,8 @@ private val SEEDS = listOf("com.rvah.discover", TMDB_ADDON).flatMap { addon ->
     Triple("TRAKT_CLIENT_ID", addon, "client_id")
 } + listOf(
     Triple("PROWLARR_API_KEY", PROWLARR_ADDON, "api_key"),
+    // A private token (real-debrid.com/apitoken) instead of Link account.
+    Triple("REAL_DEBRID_API_TOKEN", "com.real-debrid.downloads", "api_token"),
 )
 
 /** `NAME=value;NAME=value`, as Gradle writes `BuildConfig.DEV_SECRETS`. */

@@ -842,6 +842,35 @@ impl AndroidCore {
             })
     }
 
+    /// Copy `names` from add-on `from`'s secrets into `into`'s, where `into`
+    /// declares the name and has no value yet, as when an add-on that nests
+    /// another takes over its sign-in. Values stay in the vault; the names
+    /// copied come back.
+    pub fn adopt_secrets(
+        &self,
+        from: String,
+        into: String,
+        names: Vec<String>,
+    ) -> Result<Vec<String>, AndroidCoreError> {
+        let manifest = self.installed_manifest(&into)?;
+        let vault_error = |error: VaultError| AndroidCoreError::Storage {
+            reason: error.to_string(),
+        };
+        let mut adopted = Vec::new();
+        for name in names {
+            if !manifest.permissions.secrets.contains(&name)
+                || self.vault.get(&into, &name).map_err(vault_error)?.is_some()
+            {
+                continue;
+            }
+            if let Some(value) = self.vault.get(&from, &name).map_err(vault_error)? {
+                self.vault.set(&into, &name, &value).map_err(vault_error)?;
+                adopted.push(name);
+            }
+        }
+        Ok(adopted)
+    }
+
     /// Turn an add-on off; `enable_addon` turns it back on.
     pub fn disable_addon(&self, addon_id: String) -> Result<(), AndroidCoreError> {
         self.manager
@@ -1801,6 +1830,49 @@ genres = { type = "list", default = "Anime,Drama", enum = ["Anime", "Drama", "Sc
             .install_signed(f.pkg.clone(), keys, preview.permission_hash)
             .unwrap();
         assert_eq!(f.core.addons().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_addon_adopts_only_secrets_it_declares_and_lacks() {
+        let f = installed();
+        // The fixture declares api_token only; another add-on's secrets are
+        // set straight in the vault.
+        f.core
+            .vault
+            .set("com.example.part", "api_token", "from-part")
+            .unwrap();
+        f.core.vault.set("com.example.part", "other", "x").unwrap();
+        let adopted = f
+            .core
+            .adopt_secrets(
+                "com.example.part".into(),
+                ID.into(),
+                vec!["api_token".into(), "other".into()],
+            )
+            .unwrap();
+        assert_eq!(adopted, ["api_token"]);
+        assert_eq!(
+            f.core.vault.get(ID, "api_token").unwrap().as_deref(),
+            Some("from-part")
+        );
+        // What it already has is kept.
+        f.core
+            .vault
+            .set("com.example.part", "api_token", "newer")
+            .unwrap();
+        let adopted = f
+            .core
+            .adopt_secrets(
+                "com.example.part".into(),
+                ID.into(),
+                vec!["api_token".into()],
+            )
+            .unwrap();
+        assert!(adopted.is_empty());
+        assert_eq!(
+            f.core.vault.get(ID, "api_token").unwrap().as_deref(),
+            Some("from-part")
+        );
     }
 
     #[test]

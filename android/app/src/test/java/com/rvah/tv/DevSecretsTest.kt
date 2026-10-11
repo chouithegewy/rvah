@@ -37,5 +37,9 @@ class DevSecretsTest {
             listOf(SeedSecret(DISCOVER_ADDON, "client_id", "cid"), SeedSecret(TRAKT_ADDON, "client_id", "cid")),
             devSecrets(mapOf("TRAKT_CLIENT_ID" to "cid", "TRAKT_REDIRECT_URI" to "https://x")),
         )
+        assertEquals(
+            listOf(SeedSecret("com.real-debrid.downloads", "api_token", "rdtok")),
+            devSecrets(mapOf("REAL_DEBRID_API_TOKEN" to "rdtok")),
+        )
     }
 }

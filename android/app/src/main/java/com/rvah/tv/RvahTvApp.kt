@@ -219,7 +219,9 @@ private fun AppNavigation(
     LaunchedEffect(refresh) {
         onIo {
             seedDevSecrets(core)
-            core.addons()
+            val listed = core.addons()
+            // RVAH Discover folds in the add-ons it nests.
+            if (absorbComponents(core, listed)) core.addons() else listed
         }
             .onSuccess {
                 addons = it
