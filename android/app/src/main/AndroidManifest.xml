@@ -10,6 +10,7 @@
         android:allowBackup="false"
         android:largeHeap="true"
         android:banner="@drawable/tv_banner"
+        android:icon="@drawable/ic_launcher"
         android:label="RVAH"
         android:theme="@style/Theme.RvahTv"
         android:usesCleartextTraffic="false">
