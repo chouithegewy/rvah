@@ -31,7 +31,8 @@ class HomeLayoutTest {
         )
         val layout = homeLayout(addons, roots)
         assertEquals(listOf("New to streaming", "Anime"), layout.discover.map { it.title })
-        assertEquals(listOf("discover"), layout.discover.map { it.tag }.distinct())
+        // One add-on gives every column: no need to name it under each.
+        assertEquals(listOf<String?>(null), layout.discover.map { it.tag }.distinct())
         assertEquals(listOf("com.real-debrid.downloads"), layout.downloads.map { it.addonId })
     }
 
@@ -43,6 +44,8 @@ class HomeLayoutTest {
         )
         val layout = homeLayout(addons, roots)
         assertEquals(listOf("You might like", "Trending"), layout.discover.map { it.title })
+        // Columns from two add-ons: each says whose it is.
+        assertEquals(listOf("trakt", "discover"), layout.discover.map { it.tag })
         assertEquals(listOf(GroupTab(TMDB_ADDON, "Films by genre", "genres/movie")), layout.groups)
         // A disabled RVAH Discover hides nothing.
         val withDisabled = addons + addon(DISCOVER_ADDON, "catalog", status = "disabled")
