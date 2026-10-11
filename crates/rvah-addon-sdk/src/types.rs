@@ -68,6 +68,10 @@ pub struct MediaItem {
     /// Provider-specific external IDs, e.g. `{"imdb": "tt0111161"}`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub provider_ids: BTreeMap<String, String>,
+    /// A short line about the item where it is listed, in place of its year
+    /// and rating: say, a series' next episode ("S2E5 · in 3 days").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -413,6 +417,7 @@ mod tests {
                         ..Default::default()
                     },
                     provider_ids: BTreeMap::from([("imdb".into(), "tt123".into())]),
+                    note: None,
                 }),
             ],
             cursor_next: Some("page-2".into()),

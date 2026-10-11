@@ -824,6 +824,7 @@ fn artwork_reaches_the_ui_only_over_https_from_declared_hosts() {
                     "https://tracker.example.net/pixel.gif",
                 ),
                 provider_ids: Default::default(),
+                note: None,
             }),
             PageItem::Directory(DirectoryItem {
                 id: "d1".into(),
@@ -905,6 +906,7 @@ fn details_get_the_same_artwork_rule_and_only_plain_trailer_keys() {
                 "https://elsewhere.example.net/t.jpg",
             ),
             provider_ids: Default::default(),
+            note: None,
         },
         series_title: None,
         tagline: None,

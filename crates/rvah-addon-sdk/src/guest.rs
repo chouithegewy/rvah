@@ -178,6 +178,34 @@ pub fn http_send(
     http_response(&resp)
 }
 
+/// Like [`http_send`], but an answer longer than `max_answer` bytes as it
+/// crosses from the host is put down unread: `Ok(None)`. Reading costs fuel
+/// by the byte, and a body crosses as a JSON array of numbers, about 3.5
+/// bytes for each of its own; this keeps one large answer from using up a
+/// call's fuel.
+pub fn http_send_within(
+    host: &dyn Host,
+    method: &str,
+    url: &str,
+    headers: BTreeMap<String, String>,
+    body: Option<Vec<u8>>,
+    max_answer: usize,
+) -> Result<Option<HttpResponse>, AddonError> {
+    let resp = host.call(json!({
+        "fn": "http_fetch",
+        "req": crate::HttpRequest {
+            method: method.to_string(),
+            url: url.to_string(),
+            headers,
+            body,
+        },
+    }))?;
+    if resp.len() > max_answer {
+        return Ok(None);
+    }
+    http_response(&resp).map(Some)
+}
+
 /// POST `fields` as `application/x-www-form-urlencoded`.
 pub fn http_post_form(
     host: &dyn Host,
@@ -608,6 +636,18 @@ mod tests {
         assert_eq!(setting_get(&host, "region").unwrap().as_deref(), Some("US"));
         storage_set(&host, "k", b"v").unwrap();
         assert_eq!(storage_get(&host, "k").unwrap().as_deref(), Some(&b"v"[..]));
+    }
+
+    #[test]
+    fn an_answer_too_long_to_read_is_put_down() {
+        let mut host = ScriptedHost::default();
+        let url = "https://api.example.com/big";
+        host.route(url, 200, &"x".repeat(1_000));
+        let get = |max| http_send_within(&host, "GET", url, BTreeMap::new(), None, max).unwrap();
+        // About 3.5 bytes cross for each byte of the body.
+        assert!(get(2_000).is_none());
+        let resp = get(10_000).expect("within the limit");
+        assert_eq!((resp.status, resp.body.len()), (200, 1_002));
     }
 
     #[test]

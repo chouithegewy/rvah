@@ -172,6 +172,8 @@ pub enum CatalogEntry {
         /// The film's or series' TMDB id, so a TMDB add-on can describe
         /// an item another add-on listed.
         tmdb_id: Option<String>,
+        /// A short line in place of the year and rating ("S2E5 · in 3 days").
+        note: Option<String>,
     },
 }
 
@@ -1194,6 +1196,7 @@ fn catalog_entry(item: PageItem) -> CatalogEntry {
             rating: item.rating,
             poster: item.artwork.poster,
             fanart: item.artwork.fanart,
+            note: item.note,
         },
     }
 }
@@ -1343,6 +1346,7 @@ mod tests {
                 thumb: None,
             },
             provider_ids: Default::default(),
+            note: None,
         }
     }
 
@@ -1365,12 +1369,14 @@ mod tests {
     fn catalog_entries_carry_artwork_and_rating() {
         let mut item = movie();
         item.provider_ids.insert("tmdb".into(), "603".into());
+        item.note = Some("S2E5 · in 3 days".into());
         let CatalogEntry::Media {
             poster,
             fanart,
             rating,
             kind,
             tmdb_id,
+            note,
             ..
         } = catalog_entry(PageItem::Media(item))
         else {
@@ -1387,6 +1393,7 @@ mod tests {
             Some("https://image.tmdb.org/t/p/w780/f.jpg")
         );
         assert_eq!(rating, Some(7.4));
+        assert_eq!(note.as_deref(), Some("S2E5 · in 3 days"));
     }
 
     #[test]

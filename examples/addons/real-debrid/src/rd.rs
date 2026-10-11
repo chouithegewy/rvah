@@ -127,6 +127,7 @@ fn to_item(entry: &DownloadEntry) -> MediaItem {
         rating: None,
         artwork: Default::default(),
         provider_ids: Default::default(),
+        note: None,
     }
 }
 

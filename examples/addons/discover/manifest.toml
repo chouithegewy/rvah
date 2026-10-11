@@ -1,7 +1,7 @@
 [addon]
 id = "com.rvah.discover"
 name = "RVAH Discover"
-version = "0.1.0"
+version = "0.2.0"
 sdk = ">=0.1, <0.2"
 entry = "module.wasm"
 # TMDB (titles, details, ratings via MDBList) and Trakt (your

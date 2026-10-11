@@ -113,8 +113,11 @@ mod tests {
             public
         );
         let signed_in = rows(&trakt::list(&host(true), None, None).unwrap());
-        assert_eq!(signed_in[..2], ["You might like", "Your watchlist"]);
-        assert_eq!(signed_in[2..], public);
+        assert_eq!(
+            signed_in[..3],
+            ["Up next", "You might like", "Your watchlist"]
+        );
+        assert_eq!(signed_in[3..], public);
     }
 
     #[test]
@@ -176,6 +179,166 @@ mod tests {
             ]
         );
         assert_eq!(page.cursor_next, None, "a short page is the last");
+    }
+
+    fn watching(title: &str, tmdb: Option<u64>, aired: u32, completed: u32, next: Value) -> Value {
+        json!({
+            "show": media(title, 100 + aired as u64, tmdb),
+            "progress": {
+                "aired": aired, "completed": completed, "last_watched_at": "2026-10-01T20:00:00.000Z",
+                "reset_at": null, "next_episode": next, "last_episode": null
+            }
+        })
+    }
+
+    fn episode(season: u32, number: u32, first_aired: &str) -> Value {
+        json!({
+            "season": season, "number": number, "title": "An episode",
+            "first_aired": first_aired, "ids": { "trakt": 1, "tmdb": 2 }
+        })
+    }
+
+    fn airing(title: &str, tmdb: u64, season: u32, number: u32, at: &str) -> Value {
+        json!({ "first_aired": at, "episode": episode(season, number, at), "show": media(title, tmdb, Some(tmdb)) })
+    }
+
+    /// 2026-10-11T12:00:00Z
+    const NOON: u64 = 1_791_720_000;
+
+    #[test]
+    fn up_next_lists_episodes_out_then_episodes_coming() {
+        let mut host = host(true);
+        host.now = Some(NOON);
+        host.route(
+            &format!("{API}/sync/progress/up_next?extended=images&page=1&limit=15"),
+            200,
+            &json!([
+                watching(
+                    "Severance",
+                    Some(95396),
+                    10,
+                    7,
+                    episode(2, 8, "2026-10-01T01:00:00.000Z")
+                ),
+                watching(
+                    "Andor",
+                    Some(83867),
+                    5,
+                    4,
+                    episode(1, 5, "2026-10-10T02:00:00.000Z")
+                ),
+                // Nothing could describe it, or nothing left to watch.
+                watching(
+                    "Obscure",
+                    None,
+                    3,
+                    1,
+                    episode(1, 2, "2026-10-09T02:00:00.000Z")
+                ),
+                watching("Done", Some(7), 3, 3, Value::Null),
+            ]),
+        );
+        host.route(
+            &format!("{API}/calendars/my/shows/2026-10-11/7?extended=images"),
+            200,
+            &json!([
+                airing("Old news", 3, 1, 4, "2026-10-11T03:00:00.000Z"),
+                airing("Beep", 2, 1, 1, "2026-10-11T15:00:00.000Z"),
+                airing("Acme", 1, 3, 3, "2026-10-17T01:00:00.000Z"),
+                airing("Acme", 1, 3, 2, "2026-10-14T01:00:00.000Z"),
+                // Behind on it already: listed for the episode out.
+                airing("Andor", 83867, 1, 6, "2026-10-17T02:00:00.000Z"),
+            ]),
+        );
+        let page = trakt::list(&host, Some("up_next"), None).unwrap();
+        let listed: Vec<(String, ContentType, String)> = page
+            .items
+            .iter()
+            .map(|item| match item {
+                PageItem::Media(m) => (m.id.clone(), m.content_type, m.note.clone().unwrap()),
+                other => panic!("expected media, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                (
+                    "tv:83867:s1e5".into(),
+                    ContentType::Episode,
+                    "S1E5 · out now".into()
+                ),
+                (
+                    "tv:95396:s2e8".into(),
+                    ContentType::Episode,
+                    "S2E8 · 3 to watch".into()
+                ),
+                ("tv:2".into(), ContentType::Series, "S1E1 · in 3 h".into()),
+                (
+                    "tv:1".into(),
+                    ContentType::Series,
+                    "S3E2 · in 2 days".into()
+                ),
+            ]
+        );
+        let PageItem::Media(andor) = &page.items[0] else {
+            unreachable!()
+        };
+        assert_eq!(
+            (andor.title.as_str(), andor.season, andor.episode),
+            ("Andor", Some(1), Some(5))
+        );
+        assert!(andor.artwork.poster.is_some());
+        assert_eq!(page.cursor_next, None);
+        assert!(host
+            .requests()
+            .iter()
+            .all(|r| r.headers["authorization"] == "Bearer at1"));
+    }
+
+    #[test]
+    fn a_week_too_busy_for_posters_is_read_without_them() {
+        let mut host = host(true);
+        host.now = Some(NOON);
+        host.route(
+            &format!("{API}/sync/progress/up_next?extended=images&page=1&limit=15"),
+            200,
+            &json!([]),
+        );
+        let busy: Vec<Value> = (0..300)
+            .map(|n| airing("Daily", 1_000 + n, 1, 1, "2026-10-12T01:00:00.000Z"))
+            .collect();
+        host.route(
+            &format!("{API}/calendars/my/shows/2026-10-11/7?extended=images"),
+            200,
+            &busy,
+        );
+        host.route(
+            &format!("{API}/calendars/my/shows/2026-10-11/7"),
+            200,
+            &json!([{ "first_aired": "2026-10-12T01:00:00.000Z", "episode": { "season": 1, "number": 1 },
+                      "show": { "title": "Daily", "year": 2026, "ids": { "trakt": 1, "tmdb": 5 } } }]),
+        );
+        let page = trakt::list(&host, Some("up_next"), None).unwrap();
+        assert_eq!(items(&page), [("tv:5".into(), ContentType::Series)]);
+        let PageItem::Media(m) = &page.items[0] else {
+            unreachable!()
+        };
+        assert_eq!(m.artwork.poster, None);
+        assert_eq!(m.note.as_deref(), Some("S1E1 · in 13 h"));
+    }
+
+    #[test]
+    fn up_next_waits_for_a_sign_in() {
+        let err = trakt::list(&host(false), Some("up_next"), None).unwrap_err();
+        assert_eq!(err.code, AddonErrorCode::Auth);
+        assert!(trakt::up_next_row(&host(false)).unwrap().is_none());
+        let Some(PageItem::Directory(row)) = trakt::up_next_row(&host(true)).unwrap() else {
+            panic!("expected the row once linked");
+        };
+        assert_eq!(
+            (row.title.as_str(), row.path.as_str()),
+            ("Up next", "up_next")
+        );
     }
 
     #[test]
