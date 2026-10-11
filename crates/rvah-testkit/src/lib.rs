@@ -8,6 +8,6 @@ pub use fixtures::{
     write_fixture_package_with_secrets, write_named_fixture_package, BadPermissionsProvider,
     CatalogEchoProvider, DebridProvider, DeviceAuthProvider, FailingProvider, LargeCatalogProvider,
     NoopHost, ResolverStaticProvider, ScrobbleRecorder, SlowProvider, StaticDetailsProvider,
-    StaticPageProvider, StaticSourcesProvider, ECHO_FIXTURE_ID,
+    StaticPageProvider, StaticSourcesProvider, StaticSubtitlesProvider, ECHO_FIXTURE_ID,
 };
 pub use rvah_player::MockPlayer;

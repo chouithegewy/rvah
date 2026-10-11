@@ -16,7 +16,7 @@ pub use types::{
     AccountStatus, Artwork, AuthPoll, ContentType, Credentials, DeviceAuth, DirectoryItem,
     DrmScheme, Filter, ItemDetails, MediaItem, Page, PageItem, PlayableSource, Protocol, Rating,
     Release, ResolveResult, ScrobbleAction, ScrobbleItem, SourceKind, SourceRequest,
-    SubtitleFormat, SubtitleTrack, Trailer, VideoSite,
+    SubtitleFormat, SubtitleRequest, SubtitleTrack, Trailer, VideoSite,
 };
 
 /// SDK version implemented by this crate. Hosts check manifests' `sdk` range

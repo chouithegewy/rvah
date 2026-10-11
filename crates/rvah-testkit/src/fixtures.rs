@@ -10,7 +10,7 @@ use rvah_addon_sdk::{
     AccountStatus, AddonError, AddonErrorCode, AddonProvider, Artwork, AuthPoll, Credentials,
     DeviceAuth, DirectoryItem, Filter, HostApi, HttpRequest, HttpResponse, ItemDetails, LogLevel,
     MediaItem, Page, PageItem, PlayableSource, Protocol, Release, ResolveResult, ScrobbleAction,
-    ScrobbleItem, SourceRequest,
+    ScrobbleItem, SourceRequest, SubtitleRequest, SubtitleTrack,
 };
 
 pub const ECHO_FIXTURE_ID: &str = "com.rvah.fixtures.echo";
@@ -302,6 +302,25 @@ impl AddonProvider for ScrobbleRecorder {
             .unwrap()
             .push((action, item.clone(), progress));
         Ok(())
+    }
+}
+
+/// Answers every subtitles request with the same files, and keeps the
+/// requests.
+#[derive(Default)]
+pub struct StaticSubtitlesProvider {
+    pub tracks: Vec<SubtitleTrack>,
+    pub asked: Mutex<Vec<SubtitleRequest>>,
+}
+
+impl AddonProvider for StaticSubtitlesProvider {
+    fn subtitles(
+        &self,
+        _ctx: &dyn HostApi,
+        request: &SubtitleRequest,
+    ) -> Result<Vec<SubtitleTrack>, AddonError> {
+        self.asked.lock().unwrap().push(request.clone());
+        Ok(self.tracks.clone())
     }
 }
 

@@ -436,6 +436,25 @@ pub struct NativeSubtitle {
     pub format: NativeSubtitleFormat,
 }
 
+impl From<rvah_addon_sdk::SubtitleTrack> for NativeSubtitle {
+    fn from(track: rvah_addon_sdk::SubtitleTrack) -> Self {
+        let format = match track.effective_format() {
+            Some(SubtitleFormat::WebVtt) => NativeSubtitleFormat::WebVtt,
+            Some(SubtitleFormat::SubRip) => NativeSubtitleFormat::SubRip,
+            Some(SubtitleFormat::Ttml) => NativeSubtitleFormat::Ttml,
+            Some(SubtitleFormat::Ssa) => NativeSubtitleFormat::Ssa,
+            Some(SubtitleFormat::Ass) => NativeSubtitleFormat::Ass,
+            None => NativeSubtitleFormat::Unknown,
+        };
+        NativeSubtitle {
+            url: track.url,
+            language: track.lang,
+            label: track.label,
+            format,
+        }
+    }
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct NativePreparedPlayback {
     pub session_id: u64,
@@ -459,22 +478,7 @@ impl From<PreparedPlayback> for NativePreparedPlayback {
         let subtitles = value
             .subtitles
             .into_iter()
-            .map(|track| {
-                let format = match track.effective_format() {
-                    Some(SubtitleFormat::WebVtt) => NativeSubtitleFormat::WebVtt,
-                    Some(SubtitleFormat::SubRip) => NativeSubtitleFormat::SubRip,
-                    Some(SubtitleFormat::Ttml) => NativeSubtitleFormat::Ttml,
-                    Some(SubtitleFormat::Ssa) => NativeSubtitleFormat::Ssa,
-                    Some(SubtitleFormat::Ass) => NativeSubtitleFormat::Ass,
-                    None => NativeSubtitleFormat::Unknown,
-                };
-                NativeSubtitle {
-                    url: track.url,
-                    language: track.lang,
-                    label: track.label,
-                    format,
-                }
-            })
+            .map(NativeSubtitle::from)
             .collect();
         Self {
             session_id: value.session_id.0,
@@ -1022,6 +1026,41 @@ impl AndroidCore {
             )
             .map(|prepared| NativePreparedPlayback::from(prepared).with_title(title))
             .map_err(playback_error)
+    }
+
+    /// Subtitle files for a film or episode in `languages` (ISO 639-1,
+    /// the most wanted first) from every `subtitles` add-on, each add-on's
+    /// best match for `release_name` first; call off the main thread. An
+    /// add-on that fails is left out (debug builds log why).
+    pub fn subtitles(
+        &self,
+        query: SourceQuery,
+        release_name: Option<String>,
+        languages: Vec<String>,
+    ) -> Vec<NativeSubtitle> {
+        let source = rvah_addon_sdk::SourceRequest::from(query);
+        let request = rvah_addon_sdk::SubtitleRequest {
+            kind: source.kind,
+            imdb_id: source.imdb_id,
+            title: source.title,
+            year: source.year,
+            season: source.season,
+            episode: source.episode,
+            languages,
+            release_name,
+        };
+        self.core()
+            .subtitles_all(&request)
+            .into_iter()
+            .flat_map(|(id, result)| match result {
+                Ok(tracks) => tracks,
+                Err(e) => {
+                    rvah_core::debug_log!("{id} subtitles: {e}");
+                    Vec::new()
+                }
+            })
+            .map(NativeSubtitle::from)
+            .collect()
     }
 
     /// Tell every scrobbling add-on about a change in playback, at

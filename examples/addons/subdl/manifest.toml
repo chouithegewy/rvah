@@ -1,0 +1,14 @@
+[addon]
+id = "com.rvah.subtitles.subdl"
+name = "SubDL Subtitles"
+version = "0.1.0"
+sdk = ">=0.1, <0.2"
+entry = "module.wasm"
+capabilities = ["subtitles"]
+
+[permissions]
+# The search API, and the subtitle files the player fetches.
+network = ["api.subdl.com", "dl.subdl.com"]
+storage = "64KiB"
+# api_key: yours, from subdl.com (free: 2,000 searches a day).
+secrets = ["api_key"]

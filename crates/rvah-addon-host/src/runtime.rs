@@ -5,7 +5,7 @@ use std::time::Duration;
 use rvah_addon_sdk::{
     AccountStatus, AddonError, AddonErrorCode, AddonProvider, AuthPoll, Credentials, DeviceAuth,
     Filter, HostApi, ItemDetails, Page, Release, ResolveResult, ScrobbleAction, ScrobbleItem,
-    SourceRequest,
+    SourceRequest, SubtitleRequest, SubtitleTrack,
 };
 
 use crate::manifest::Capability;
@@ -51,6 +51,9 @@ pub enum AddonOp {
         item: ScrobbleItem,
         progress: f32,
     },
+    Subtitles {
+        request: SubtitleRequest,
+    },
 }
 
 impl AddonOp {
@@ -68,6 +71,7 @@ impl AddonOp {
             AddonOp::Sources { .. } => Capability::Sources,
             AddonOp::ResolveRelease { .. } => Capability::Debrid,
             AddonOp::Scrobble { .. } => Capability::Scrobble,
+            AddonOp::Subtitles { .. } => Capability::Subtitles,
         }
     }
 }
@@ -83,6 +87,7 @@ pub enum AddonResponse {
     Credentials(Credentials),
     Details(Box<ItemDetails>),
     Releases(Vec<Release>),
+    Subtitles(Vec<SubtitleTrack>),
     /// An operation that answers nothing, such as `scrobble`.
     Done,
 }
@@ -208,6 +213,9 @@ impl AddonRuntime for InProcessRuntime {
                 } => provider
                     .scrobble(host.as_ref(), action, &item, progress)
                     .map(|()| AddonResponse::Done),
+                AddonOp::Subtitles { request } => provider
+                    .subtitles(host.as_ref(), &request)
+                    .map(AddonResponse::Subtitles),
             };
             let _ = tx.send(result);
         });
@@ -436,6 +444,44 @@ mod tests {
             InProcessRuntime::new(Arc::new(DetailsProvider), vec![Capability::Catalog]);
         let err = undeclared.invoke(op(), &ctx(1_000)).unwrap_err();
         assert_eq!(err.code, AddonErrorCode::PermissionDenied);
+    }
+
+    #[test]
+    fn subtitles_need_their_capability_and_speak_the_wire_format() {
+        let op = AddonOp::Subtitles {
+            request: SubtitleRequest {
+                kind: rvah_addon_sdk::SourceKind::Episode,
+                imdb_id: Some("tt1".into()),
+                title: "Show".into(),
+                year: None,
+                season: Some(1),
+                episode: Some(2),
+                languages: vec!["en".into()],
+                release_name: Some("Show.S01E02.1080p".into()),
+            },
+        };
+        assert_eq!(op.required_capability(), Capability::Subtitles);
+        let rt = InProcessRuntime::new(Arc::new(DetailsProvider), vec![Capability::Details]);
+        let err = rt.invoke(op.clone(), &ctx(1_000)).unwrap_err();
+        assert_eq!(err.code, AddonErrorCode::PermissionDenied);
+        assert_eq!(
+            serde_json::to_value(&op).unwrap(),
+            serde_json::json!({
+                "op": "subtitles",
+                "request": {
+                    "kind": "episode", "imdb_id": "tt1", "title": "Show", "season": 1, "episode": 2,
+                    "languages": ["en"], "release_name": "Show.S01E02.1080p"
+                }
+            })
+        );
+        let caps: Vec<Capability> = serde_json::from_str(r#"["subtitles"]"#).unwrap();
+        assert_eq!(caps, [Capability::Subtitles]);
+        let answer: AddonResponse = serde_json::from_value(serde_json::json!({
+            "kind": "subtitles",
+            "value": [{ "url": "https://dl.example/1", "lang": "en", "label": "Show.S01E02", "format": "sub_rip" }]
+        }))
+        .unwrap();
+        assert!(matches!(answer, AddonResponse::Subtitles(ref t) if t.len() == 1));
     }
 
     #[test]

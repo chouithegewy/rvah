@@ -323,6 +323,30 @@ pub struct SourceRequest {
     pub episode: Option<u32>,
 }
 
+/// What a `subtitles` add-on is asked to find: subtitles for one film or
+/// episode, in the viewer's languages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubtitleRequest {
+    pub kind: SourceKind,
+    /// IMDb id of the film or series, e.g. `tt0133093`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imdb_id: Option<String>,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year: Option<u16>,
+    /// Season and episode numbers, for `episode`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub season: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episode: Option<u32>,
+    /// ISO 639-1 codes, the most wanted first, e.g. `["en"]`.
+    pub languages: Vec<String>,
+    /// The name of the release playing, so subtitles timed for it can come
+    /// first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceKind {

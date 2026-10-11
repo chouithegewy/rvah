@@ -1153,3 +1153,76 @@ fn playback_is_scrobbled_to_every_enabled_scrobbler() {
         "disabled add-ons hear nothing"
     );
 }
+
+#[test]
+fn subtitles_come_from_every_finder_with_only_files_the_player_may_load() {
+    use rvah_addon_sdk::{SourceKind, SubtitleFormat, SubtitleRequest, SubtitleTrack};
+    let track = |url: &str, lang: &str, format: Option<SubtitleFormat>| SubtitleTrack {
+        url: url.into(),
+        lang: lang.into(),
+        label: Some("Film.2026.1080p.WEB-DL".into()),
+        format,
+    };
+    let finder = Arc::new(rvah_testkit::StaticSubtitlesProvider {
+        tracks: vec![
+            track(
+                "https://dl.subs.example/a1",
+                "en",
+                Some(SubtitleFormat::SubRip),
+            ),
+            // Not https; a host it did not declare; no format to read; no language.
+            track("http://dl.subs.example/b.srt", "en", None),
+            track("https://elsewhere.example/c.srt", "en", None),
+            track("https://dl.subs.example/d1", "en", None),
+            track("https://dl.subs.example/e.srt", " ", None),
+            // The format told by the extension.
+            track("https://dl.subs.example/f.vtt", "en", None),
+        ],
+        ..Default::default()
+    });
+    let mut w = World::new();
+    w.add_addon_with_permissions(
+        "com.rvah.fixtures.subtitles",
+        &["subtitles"],
+        &["dl.subs.example"],
+        &[],
+        Arc::clone(&finder) as Arc<dyn AddonProvider + Send + Sync>,
+        vec![Capability::Subtitles],
+    );
+    // Declares subtitles but finds none: its error leaves the others be.
+    w.add_addon(
+        "com.rvah.fixtures.subtitles.broken",
+        &["subtitles"],
+        Arc::new(rvah_testkit::ScrobbleRecorder::default()),
+        vec![Capability::Subtitles],
+    );
+    let request = SubtitleRequest {
+        kind: SourceKind::Episode,
+        imdb_id: Some("tt0944947".into()),
+        title: "Acme Corp".into(),
+        year: Some(2026),
+        season: Some(1),
+        episode: Some(2),
+        languages: vec!["en".into()],
+        release_name: Some("Acme.Corp.S01E02.1080p.WEB-DL".into()),
+    };
+    let results = w.core.subtitles_all(&request);
+    assert_eq!(results.len(), 2);
+    let found = |id: &str| results.iter().find(|(a, _)| a == id).unwrap();
+    let urls: Vec<&str> = found("com.rvah.fixtures.subtitles")
+        .1
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|t| t.url.as_str())
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            "https://dl.subs.example/a1",
+            "https://dl.subs.example/f.vtt"
+        ]
+    );
+    assert!(found("com.rvah.fixtures.subtitles.broken").1.is_err());
+    assert_eq!(finder.asked.lock().unwrap().as_slice(), [request]);
+}
