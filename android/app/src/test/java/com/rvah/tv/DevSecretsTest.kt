@@ -41,5 +41,9 @@ class DevSecretsTest {
             listOf(SeedSecret("com.real-debrid.downloads", "api_token", "rdtok")),
             devSecrets(mapOf("REAL_DEBRID_API_TOKEN" to "rdtok")),
         )
+        assertEquals(
+            listOf(SeedSecret(SUBDL_ADDON, "api_key", "sk")),
+            devSecrets(mapOf("SUBDL_API_KEY" to "sk")),
+        )
     }
 }

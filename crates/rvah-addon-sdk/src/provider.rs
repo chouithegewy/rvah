@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AccountStatus, AddonError, AddonErrorCode, AuthPoll, Credentials, DeviceAuth, Filter,
     ItemDetails, Page, Release, ResolveResult, ScrobbleAction, ScrobbleItem, SourceRequest,
+    SubtitleRequest, SubtitleTrack,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -113,6 +114,17 @@ pub trait AddonProvider {
         _request: &SourceRequest,
     ) -> Result<Vec<Release>, AddonError> {
         Err(unimplemented_capability("sources"))
+    }
+
+    /// Subtitle files for one film or episode (capability `subtitles`),
+    /// the best match first. Each is a file the player can load as it is
+    /// (not an archive), with its format.
+    fn subtitles(
+        &self,
+        _ctx: &dyn HostApi,
+        _request: &SubtitleRequest,
+    ) -> Result<Vec<SubtitleTrack>, AddonError> {
+        Err(unimplemented_capability("subtitles"))
     }
 
     /// Report playback of `item` at `progress` percent (capability

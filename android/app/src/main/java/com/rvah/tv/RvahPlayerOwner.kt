@@ -26,6 +26,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import uniffi.rvah_android.AndroidCore
 import uniffi.rvah_android.NativePlaybackEvent
 import uniffi.rvah_android.ScrobbleChange
@@ -40,9 +41,28 @@ data class PlayerUi(
     val bufferedAheadMs: Long = 0,
     /** The file's audio tracks this device can play. */
     val audio: List<TrackOption> = emptyList(),
-    /** The file's subtitle tracks this device can show. */
+    /** The file's subtitle tracks this device can show, with any added from online. */
     val subtitles: List<TrackOption> = emptyList(),
+    /** Subtitles to be found online for what plays. */
+    val online: OnlineFind = OnlineFind.Unavailable,
+    /** The online file added to this video, by URL. */
+    val onlineInUse: String? = null,
 )
+
+/** Finds subtitle files online for what plays; called on an IO thread. */
+fun interface OnlineSubtitles {
+    fun find(): List<SubtitleSpec>
+}
+
+/** Where looking online for subtitles stands, for this video. */
+sealed interface OnlineFind {
+    /** Nothing to ask: no subtitles add-on, or not a title it can name. */
+    data object Unavailable : OnlineFind
+    data object NotYet : OnlineFind
+    data object Searching : OnlineFind
+    data class Found(val files: List<SubtitleSpec>) : OnlineFind
+    data class Failed(val message: String) : OnlineFind
+}
 
 /** One track of the playing file, as the Audio or Subtitles menu offers it. */
 data class TrackOption(val name: String, val selected: Boolean, val group: TrackGroup, val index: Int)
@@ -98,12 +118,20 @@ class RvahPlayerOwner(
     /** What scrobbling add-ons hear about, for a title they can name; else null. */
     private var scrobbleTarget: ScrobbleTarget? = null
     private var scrobbles = ScrobbleState()
+    private var finder: OnlineSubtitles? = null
+    /** Whether this video's tracks were checked for English subtitles yet. */
+    private var checkedForEnglish = false
+    /** An online file just added, to pick once the player lists it. */
+    private var pendingOnline: String? = null
 
-    fun play(spec: PlaybackSpec, scrobble: ScrobbleTarget? = null) {
+    fun play(spec: PlaybackSpec, scrobble: ScrobbleTarget? = null, online: OnlineSubtitles? = null) {
         active = spec
         scrobbleTarget = scrobble
         scrobbles = ScrobbleState()
-        ui = PlayerUi(status = "Buffering…")
+        finder = online
+        checkedForEnglish = false
+        pendingOnline = null
+        ui = PlayerUi(status = "Buffering…", online = if (online != null) OnlineFind.NotYet else OnlineFind.Unavailable)
         requestHeaders.set(spec.headers)
         // Each video starts from the language defaults, whatever was picked for the last.
         player.trackSelectionParameters = player.trackSelectionParameters.forNewVideo()
@@ -141,6 +169,43 @@ class RvahPlayerOwner(
             .setTrackTypeDisabled(option.group.type, false)
             .setOverrideForType(TrackSelectionOverride(option.group, option.index))
             .build()
+    }
+
+    /** Look for subtitles online, once per video; [then] gets what was found. */
+    fun findOnline(then: (List<SubtitleSpec>) -> Unit = {}) {
+        val find = finder ?: return
+        when (val state = ui.online) {
+            is OnlineFind.Found -> return then(state.files)
+            OnlineFind.Searching -> return
+            else -> {}
+        }
+        val session = active?.sessionId
+        ui = ui.copy(online = OnlineFind.Searching)
+        scope.launch {
+            val result = runCatching { withContext(Dispatchers.IO) { find.find() } }
+            if (active?.sessionId != session) return@launch
+            result
+                .onSuccess { files ->
+                    ui = ui.copy(online = OnlineFind.Found(files))
+                    then(files)
+                }
+                .onFailure { ui = ui.copy(online = OnlineFind.Failed(it.userMessage())) }
+        }
+    }
+
+    /**
+     * Add [file] to the video (in place of an online file added before) and
+     * pick it once it loads. The player prepares again from where it is.
+     */
+    fun useOnline(file: SubtitleSpec) {
+        val spec = active ?: return
+        val previous = ui.onlineInUse
+        val withFile = spec.copy(subtitles = spec.subtitles.filterNot { it.url == previous } + file)
+        active = withFile
+        pendingOnline = file.url
+        ui = ui.copy(onlineInUse = file.url)
+        player.setMediaItem(withFile.toMediaItem(), player.currentPosition)
+        player.prepare()
     }
 
     fun subtitlesOff() {
@@ -221,6 +286,22 @@ class RvahPlayerOwner(
     /** The menus' choices; debug builds also log each file's tracks, selected ones starred. */
     override fun onTracksChanged(tracks: Tracks) {
         ui = ui.copy(audio = options(tracks, C.TRACK_TYPE_AUDIO), subtitles = options(tracks, C.TRACK_TYPE_TEXT))
+        // An online file just added: pick it as soon as it is listed.
+        pendingOnline?.let { url ->
+            ui.subtitles.firstOrNull { it.group.getFormat(it.index).id?.endsWith(url) == true }?.let {
+                pendingOnline = null
+                select(it)
+            }
+        }
+        // No English subtitles in the file: look online, once per video.
+        if (!checkedForEnglish && finder != null && !tracks.isEmpty) {
+            checkedForEnglish = true
+            val english = tracks.groups.any { group ->
+                group.type == C.TRACK_TYPE_TEXT &&
+                    (0 until group.length).any { group.getTrackFormat(it).language?.startsWith(PREFERRED_LANGUAGE) == true }
+            }
+            if (!english) findOnline { files -> files.firstOrNull { it.language.startsWith(PREFERRED_LANGUAGE) }?.let(::useOnline) }
+        }
         if (!BuildConfig.DEBUG) return
         for ((type, name) in listOf(C.TRACK_TYPE_AUDIO to "audio", C.TRACK_TYPE_TEXT to "subtitles")) {
             val line = tracks.groups.filter { it.type == type }.flatMap { group ->

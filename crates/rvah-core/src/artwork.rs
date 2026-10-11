@@ -1,10 +1,11 @@
-//! Which add-on artwork the UI may load, and which trailers it may open.
-//! The UI fetches artwork itself, outside the add-on's sandbox, so an
-//! add-on must not be able to point it at an arbitrary server: only https
-//! URLs on hosts the add-on declared in its network permissions get
-//! through. Trailers are a site's video key; the UI builds the link.
+//! Which add-on artwork and subtitle files the UI may load, and which
+//! trailers it may open. The UI fetches these itself, outside the add-on's
+//! sandbox, so an add-on must not be able to point it at an arbitrary
+//! server: only https URLs on hosts the add-on declared in its network
+//! permissions get through. Trailers are a site's video key; the UI builds
+//! the link.
 
-use rvah_addon_sdk::{Artwork, ItemDetails, Page, PageItem};
+use rvah_addon_sdk::{Artwork, ItemDetails, Page, PageItem, SubtitleTrack};
 use rvah_net::Allowlist;
 
 /// Drop every artwork URL in `page` that `network` does not allow.
@@ -29,6 +30,17 @@ pub(crate) fn screen_details(details: &mut ItemDetails, network: &[String]) {
     details
         .trailers
         .retain(|trailer| plain_video_key(&trailer.key));
+}
+
+/// Only subtitle files on the same rule, in a format the player can read
+/// (given, or told by the URL's extension), with a language.
+pub(crate) fn screen_subtitles(tracks: &mut Vec<SubtitleTrack>, network: &[String]) {
+    let allow = Allowlist::new(network.iter().cloned());
+    tracks.retain(|track| {
+        allowed(&track.url, &allow)
+            && track.effective_format().is_some()
+            && !track.lang.trim().is_empty()
+    });
 }
 
 fn plain_video_key(key: &str) -> bool {

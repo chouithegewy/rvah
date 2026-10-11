@@ -7,7 +7,8 @@ use rvah_addon_host::{
 };
 use rvah_addon_sdk::{
     AccountStatus, AddonError, AddonErrorCode, AuthPoll, Credentials, Filter, HostApi, ItemDetails,
-    Page, Release, ResolveResult, ScrobbleAction, ScrobbleItem, SourceRequest,
+    Page, Release, ResolveResult, ScrobbleAction, ScrobbleItem, SourceRequest, SubtitleRequest,
+    SubtitleTrack,
 };
 use rvah_auth::{DeviceCodeFlow, DeviceCodeState, PollOutcome, SecretVault};
 use rvah_data::{AddonStatus, Database, DiagnosticEvent, FavoriteRecord};
@@ -204,6 +205,7 @@ impl<B: PlayerBackend> AppCore<B> {
             AddonOp::Sources { .. } => "sources",
             AddonOp::ResolveRelease { .. } => "resolve_release",
             AddonOp::Scrobble { .. } => "scrobble",
+            AddonOp::Subtitles { .. } => "subtitles",
         };
         let started = std::time::Instant::now();
         let result = addon.runtime.invoke(op, &ctx);
@@ -390,6 +392,47 @@ impl<B: PlayerBackend> AppCore<B> {
                 };
                 let result = self.invoke(&id, op).and_then(|resp| match resp {
                     AddonResponse::Done => Ok(()),
+                    other => Err(unexpected_response(&other)),
+                });
+                (id, result)
+            })
+            .collect()
+    }
+
+    /// Subtitle files for one film or episode from every enabled add-on
+    /// declaring `subtitles`, each add-on's best first, keeping only files
+    /// the player may load (see `artwork`). One add-on failing does not
+    /// keep the others' answers back.
+    pub fn subtitles_all(
+        &mut self,
+        request: &SubtitleRequest,
+    ) -> Vec<(String, Result<Vec<SubtitleTrack>, CoreError>)> {
+        let finders: Vec<String> = match self.db.list_addons() {
+            Ok(addons) => addons
+                .into_iter()
+                .filter(|a| {
+                    a.status == AddonStatus::Enabled
+                        && a.capabilities.iter().any(|c| c == "subtitles")
+                })
+                .map(|a| a.id)
+                .collect(),
+            Err(e) => return vec![("host".into(), Err(e.into()))],
+        };
+        finders
+            .into_iter()
+            .map(|id| {
+                let op = AddonOp::Subtitles {
+                    request: request.clone(),
+                };
+                let result = self.invoke(&id, op).and_then(|resp| match resp {
+                    AddonResponse::Subtitles(mut tracks) => {
+                        let manifest = self.installed_manifest(&id)?;
+                        crate::artwork::screen_subtitles(
+                            &mut tracks,
+                            &manifest.permissions.network,
+                        );
+                        Ok(tracks)
+                    }
                     other => Err(unexpected_response(&other)),
                 });
                 (id, result)

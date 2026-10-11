@@ -9,6 +9,7 @@ data class SeedSecret(val addonId: String, val name: String, val value: String)
 const val TMDB_ADDON = "org.themoviedb.discover"
 const val PROWLARR_ADDON = "com.rvah.sources.prowlarr"
 const val TRAKT_ADDON = "com.rvah.trakt"
+const val SUBDL_ADDON = "com.rvah.subtitles.subdl"
 
 /**
  * Which `.env` variable feeds which add-on secret. For the same secret the
@@ -24,6 +25,7 @@ private val SEEDS = listOf("com.rvah.discover", TMDB_ADDON).flatMap { addon ->
     Triple("TRAKT_CLIENT_ID", addon, "client_id")
 } + listOf(
     Triple("PROWLARR_API_KEY", PROWLARR_ADDON, "api_key"),
+    Triple("SUBDL_API_KEY", SUBDL_ADDON, "api_key"),
     // A private token (real-debrid.com/apitoken) instead of Link account.
     Triple("REAL_DEBRID_API_TOKEN", "com.real-debrid.downloads", "api_token"),
 )

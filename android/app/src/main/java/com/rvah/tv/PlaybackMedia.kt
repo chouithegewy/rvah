@@ -5,6 +5,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MimeTypes
 import uniffi.rvah_android.NativePreparedPlayback
 import uniffi.rvah_android.NativeProtocol
+import uniffi.rvah_android.NativeSubtitle
 import uniffi.rvah_android.NativeSubtitleFormat
 
 data class PlaybackSpec(
@@ -31,21 +32,21 @@ fun NativePreparedPlayback.toSpec() = PlaybackSpec(
     },
     headers = headers.associate { it.name to it.value },
     resumePositionMs = resumePositionMs.toLong(),
-    subtitles = subtitles.map {
-        SubtitleSpec(
-            it.url,
-            it.language,
-            it.label,
-            when (it.format) {
-                NativeSubtitleFormat.WEB_VTT -> MimeTypes.TEXT_VTT
-                NativeSubtitleFormat.SUB_RIP -> MimeTypes.APPLICATION_SUBRIP
-                NativeSubtitleFormat.TTML -> MimeTypes.APPLICATION_TTML
-                NativeSubtitleFormat.SSA, NativeSubtitleFormat.ASS -> MimeTypes.TEXT_SSA
-                NativeSubtitleFormat.UNKNOWN -> inferSubtitleMimeType(it.url)
-            },
-        )
-    },
+    subtitles = subtitles.map { it.toSubtitleSpec() },
     title = title,
+)
+
+fun NativeSubtitle.toSubtitleSpec() = SubtitleSpec(
+    url,
+    language,
+    label,
+    when (format) {
+        NativeSubtitleFormat.WEB_VTT -> MimeTypes.TEXT_VTT
+        NativeSubtitleFormat.SUB_RIP -> MimeTypes.APPLICATION_SUBRIP
+        NativeSubtitleFormat.TTML -> MimeTypes.APPLICATION_TTML
+        NativeSubtitleFormat.SSA, NativeSubtitleFormat.ASS -> MimeTypes.TEXT_SSA
+        NativeSubtitleFormat.UNKNOWN -> inferSubtitleMimeType(url)
+    },
 )
 
 fun playbackMimeType(protocol: StreamProtocol, url: String): String = when (protocol) {
@@ -70,6 +71,8 @@ fun inferSubtitleMimeType(url: String): String = when (
 fun PlaybackSpec.toMediaItem(): MediaItem {
     val subtitles = subtitles.map {
         MediaItem.SubtitleConfiguration.Builder(android.net.Uri.parse(it.url))
+            // The track's format carries the URL, so a file added later can be found and picked.
+            .setId(it.url)
             .setMimeType(it.mimeType)
             .setLanguage(it.language)
             .setLabel(it.label)

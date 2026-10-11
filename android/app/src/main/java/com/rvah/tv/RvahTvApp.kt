@@ -431,6 +431,15 @@ private fun AppNavigation(
                     screen = current.returnTo
                 }
             },
+            // A release names its title, so subtitles add-ons can look for it.
+            online = current.release
+                ?.takeIf { addons.any { it.status == "enabled" && "subtitles" in it.capabilities } }
+                ?.let { pick ->
+                    OnlineSubtitles {
+                        core.subtitles(pick.target.query, pick.release.name, listOf(PREFERRED_LANGUAGE))
+                            .map { it.toSubtitleSpec() }
+                    }
+                },
             onExit = {
                 owner.stop()
                 screen = current.returnTo
@@ -723,13 +732,15 @@ private fun PlayerScreen(
     prepare: () -> NativePreparedPlayback,
     /** When set, a failure to prepare goes here instead of the player's status. */
     onPrepareFailed: ((String) -> Unit)?,
+    /** Finds subtitles online for what plays, when an add-on can. */
+    online: OnlineSubtitles?,
     onExit: () -> Unit,
 ) {
     var started by remember(target) { mutableStateOf(false) }
     LaunchedEffect(target) {
         onIo { prepare() }.onSuccess {
             started = true
-            owner.play(it.toSpec(), scrobble = target.release?.target?.scrobble)
+            owner.play(it.toSpec(), scrobble = target.release?.target?.scrobble, online = online)
         }.onFailure { error ->
             val message = error.userMessage()
             if (onPrepareFailed != null) onPrepareFailed(message) else owner.fail(message)
@@ -759,7 +770,8 @@ private fun PlayerScreen(
         refocus = null
     }
     val closeMenu = {
-        refocus = menu
+        // The online menu opens from Subtitles: its button takes focus back.
+        refocus = if (menu == TrackMenu.Online) TrackMenu.Subtitles else menu
         menu = null
     }
     BackHandler {
@@ -817,10 +829,7 @@ private fun PlayerScreen(
             if (BuildConfig.DEBUG && started) Text(bufferLine(ui.bufferedAheadMs, owner.bufferPlan), color = Secondary)
             Spacer(Modifier.height(12.dp))
             menu?.let { open ->
-                TrackMenuList(open, if (open == TrackMenu.Audio) ui.audio else ui.subtitles) { option ->
-                    if (option == null) owner.subtitlesOff() else owner.select(option)
-                    closeMenu()
-                }
+                TrackMenuList(open, trackMenuRows(open, ui, owner, open = { menu = it }, close = closeMenu))
                 Spacer(Modifier.height(12.dp))
             }
             Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -829,9 +838,14 @@ private fun PlayerScreen(
                     Text(if (ui.isPlaying) "Pause" else "Play")
                 }
                 Button(onClick = { owner.seekBy(30_000) }) { Text("+30s") }
-                // Audio only when there is a choice; subtitles whenever the file has any.
+                // Audio only when there is a choice; subtitles when the file
+                // has any, or they can be found online.
+                val shown = mapOf(
+                    TrackMenu.Audio to (ui.audio.size > 1),
+                    TrackMenu.Subtitles to (ui.subtitles.isNotEmpty() || ui.online != OnlineFind.Unavailable),
+                )
                 for ((kind, options) in listOf(TrackMenu.Audio to ui.audio, TrackMenu.Subtitles to ui.subtitles)) {
-                    if (options.size > (if (kind == TrackMenu.Audio) 1 else 0)) {
+                    if (shown.getValue(kind)) {
                         Button(
                             onClick = { menu = if (menu == kind) null else kind },
                             modifier = Modifier.focusRequester(menuButtons.getValue(kind)),

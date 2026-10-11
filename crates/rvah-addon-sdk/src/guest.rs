@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use crate::{
     AccountStatus, AddonError, AddonErrorCode, AuthPoll, Credentials, DeviceAuth, Filter,
     HttpResponse, ItemDetails, Page, Release, ResolveResult, ScrobbleAction, ScrobbleItem,
-    SourceRequest,
+    SourceRequest, SubtitleRequest, SubtitleTrack,
 };
 
 pub trait Host {
@@ -498,6 +498,9 @@ pub enum Op {
         item: ScrobbleItem,
         progress: f32,
     },
+    Subtitles {
+        request: SubtitleRequest,
+    },
 }
 
 /// A guest's answer, in the host's `AddonResponse` wire form.
@@ -512,6 +515,7 @@ pub enum Response {
     Credentials(Credentials),
     Details(Box<ItemDetails>),
     Releases(Vec<Release>),
+    Subtitles(Vec<SubtitleTrack>),
     Done,
 }
 

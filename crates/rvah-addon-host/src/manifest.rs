@@ -33,6 +33,8 @@ pub enum Capability {
     Debrid,
     /// Hears what plays, e.g. to keep a watch history.
     Scrobble,
+    /// Finds subtitle files for a film or episode.
+    Subtitles,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
