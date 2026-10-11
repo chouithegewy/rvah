@@ -69,7 +69,9 @@ fun homeLayout(addons: List<AddonRecord>, roots: Map<String, List<CatalogEntry>>
             downloads += ColumnSpec(addon.id, addon.name, null, null)
         }
     }
-    return HomeLayout(discover, groups, downloads)
+    // Name the add-on under a column only when columns come from several.
+    val named = if (discover.map { it.addonId }.distinct().size > 1) discover else discover.map { it.copy(tag = null) }
+    return HomeLayout(named, groups, downloads)
 }
 
 /** A card's small line: "2026 · ★ 8.4", leaving out what is unknown. */
