@@ -183,7 +183,7 @@ private fun BoardColumn(
 @Composable
 private fun EntryCard(entry: CatalogEntry, modifier: Modifier, onClick: () -> Unit) {
     val (title, poster, line) = when (entry) {
-        is CatalogEntry.Media -> Triple(entry.title, entry.poster, cardLine(entry.year, entry.rating))
+        is CatalogEntry.Media -> Triple(entry.title, entry.poster, entry.note ?: cardLine(entry.year, entry.rating))
         is CatalogEntry.Directory -> Triple(entry.title, entry.poster, entry.subtitle.orEmpty())
     }
     Card(

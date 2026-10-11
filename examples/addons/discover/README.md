@@ -7,14 +7,19 @@ separate add-on too.
 
 Columns, left to right:
 
-1. **New to streaming** — films released digitally in the last 60 days in
+1. **Up next** — the series you are watching (only once linked to Trakt):
+   first those with an episode out that you haven't seen, the newest release
+   first, each opening on that episode; then those with a new episode in the
+   week ahead, the soonest first, each opening on the series. Each card says
+   which episode and when ("S2E5 · 3 to watch", "S3E2 · in 2 days").
+2. **New to streaming** — films released digitally in the last 60 days in
    your region, most popular first (TMDB `with_release_type=4`); never
    theatrical-only or upcoming.
-2. **Popular to stream or rent** — popular films already out digitally or on
+3. **Popular to stream or rent** — popular films already out digitally or on
    disc that some streaming, rental or purchase service in the region has.
-3. **You might like** — your Trakt recommendations, films and series
+4. **You might like** — your Trakt recommendations, films and series
    alternating (only once linked).
-4. **Your genres** — the `genres` setting, in its order: each column mixes
+5. **Your genres** — the `genres` setting, in its order: each column mixes
    that genre's popular films and series you can stream or rent. Anime is
    animation in Japanese. The TV toggles genres; turning one on puts it last.
 

@@ -34,7 +34,7 @@ dependencies = [
 
 [[package]]
 name = "rvah-addon-discover"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rvah-addon-sdk",
  "rvah-addon-tmdb",
@@ -61,7 +61,7 @@ dependencies = [
 
 [[package]]
 name = "rvah-addon-trakt"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "rvah-addon-sdk",
  "serde",

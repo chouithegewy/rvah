@@ -182,6 +182,7 @@ fn media_item(kind: Kind, entry: Entry) -> MediaItem {
             thumb: None,
         },
         provider_ids: BTreeMap::from([("tmdb".to_string(), entry.id.to_string())]),
+        note: None,
     }
 }
 
@@ -617,6 +618,7 @@ fn episode_item(series: &str, episode: Episode) -> MediaItem {
             thumb: None,
         },
         provider_ids: BTreeMap::from([("tmdb".to_string(), series.to_string())]),
+        note: None,
     }
 }
 

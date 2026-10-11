@@ -106,6 +106,7 @@ fn media(id: &str, title: &str) -> PageItem {
         rating: None,
         artwork: Artwork::default(),
         provider_ids: BTreeMap::new(),
+        note: None,
     })
 }
 

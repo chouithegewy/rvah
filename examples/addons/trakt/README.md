@@ -3,7 +3,9 @@
 Rows from [Trakt](https://trakt.tv) on the TV, and your playback in your
 Trakt history.
 
-- **catalog** — once linked: your watchlist, recommended films and series;
+- **catalog** — once linked: Up next (the series you are watching, by
+  their next episode: Trakt's `/sync/progress/up_next`, then your calendar
+  for the week ahead), recommended films and series, your watchlist;
   always: trending and most anticipated films and series (`extended=full`,
   20 per page, Trakt's `X-Pagination-Page-Count`). Items are TMDB ids
   (`movie:<id>`, `tv:<id>`), so the TV opens them on the TMDB add-on's

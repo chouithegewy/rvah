@@ -28,6 +28,8 @@ enum Shape {
 
 /// (title, path, needs a sign-in, shape, extra query)
 const ROWS: &[(&str, &str, bool, Shape, &str)] = &[
+    // Series you are watching, by their next episode; see `up_next`.
+    ("Up next", "up_next", true, Shape::Movies, ""),
     // Films and series together; see `recommendations`.
     ("You might like", "recommendations", true, Shape::Movies, ""),
     ("Your watchlist", "sync/watchlist", true, Shape::Wrapped, ""),
@@ -203,6 +205,7 @@ fn item(media: Media, kind: ContentType) -> Option<MediaItem> {
             thumb: None,
         },
         provider_ids,
+        note: None,
     })
 }
 
@@ -250,8 +253,12 @@ pub fn list(host: &dyn Host, path: Option<&str>, cursor: Option<&str>) -> Result
     } else {
         None
     };
-    if path == "recommendations" {
-        return recommendations(host, token.as_deref().unwrap_or_default(), page);
+    match path {
+        "recommendations" => {
+            return recommendations(host, token.as_deref().unwrap_or_default(), page)
+        }
+        "up_next" => return up_next(host, token.as_deref().unwrap_or_default()),
+        _ => {}
     }
     let resp = call(
         host,
@@ -465,13 +472,25 @@ pub fn scrobble(
     }
 }
 
-/// The "You might like" column, for an add-on nesting this one: only once
-/// linked, since it is yours.
-pub fn you_might_like(host: &dyn Host) -> Result<Option<PageItem>, AddonError> {
+/// One of your rows, for an add-on nesting this one: only once linked.
+fn your_row(host: &dyn Host, path: &str) -> Result<Option<PageItem>, AddonError> {
     if access_token(host)?.is_none() {
         return Ok(None);
     }
-    Ok(rows(true).items.into_iter().next())
+    Ok(rows(true)
+        .items
+        .into_iter()
+        .find(|row| matches!(row, PageItem::Directory(d) if d.path == path)))
+}
+
+/// The "You might like" column, for an add-on nesting this one.
+pub fn you_might_like(host: &dyn Host) -> Result<Option<PageItem>, AddonError> {
+    your_row(host, "recommendations")
+}
+
+/// The "Up next" column, for an add-on nesting this one.
+pub fn up_next_row(host: &dyn Host) -> Result<Option<PageItem>, AddonError> {
+    your_row(host, "up_next")
 }
 
 /// Recommended films and series together, alternating.
@@ -508,4 +527,217 @@ fn recommendations(host: &dyn Host, token: &str, page: u32) -> Result<Page, Addo
         cursor_next: (more && page < MAX_PAGES).then(|| (page + 1).to_string()),
         total_hint: None,
     })
+}
+
+/// How far ahead "Up next" looks for new episodes.
+const AHEAD_DAYS: u32 = 7;
+/// Series you are behind on, at most. Trakt answers with whole series and
+/// episode records (about 5 KB each with images), and a call's fuel is
+/// spent reading them.
+const BEHIND: usize = 15;
+/// The most of the week's calendar read with images, as it crosses from
+/// the host: about 150 KB of Trakt's answer, some 40 episodes. A busier week
+/// is read again without images (a tenth the size), so without posters.
+const CALENDAR_MAX: usize = 520_000;
+
+#[derive(Deserialize)]
+struct Episode {
+    season: u32,
+    number: u32,
+    #[serde(default)]
+    first_aired: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Progress {
+    #[serde(default)]
+    aired: u32,
+    #[serde(default)]
+    completed: u32,
+    #[serde(default)]
+    next_episode: Option<Episode>,
+}
+
+#[derive(Deserialize)]
+struct Watching {
+    show: Media,
+    progress: Progress,
+}
+
+#[derive(Deserialize)]
+struct Airing {
+    first_aired: String,
+    episode: Episode,
+    show: Media,
+}
+
+/// Series you are watching: first those with an episode out for you to
+/// watch, the newest release first, each opening on that episode; then
+/// those with one coming in the week ahead, the soonest first, each opening
+/// on the series. Each says which episode, and when.
+fn up_next(host: &dyn Host, token: &str) -> Result<Page, AddonError> {
+    let now = guest::now_unix(host).unwrap_or_default();
+    let get = |what: &str, path: &str| -> Result<Vec<u8>, AddonError> {
+        let resp = call(host, "GET", path, Some(token), None)?;
+        if !(200..300).contains(&resp.status) {
+            return Err(failed(what, resp.status));
+        }
+        Ok(resp.body)
+    };
+
+    let watching: Vec<Watching> = decode(
+        "up next",
+        &get(
+            "up next",
+            &format!("/sync/progress/up_next?extended=images&page=1&limit={BEHIND}"),
+        )?,
+    )?;
+    let mut behind: Vec<(u64, MediaItem)> = watching
+        .into_iter()
+        .filter_map(|w| {
+            let next = w.progress.next_episode?;
+            let aired = next.first_aired.as_deref().and_then(unix_time).unwrap_or(0);
+            let left = w.progress.aired.saturating_sub(w.progress.completed);
+            let when = if left > 1 {
+                format!("{left} to watch")
+            } else {
+                "out now".to_string()
+            };
+            let mut item = item(w.show, ContentType::Episode)?;
+            item.id = format!("{}:s{}e{}", item.id, next.season, next.number);
+            item.season = Some(next.season);
+            item.episode = Some(next.number);
+            item.note = Some(format!("S{}E{} · {when}", next.season, next.number));
+            Some((aired, item))
+        })
+        .collect();
+    behind.sort_by_key(|(aired, _)| std::cmp::Reverse(*aired));
+
+    let calendar = format!(
+        "/calendars/my/shows/{}/{AHEAD_DAYS}",
+        guest::civil_date(now)
+    );
+    let airing: Vec<Airing> =
+        match calendar_within(host, token, &format!("{calendar}?extended=images"))? {
+            Some(body) => decode("calendar", &body)?,
+            None => match calendar_within(host, token, &calendar)? {
+                Some(body) => decode("calendar", &body)?,
+                None => {
+                    guest::log(
+                        host,
+                        "the week's calendar is too long to read: Up next leaves it out",
+                    );
+                    Vec::new()
+                }
+            },
+        };
+    let mut ahead: Vec<(u64, MediaItem)> = Vec::new();
+    for entry in airing {
+        let Some(at) = unix_time(&entry.first_aired).filter(|at| *at > now) else {
+            continue;
+        };
+        let Some(mut item) = item(entry.show, ContentType::Series) else {
+            continue;
+        };
+        // A series with an episode out already is listed for that.
+        let series = format!("{}:", item.id);
+        if behind.iter().any(|(_, b)| b.id.starts_with(&series)) {
+            continue;
+        }
+        // The soonest episode of each series.
+        if let Some(pos) = ahead.iter().position(|(_, a)| a.id == item.id) {
+            if ahead[pos].0 <= at {
+                continue;
+            }
+            ahead.remove(pos);
+        }
+        let (season, number) = (entry.episode.season, entry.episode.number);
+        item.note = Some(format!("S{season}E{number} · {}", until(at - now)));
+        ahead.push((at, item));
+    }
+    ahead.sort_by_key(|(at, _)| *at);
+
+    Ok(Page {
+        items: behind
+            .into_iter()
+            .chain(ahead)
+            .map(|(_, item)| PageItem::Media(item))
+            .collect(),
+        cursor_next: None,
+        total_hint: None,
+    })
+}
+
+/// The calendar at `path`, unless its answer is over [`CALENDAR_MAX`].
+fn calendar_within(
+    host: &dyn Host,
+    token: &str,
+    path: &str,
+) -> Result<Option<Vec<u8>>, AddonError> {
+    let headers = BTreeMap::from([
+        ("trakt-api-key".to_string(), client_id(host)?),
+        ("trakt-api-version".to_string(), "2".to_string()),
+        ("authorization".to_string(), format!("Bearer {token}")),
+    ]);
+    let Some(resp) = guest::http_send_within(
+        host,
+        "GET",
+        &format!("{API}{path}"),
+        headers,
+        None,
+        CALENDAR_MAX,
+    )?
+    else {
+        return Ok(None);
+    };
+    if !(200..300).contains(&resp.status) {
+        return Err(failed("calendar", resp.status));
+    }
+    Ok(Some(resp.body))
+}
+
+/// "in 5 h", "in 3 days": how long until a new episode.
+fn until(secs: u64) -> String {
+    match secs {
+        0..3_600 => "within the hour".to_string(),
+        3_600..86_400 => format!("in {} h", secs / 3_600),
+        86_400..172_800 => "in 1 day".to_string(),
+        _ => format!("in {} days", secs / 86_400),
+    }
+}
+
+/// A Trakt time (`2026-10-11T01:00:00.000Z`, UTC) as Unix seconds.
+fn unix_time(at: &str) -> Option<u64> {
+    let num = |range: std::ops::Range<usize>| at.get(range)?.parse::<i64>().ok();
+    let (year, month, day) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hour, minute, second) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    // Howard Hinnant's days-from-civil.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let year_of_era = y - era * 400;
+    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    u64::try_from(days * 86_400 + hour * 3_600 + minute * 60 + second).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trakt_times_read_as_unix_seconds() {
+        assert_eq!(unix_time("1970-01-01T00:00:00.000Z"), Some(0));
+        assert_eq!(unix_time("2000-02-29T23:59:59.000Z"), Some(951_868_799));
+        assert_eq!(unix_time("2026-10-11T12:00:00Z"), Some(1_791_720_000));
+        assert_eq!(unix_time("soon"), None);
+    }
+
+    #[test]
+    fn until_says_how_long() {
+        assert_eq!(until(59), "within the hour");
+        assert_eq!(until(3 * 3_600 + 5), "in 3 h");
+        assert_eq!(until(86_400 + 1), "in 1 day");
+        assert_eq!(until(5 * 86_400), "in 5 days");
+    }
 }

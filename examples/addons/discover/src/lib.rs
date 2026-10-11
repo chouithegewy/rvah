@@ -2,9 +2,10 @@
 //! as components, the TMDB add-on and the Trakt add-on, each compiled in
 //! as a library (without its own wasm entry points).
 //!
-//! The root's columns, left to right: what is new to streaming and what is
-//! popular to stream or rent (TMDB), what you might like (Trakt, once
-//! linked), then your genres (TMDB, the `genres` setting). Search, details,
+//! The root's columns, left to right: the series you are watching, by
+//! their next episode (Trakt, once linked), what is new to streaming and
+//! what is popular to stream or rent (TMDB), what you might like (Trakt,
+//! once linked), then your genres (TMDB, the `genres` setting). Search, details,
 //! seasons and episodes are TMDB's; sign-in, account and scrobbling are
 //! Trakt's. A Trakt path is mounted under `trakt/`.
 //!
@@ -18,13 +19,20 @@ use rvah_addon_trakt::trakt;
 /// Where the Trakt component's paths are mounted.
 const TRAKT: &str = "trakt/";
 
+/// A Trakt row, its path under [`TRAKT`].
+fn mounted(row: Option<PageItem>) -> Option<PageItem> {
+    let PageItem::Directory(mut row) = row? else {
+        return None;
+    };
+    row.path = format!("{TRAKT}{}", row.path);
+    row.id = row.path.clone();
+    Some(PageItem::Directory(row))
+}
+
 fn root(host: &dyn Host) -> Result<Page, AddonError> {
-    let mut items = tmdb::streaming_rows();
-    if let Some(PageItem::Directory(mut row)) = trakt::you_might_like(host)? {
-        row.path = format!("{TRAKT}{}", row.path);
-        row.id = row.path.clone();
-        items.push(PageItem::Directory(row));
-    }
+    let mut items: Vec<PageItem> = mounted(trakt::up_next_row(host)?).into_iter().collect();
+    items.extend(tmdb::streaming_rows());
+    items.extend(mounted(trakt::you_might_like(host)?));
     items.extend(tmdb::genre_rows(host)?);
     Ok(Page {
         items,
@@ -107,10 +115,11 @@ mod tests {
     }
 
     #[test]
-    fn the_columns_run_streaming_then_trakt_then_your_genres() {
+    fn the_columns_run_up_next_streaming_then_trakt_then_your_genres() {
         assert_eq!(
             columns(&list(&host(true), None, None).unwrap()),
             [
+                ("Up next".into(), "trakt/up_next".into()),
                 ("New to streaming".into(), "streaming/new".into()),
                 (
                     "Popular to stream or rent".into(),
@@ -121,9 +130,9 @@ mod tests {
                 ("Sci-Fi".into(), "genre/scifi".into()),
             ]
         );
-        // Not linked to Trakt: no column of yours.
+        // Not linked to Trakt: no columns of yours.
         let unlinked = columns(&list(&host(false), None, None).unwrap());
-        assert!(unlinked.iter().all(|(title, _)| title != "You might like"));
+        assert_eq!(unlinked[0].0, "New to streaming");
         assert_eq!(unlinked.len(), 4);
     }
 

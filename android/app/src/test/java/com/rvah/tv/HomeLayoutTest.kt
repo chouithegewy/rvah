@@ -13,7 +13,7 @@ class HomeLayoutTest {
         CatalogEntry.Directory(path, title, null, path, null, groups)
 
     private fun media(id: String) =
-        CatalogEntry.Media(id, id, null, null, null, null, null, "other", null)
+        CatalogEntry.Media(id, id, null, null, null, null, null, "other", null, null)
 
     @Test fun discoverComesFirstAndItsComponentsAreNotShownTwice() {
         val addons = listOf(

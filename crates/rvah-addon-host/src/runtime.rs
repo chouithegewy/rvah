@@ -403,6 +403,7 @@ mod tests {
                     rating: None,
                     artwork: Default::default(),
                     provider_ids: Default::default(),
+                    note: None,
                 },
                 series_title: None,
                 tagline: None,
