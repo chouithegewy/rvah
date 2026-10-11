@@ -32,7 +32,7 @@ android {
             applicationIdSuffix = ".debug"
             // Add-on API keys from the repository's .env (gitignored), which
             // the debug app stores in the matching add-on's vault when unset;
-            // see DevSecrets.kt. Only TMDB_*, MDBLIST_*, TRAKT_* and PROWLARR_* variables,
+            // see DevSecrets.kt. Only TMDB_*, MDBLIST_*, TRAKT_*, PROWLARR_* and REAL_DEBRID_* variables,
             // with values filtered to token characters so they cannot inject
             // code. Release builds get none.
             val env = rootProject.projectDir.parentFile.resolve(".env")
@@ -41,7 +41,7 @@ android {
                     .map { it.trim() }
                     .filter { it.isNotEmpty() && !it.startsWith("#") && '=' in it }
                     .map { it.removePrefix("export ").substringBefore('=').trim() to it.substringAfter('=').trim().trim('"', '\'') }
-                    .filter { (name, value) -> Regex("(TMDB|MDBLIST|TRAKT|PROWLARR)_[A-Z0-9_]+").matches(name) && value.isNotEmpty() }
+                    .filter { (name, value) -> Regex("(TMDB|MDBLIST|TRAKT|PROWLARR|REAL_DEBRID)_[A-Z0-9_]+").matches(name) && value.isNotEmpty() }
                     .joinToString(";") { (name, value) -> "$name=" + value.filter { it.isLetterOrDigit() || it in "._-" } }
             } else {
                 ""
