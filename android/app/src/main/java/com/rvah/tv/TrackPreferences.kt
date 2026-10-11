@@ -1,5 +1,6 @@
 package com.rvah.tv
 
+import androidx.media3.common.C
 import androidx.media3.common.TrackSelectionParameters
 
 /** The viewer's language for audio and subtitles. */
@@ -14,4 +15,11 @@ fun TrackSelectionParameters.withLanguageDefaults(): TrackSelectionParameters =
     buildUpon()
         .setPreferredAudioLanguage(PREFERRED_LANGUAGE)
         .setPreferredTextLanguage(PREFERRED_LANGUAGE)
+        .build()
+
+/** The language defaults again: no track picked by hand, subtitles back on. */
+fun TrackSelectionParameters.forNewVideo(): TrackSelectionParameters =
+    buildUpon()
+        .clearOverrides()
+        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
         .build()
