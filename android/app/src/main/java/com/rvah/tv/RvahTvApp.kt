@@ -737,17 +737,38 @@ private fun PlayerScreen(
     }
     val ui = owner.ui
     // The controls hide after a quiet spell while playing, or on Back; any
-    // key brings them back. `touched` restarts the countdown.
+    // key brings them back. `touched` restarts the countdown. An open track
+    // menu keeps them up.
     var controls by remember(target) { mutableStateOf(true) }
     var touched by remember(target) { mutableStateOf(0) }
-    val autoHide = controlsAutoHide(started, ui.isPlaying, ui.failure != null)
+    var menu by remember(target) { mutableStateOf<TrackMenu?>(null) }
+    val autoHide = controlsAutoHide(started, ui.isPlaying, ui.failure != null) && menu == null
     LaunchedEffect(controls, touched, autoHide) {
         if (controls && autoHide) {
             delay(CONTROLS_HIDE_AFTER_MS)
             controls = false
         }
     }
-    BackHandler { if (controls) controls = false else onExit() }
+    // A closed menu hands focus back to the button that opened it.
+    val menuButtons = remember { TrackMenu.entries.associateWith { FocusRequester() } }
+    var refocus by remember { mutableStateOf<TrackMenu?>(null) }
+    LaunchedEffect(refocus) {
+        val button = menuButtons[refocus ?: return@LaunchedEffect] ?: return@LaunchedEffect
+        withFrameNanos { }
+        runCatching { button.requestFocus() }
+        refocus = null
+    }
+    val closeMenu = {
+        refocus = menu
+        menu = null
+    }
+    BackHandler {
+        when {
+            menu != null -> closeMenu()
+            controls -> controls = false
+            else -> onExit()
+        }
+    }
     val primary = rememberInitialFocus(controls, enabled = controls)
     // With the controls gone, the screen itself holds focus for key events.
     val screen = rememberInitialFocus(controls, enabled = !controls)
@@ -795,12 +816,28 @@ private fun PlayerScreen(
             if (status.isNotEmpty()) Text(status, color = if (failure != null) ErrorText else Secondary)
             if (BuildConfig.DEBUG && started) Text(bufferLine(ui.bufferedAheadMs, owner.bufferPlan), color = Secondary)
             Spacer(Modifier.height(12.dp))
+            menu?.let { open ->
+                TrackMenuList(open, if (open == TrackMenu.Audio) ui.audio else ui.subtitles) { option ->
+                    if (option == null) owner.subtitlesOff() else owner.select(option)
+                    closeMenu()
+                }
+                Spacer(Modifier.height(12.dp))
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
                 Button(onClick = { owner.seekBy(-10_000) }) { Text("−10s") }
                 Button(onClick = { owner.togglePlayPause() }, modifier = Modifier.focusRequester(primary)) {
                     Text(if (ui.isPlaying) "Pause" else "Play")
                 }
                 Button(onClick = { owner.seekBy(30_000) }) { Text("+30s") }
+                // Audio only when there is a choice; subtitles whenever the file has any.
+                for ((kind, options) in listOf(TrackMenu.Audio to ui.audio, TrackMenu.Subtitles to ui.subtitles)) {
+                    if (options.size > (if (kind == TrackMenu.Audio) 1 else 0)) {
+                        Button(
+                            onClick = { menu = if (menu == kind) null else kind },
+                            modifier = Modifier.focusRequester(menuButtons.getValue(kind)),
+                        ) { Text(trackButtonLabel(kind, options)) }
+                    }
+                }
                 Button(onClick = onExit) { Text("Back") }
             }
         }

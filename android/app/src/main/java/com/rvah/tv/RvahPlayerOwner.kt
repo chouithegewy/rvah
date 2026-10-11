@@ -9,6 +9,8 @@ import androidx.compose.runtime.setValue
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackGroup
+import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -36,7 +38,14 @@ data class PlayerUi(
     val failure: String? = null,
     /** Media buffered ahead of the playhead; only tracked in debug builds. */
     val bufferedAheadMs: Long = 0,
+    /** The file's audio tracks this device can play. */
+    val audio: List<TrackOption> = emptyList(),
+    /** The file's subtitle tracks this device can show. */
+    val subtitles: List<TrackOption> = emptyList(),
 )
+
+/** One track of the playing file, as the Audio or Subtitles menu offers it. */
+data class TrackOption(val name: String, val selected: Boolean, val group: TrackGroup, val index: Int)
 
 /**
  * Activity-scoped Media3 player. Rust prepares and validates the source;
@@ -96,6 +105,8 @@ class RvahPlayerOwner(
         scrobbles = ScrobbleState()
         ui = PlayerUi(status = "Buffering…")
         requestHeaders.set(spec.headers)
+        // Each video starts from the language defaults, whatever was picked for the last.
+        player.trackSelectionParameters = player.trackSelectionParameters.forNewVideo()
         report(NativePlaybackEvent.Preparing)
         player.setMediaItem(spec.toMediaItem(), spec.resumePositionMs)
         player.prepare()
@@ -122,6 +133,21 @@ class RvahPlayerOwner(
     fun seekBy(deltaMs: Long) {
         val duration = player.duration.takeIf { it != C.TIME_UNSET } ?: Long.MAX_VALUE
         player.seekTo((player.currentPosition + deltaMs).coerceIn(0L, duration))
+    }
+
+    /** Play [option]'s track: an audio track, or subtitles (turning them on). */
+    fun select(option: TrackOption) {
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(option.group.type, false)
+            .setOverrideForType(TrackSelectionOverride(option.group, option.index))
+            .build()
+    }
+
+    fun subtitlesOff() {
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            .build()
     }
 
     fun stop() {
@@ -192,8 +218,9 @@ class RvahPlayerOwner(
         report(NativePlaybackEvent.Error(message))
     }
 
-    /** Debug builds log each file's audio and subtitle tracks, selected ones starred. */
+    /** The menus' choices; debug builds also log each file's tracks, selected ones starred. */
     override fun onTracksChanged(tracks: Tracks) {
+        ui = ui.copy(audio = options(tracks, C.TRACK_TYPE_AUDIO), subtitles = options(tracks, C.TRACK_TYPE_TEXT))
         if (!BuildConfig.DEBUG) return
         for ((type, name) in listOf(C.TRACK_TYPE_AUDIO to "audio", C.TRACK_TYPE_TEXT to "subtitles")) {
             val line = tracks.groups.filter { it.type == type }.flatMap { group ->
@@ -207,6 +234,22 @@ class RvahPlayerOwner(
             }
             Log.d("rvah", "$name: ${line.joinToString(", ").ifEmpty { "none" }}")
         }
+    }
+
+    private fun options(tracks: Tracks, type: Int): List<TrackOption> {
+        val playable = tracks.groups.filter { it.type == type }.flatMap { group ->
+            (0 until group.length).filter { group.isTrackSupported(it) }.map { i ->
+                val format = group.getTrackFormat(i)
+                val name = trackName(
+                    format.language,
+                    format.label,
+                    if (type == C.TRACK_TYPE_AUDIO) format.channelCount else 0,
+                    forced = format.selectionFlags and C.SELECTION_FLAG_FORCED != 0,
+                )
+                TrackOption(name, group.isTrackSelected(i), group.mediaTrackGroup, i)
+            }
+        }
+        return playable.zip(distinctNames(playable.map { it.name })) { option, name -> option.copy(name = name) }
     }
 
     private fun durationMs(): ULong? = player.duration
