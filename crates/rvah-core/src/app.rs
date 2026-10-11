@@ -112,6 +112,14 @@ impl<B: PlayerBackend> AppCore<B> {
             .insert(addon_id.into(), RegisteredAddon { runtime, host });
     }
 
+    /// Forget an add-on's runtime, failures and any sign-in in progress,
+    /// as when it is uninstalled.
+    pub fn unregister_runtime(&mut self, addon_id: &str) {
+        self.addons.remove(addon_id);
+        self.failures.remove(addon_id);
+        self.sign_ins.remove(addon_id);
+    }
+
     /// Snapshot of the active playback session.
     pub fn session(&self) -> Option<PlaybackSession> {
         self.tracker().session().cloned()
