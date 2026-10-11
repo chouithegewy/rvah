@@ -842,6 +842,33 @@ impl AndroidCore {
             })
     }
 
+    /// Turn an add-on off; `enable_addon` turns it back on.
+    pub fn disable_addon(&self, addon_id: String) -> Result<(), AndroidCoreError> {
+        self.manager
+            .disable(&addon_id)
+            .map_err(|error| AndroidCoreError::Addon {
+                reason: error.to_string(),
+            })
+    }
+
+    /// Remove an add-on and everything it kept: settings, storage, watch
+    /// state, and its secrets in the vault.
+    pub fn uninstall_addon(&self, addon_id: String) -> Result<(), AndroidCoreError> {
+        self.core().unregister_runtime(&addon_id);
+        self.manager
+            .uninstall(&addon_id, true)
+            .map_err(|error| AndroidCoreError::Addon {
+                reason: error.to_string(),
+            })?;
+        let vault_error = |error: VaultError| AndroidCoreError::Storage {
+            reason: error.to_string(),
+        };
+        for name in self.vault.list(&addon_id).map_err(vault_error)? {
+            self.vault.delete(&addon_id, &name).map_err(vault_error)?;
+        }
+        Ok(())
+    }
+
     /// Store a secret the add-on's manifest declares.
     pub fn set_secret(
         &self,
@@ -1747,6 +1774,33 @@ genres = { type = "list", default = "Anime,Drama", enum = ["Anime", "Drama", "Sc
         assert_eq!(f.core.addons().unwrap()[0].status, "quarantined");
         f.core.enable_addon(ID.into()).unwrap();
         assert_eq!(f.core.addons().unwrap()[0].status, "enabled");
+    }
+
+    #[test]
+    fn an_addon_can_be_disabled_and_uninstalled_with_its_secrets() {
+        let f = installed();
+        f.core
+            .set_secret(ID.into(), "api_token".into(), "tok".into())
+            .unwrap();
+        f.core.disable_addon(ID.into()).unwrap();
+        assert_eq!(f.core.addons().unwrap()[0].status, "disabled");
+        f.core.enable_addon(ID.into()).unwrap();
+
+        f.core.uninstall_addon(ID.into()).unwrap();
+        assert!(f.core.addons().unwrap().is_empty());
+        assert_eq!(
+            f.core.vault.list(ID).unwrap(),
+            Vec::<String>::new(),
+            "its secrets go too"
+        );
+        assert!(f.core.browse(ID.into(), None, None).is_err());
+        // Installing it again starts afresh.
+        let keys = vec![f.key_hex.clone()];
+        let preview = f.core.preview_install(f.pkg.clone(), keys.clone()).unwrap();
+        f.core
+            .install_signed(f.pkg.clone(), keys, preview.permission_hash)
+            .unwrap();
+        assert_eq!(f.core.addons().unwrap().len(), 1);
     }
 
     #[test]

@@ -437,6 +437,12 @@ private fun AppNavigation(
         is Screen.AddonSettings -> AddonSettingsScreen(
             core = core,
             addon = current.addon,
+            includedIn = if (shownOnItsOwn(current.addon, addons)) null else "RVAH Discover",
+            onRemoved = {
+                home.forget(current.addon.id)
+                refresh++
+                screen = Screen.Home
+            },
             onChanged = {
                 home.forget(current.addon.id)
                 refresh++
@@ -806,8 +812,11 @@ private val MediaKeys = setOf(Key.MediaPlayPause, Key.MediaPlay, Key.MediaPause,
 private fun AddonSettingsScreen(
     core: AndroidCore,
     addon: AddonRecord,
+    /** The add-on that already includes this one, if any. */
+    includedIn: String?,
     onChanged: () -> Unit,
     onLinkAccount: () -> Unit,
+    onRemoved: () -> Unit,
     onExit: () -> Unit,
 ) {
     BackHandler(onBack = onExit)
@@ -854,10 +863,31 @@ private fun AddonSettingsScreen(
                 modifier = Modifier.focusRequester(first),
             ) { Text("Enable add-on") }
         }
+        includedIn?.let { Body("$it includes this add-on, so you can uninstall this one.", Secondary) }
         account?.let { Body(it, Secondary) }
-        if (canLink && status == "enabled") {
-            Button(onClick = onLinkAccount, modifier = Modifier.focusRequester(first)) { Text("Link account") }
+        var confirmRemove by remember { mutableStateOf(false) }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (canLink && status == "enabled") {
+                Button(onClick = onLinkAccount, modifier = Modifier.focusRequester(first)) { Text("Link account") }
+            }
+            if (status == "enabled") {
+                Button(onClick = {
+                    act("Disabled.", afterSuccess = { status = "disabled" }) { core.disableAddon(addon.id) }
+                }) { Text("Disable") }
+            }
+            Button(onClick = {
+                if (!confirmRemove) {
+                    confirmRemove = true
+                } else {
+                    scope.launch {
+                        onIo { core.uninstallAddon(addon.id) }
+                            .onSuccess { onRemoved() }
+                            .onFailure { error = it.userMessage() }
+                    }
+                }
+            }) { Text(if (confirmRemove) "Press again to uninstall" else "Uninstall") }
         }
+        if (confirmRemove) Body("Uninstalling removes ${addon.name} with its sign-in, settings and history.", ErrorText)
         message?.let { Body(it) }
         error?.let { Body(it, ErrorText) }
         if (secrets.isEmpty() && settings.isEmpty()) Body("This add-on has no settings.")

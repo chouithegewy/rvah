@@ -253,9 +253,12 @@ private fun SettingsTab(
         Text("Add-ons", fontSize = 15.sp, color = Secondary)
         LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(addons, key = { it.id }) { addon ->
-                Button(onClick = { onAddonSettings(addon) }) {
-                    Text(if (addon.status == "enabled") addon.name else "${addon.name} (${addon.status})")
+                val note = when {
+                    addon.status != "enabled" -> " (${addon.status})"
+                    !shownOnItsOwn(addon, addons) -> " (in RVAH Discover, not needed)"
+                    else -> ""
                 }
+                Button(onClick = { onAddonSettings(addon) }) { Text(addon.name + note) }
             }
         }
     }
