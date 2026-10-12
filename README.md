@@ -10,6 +10,20 @@ networking, storage, secrets, playback, and add-on lifecycle.
 format, or assets with Kodi; the add-on model is a clean design with the
 manifest as the security boundary.
 
+## Project status
+
+RVAH is pre-1.0 software under active development. The native Linux desktop
+application and CLI build on x86_64, and the Android TV shell targets API 23+
+with API 36 build tooling. There is no browser application target; WebAssembly
+is used to sandbox add-ons inside the native hosts. Interfaces and package
+formats may change before a stable release.
+
+RVAH ships no media or provider credentials. Third-party service names and
+example integrations belong to their respective owners and do not imply
+endorsement. Users and add-on authors are responsible for complying with
+applicable law and service terms. Add-ons that bypass access controls, enable
+unauthorized access, or hide data collection are outside project policy.
+
 ## Crate map
 
 | Crate | Role |
@@ -19,6 +33,7 @@ manifest as the security boundary.
 | `rvah-net` | Allowlisted, quota'd HTTP client — add-ons never get raw sockets |
 | `rvah-data` | SQLite persistence: transactional migrations, add-on registry, per-add-on quota'd storage, favorites, watch state, diagnostics |
 | `rvah-auth` | Encrypted secret vault (AES-256-GCM), log redaction, device-code auth flow |
+| `rvah-profile` | Portable AES-256-GCM profile bundles for add-on settings and linked accounts |
 | `rvah-player` | Player state machine, source validation, watch-progress tracking, mock backend |
 | `rvah-core` | Use-case orchestration: browse/search/resolve→play, quarantine, navigation, resume |
 | `rvah-testkit` | Fixture providers and package builders for tests and the simulator |
@@ -130,6 +145,10 @@ Consume: `rvah repo-check` / `rvah repo-install … --approve` with `--index`
 `--channel`; deprecation notices surface in `repo-check`. See
 `docs/repository-policy.md` and `docs/developer-guide.md`.
 
+Linked-account credentials are device-local by default. For encrypted export,
+cross-device enrollment, and the proposed Veilid synchronization/media design,
+see [`docs/portable-profiles-and-veilid.md`](docs/portable-profiles-and-veilid.md).
+
 ## Deferred (post-MVP)
 
 - DRM is out of scope; protected sources fail with an explicit unsupported-DRM
@@ -145,3 +164,8 @@ cargo test --workspace --all-features  # includes the wasm sandbox tests
 cargo clippy --workspace --all-features -- -D warnings
 cargo fmt --all
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes. Report
+security issues privately as described in [SECURITY.md](SECURITY.md). The
+project is dual-licensed under [MIT](LICENSE-MIT) or
+[Apache-2.0](LICENSE-APACHE).

@@ -17,6 +17,7 @@ rvah-core.workspace = true
 rvah-data.workspace = true
 rvah-net.workspace = true
 rvah-player.workspace = true
+rvah-profile.workspace = true
 ed25519-dalek.workspace = true
 hex.workspace = true
 serde_json.workspace = true

@@ -1,5 +1,6 @@
 //! End-to-end CLI tests: spawn the real `rvah` binary (STP CLI suite).
 
+use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -273,6 +274,101 @@ fn repo_index_check_install_flow() {
     ]);
     assert!(out.status.success(), "upgrade: {}", stderr(&out));
     assert!(stdout(&out).contains("v1.1.0"));
+}
+
+#[test]
+fn encrypted_profile_moves_a_linked_account_without_exposing_its_value() {
+    use rvah_auth::{EncryptedFileVault, SecretVault};
+    use std::process::Stdio;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let (pkg, pubkey) = package_fixture(tmp.path(), "com.example.portable");
+    let source = tmp.path().join("source");
+    let target = tmp.path().join("target");
+    let key = tmp.path().join("account.profile.key");
+    let bundle = tmp.path().join("account.rvah-profile");
+
+    let out = rvah(&[
+        "install",
+        &pkg,
+        "--pubkey",
+        &pubkey,
+        "--data-dir",
+        source.to_str().unwrap(),
+        "--approve",
+    ]);
+    assert!(out.status.success(), "install failed: {}", stderr(&out));
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rvah"))
+        .args([
+            "secret-set",
+            "com.example.portable",
+            "oauth_token",
+            "--data-dir",
+            source.to_str().unwrap(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"portable-secret\n")
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "secret-set failed: {}", stderr(&out));
+    assert!(!stdout(&out).contains("portable-secret"));
+
+    let out = rvah(&["profile-keygen", "-o", key.to_str().unwrap()]);
+    assert!(out.status.success(), "keygen failed: {}", stderr(&out));
+    let out = rvah(&[
+        "profile-export",
+        "-o",
+        bundle.to_str().unwrap(),
+        "--key",
+        key.to_str().unwrap(),
+        "--data-dir",
+        source.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "export failed: {}", stderr(&out));
+    assert!(!stdout(&out).contains("portable-secret"));
+
+    let out = rvah(&[
+        "profile-import",
+        bundle.to_str().unwrap(),
+        "--key",
+        key.to_str().unwrap(),
+        "--data-dir",
+        target.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "import failed: {}", stderr(&out));
+    assert!(!stdout(&out).contains("portable-secret"));
+
+    let vault =
+        EncryptedFileVault::open(target.join("secrets.vault"), target.join("vault.key")).unwrap();
+    assert_eq!(
+        vault
+            .get("com.example.portable", "oauth_token")
+            .unwrap()
+            .as_deref(),
+        Some("portable-secret")
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&key).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(&bundle).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 }
 
 #[test]

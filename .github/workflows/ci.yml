@@ -5,6 +5,13 @@ on:
     branches: [master, main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -28,6 +35,44 @@ jobs:
         run: cargo clippy --workspace -- -D warnings
       - name: Test
         run: cargo test --workspace
+
+  addons:
+    name: add-on (${{ matrix.addon }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        addon: [discover, prowlarr, real-debrid, subdl, tmdb, trakt]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Test natively
+        run: cargo test --locked --manifest-path examples/addons/${{ matrix.addon }}/Cargo.toml
+      - name: Build WebAssembly guest
+        run: cargo build --locked --release --target wasm32-unknown-unknown --manifest-path examples/addons/${{ matrix.addon }}/Cargo.toml
+
+  addon-integration:
+    name: add-on host integration
+    needs: addons
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Stage WebAssembly guests
+        run: |
+          sh examples/addons/discover/build.sh
+          PROWLARR_URL=https://prowlarr.example.com sh examples/addons/prowlarr/build.sh
+          sh examples/addons/real-debrid/build.sh
+          sh examples/addons/subdl/build.sh
+          sh examples/addons/tmdb/build.sh
+          sh examples/addons/trakt/build.sh
+      - name: Exercise guests through the Android host
+        run: cargo test --locked -p rvah-android --tests -- --ignored
 
   audit:
     name: licenses + advisories (cargo-deny)

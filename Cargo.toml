@@ -31,7 +31,7 @@ flate2 = "1"
 ureq = "2"
 hex = "0.4"
 tempfile = "3"
-wasmtime = "36.0.7"
+wasmtime = "36.0.16"
 wasmi = "0.46.0"
 uniffi = "0.32.0"
 eframe = "0.29"
@@ -39,6 +39,7 @@ proptest = "1"
 raw-window-handle = "0.6"
 winit = "0.30"
 x11-dl = "2"
+zeroize = "1"
 
 rvah-addon-sdk = { path = "crates/rvah-addon-sdk" }
 rvah-addon-host = { path = "crates/rvah-addon-host" }
@@ -51,3 +52,4 @@ rvah-testkit = { path = "crates/rvah-testkit" }
 rvah-player-mpv = { path = "crates/rvah-player-mpv" }
 rvah-ui = { path = "crates/rvah-ui" }
 rvah-repo = { path = "crates/rvah-repo" }
+rvah-profile = { path = "crates/rvah-profile" }

@@ -10,6 +10,7 @@ description = "RVAH — sandboxed video add-on host (desktop app + CLI)"
 # then `cargo deb -p rvah-app --no-build` so the rvah CLI asset exists.
 [package.metadata.deb]
 name = "rvah"
+maintainer = "chilos <d@chilos.dev>"
 copyright = "2026 RVAH contributors"
 license-file = ["../../LICENSE-MIT", "0"]
 extended-description = """\

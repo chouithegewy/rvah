@@ -12,7 +12,9 @@ use std::sync::Mutex;
 use rusqlite::Connection;
 
 pub use migrations::{Migration, MIGRATIONS};
-pub use repos::{AddonRecord, AddonStatus, DataError, DiagnosticEvent, FavoriteRecord, WatchState};
+pub use repos::{
+    AddonRecord, AddonSetting, AddonStatus, DataError, DiagnosticEvent, FavoriteRecord, WatchState,
+};
 
 /// Handle to the app database. All repository methods live on this type.
 pub struct Database {

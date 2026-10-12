@@ -141,7 +141,8 @@ fn tmdb_guest_lists_rows_and_opens_details() {
     );
 
     let rows = core.browse(&id, None, None).unwrap();
-    assert_eq!(rows.items.len(), 8);
+    // Two streaming rows plus the twelve default genre columns.
+    assert_eq!(rows.items.len(), 14);
 
     let row = core
         .browse(&id, Some("movie/now_playing".into()), None)

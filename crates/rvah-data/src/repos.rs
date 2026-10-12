@@ -83,6 +83,13 @@ pub struct DiagnosticEvent {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddonSetting {
+    pub addon_id: String,
+    pub key: String,
+    pub value: String,
+}
+
 impl Database {
     // ---- addons ----
 
@@ -261,6 +268,41 @@ impl Database {
             Some(json) => Some(serde_json::from_str(&json)?),
             None => None,
         })
+    }
+
+    /// Explicit values stored for one add-on. Manifest defaults are not
+    /// returned, so portable profiles stay small and preserve the distinction
+    /// between a user choice and a default that may change in a later release.
+    pub fn list_settings(&self, addon_id: &str) -> Result<Vec<AddonSetting>, DataError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT key, value_json FROM addon_settings WHERE addon_id = ?1 ORDER BY key",
+        )?;
+        let rows = stmt.query_map([addon_id], |row| {
+            let value_json: String = row.get(1)?;
+            let value = serde_json::from_str(&value_json).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?;
+            Ok(AddonSetting {
+                addon_id: addon_id.to_string(),
+                key: row.get(0)?,
+                value,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn delete_setting(&self, addon_id: &str, key: &str) -> Result<(), DataError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM addon_settings WHERE addon_id = ?1 AND key = ?2",
+            params![addon_id, key],
+        )?;
+        Ok(())
     }
 
     // ---- per-add-on key-value storage with quota (FR-101) ----
@@ -484,6 +526,32 @@ mod tests {
             sdk_range: ">=0.1, <0.2".into(),
             capabilities: vec!["catalog".into(), "resolve".into()],
         }
+    }
+
+    #[test]
+    fn settings_can_be_listed_and_deleted_for_portable_profiles() {
+        let db = db();
+        db.set_setting("com.example.a", "region", "US").unwrap();
+        db.set_setting("com.example.a", "quality", "4k").unwrap();
+        db.set_setting("com.example.b", "region", "GB").unwrap();
+
+        let settings = db.list_settings("com.example.a").unwrap();
+        assert_eq!(
+            settings
+                .iter()
+                .map(|setting| (setting.key.as_str(), setting.value.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("quality", "4k"), ("region", "US")]
+        );
+
+        db.delete_setting("com.example.a", "quality").unwrap();
+        assert_eq!(db.get_setting("com.example.a", "quality").unwrap(), None);
+        assert_eq!(
+            db.get_setting("com.example.b", "region")
+                .unwrap()
+                .as_deref(),
+            Some("GB")
+        );
     }
 
     #[test]

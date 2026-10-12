@@ -29,6 +29,9 @@ USAGE:
   rvah play <id> <item-id> --data-dir <DIR>
   rvah diagnostics --data-dir <DIR>
   rvah secret-set <id> <name> --data-dir <DIR>   (value read from stdin)
+  rvah profile-keygen -o <profile.key>
+  rvah profile-export -o <profile.rvah-profile> --key <profile.key> --data-dir <DIR>
+  rvah profile-import <profile.rvah-profile> --key <profile.key> --data-dir <DIR>
   rvah repo-index <packages-dir> -o <index.json> --key <signing.key> [--base-url URL] [--channel <id>=<channel>]
   rvah repo-check --index <url-or-path> --pubkey <verify.pub> --data-dir <DIR> [--channel stable]
   rvah repo-install <addon-id> --index <url-or-path> --pubkey <verify.pub> --data-dir <DIR> [--channel stable] [--approve]
@@ -76,6 +79,9 @@ fn dispatch(args: &[String]) -> Result<(), CliError> {
         "play" => cmd_play(rest),
         "diagnostics" => cmd_diagnostics(rest),
         "secret-set" => cmd_secret_set(rest),
+        "profile-keygen" => cmd_profile_keygen(rest),
+        "profile-export" => cmd_profile_export(rest),
+        "profile-import" => cmd_profile_import(rest),
         "repo-index" => cmd_repo_index(rest),
         "repo-check" => cmd_repo_check(rest),
         "repo-install" => cmd_repo_install(rest),
@@ -375,6 +381,101 @@ fn store_secret(data_dir: &Path, id: &str, name: &str, value: &str) -> Result<()
         return Err(CliError::Usage("empty secret value on stdin".into()));
     }
     open_vault(data_dir)?.set(id, name, value).map_err(fail)
+}
+
+// ---- portable encrypted profiles ----
+
+fn profile_key(args: &[String]) -> Result<rvah_profile::ProfileKey, CliError> {
+    let path = flag_value(args, "--key")
+        .ok_or_else(|| CliError::Usage("missing --key <profile.key>".into()))?;
+    let value = std::fs::read_to_string(&path)
+        .map_err(|error| fail(format!("read profile key {path}: {error}")))?;
+    rvah_profile::ProfileKey::from_hex(&value).map_err(fail)
+}
+
+/// Create a new private file without following an existing path. Both the
+/// recovery key and encrypted profile default to mode 0600 on Unix.
+fn write_private_new(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|error| fail(format!("create {}: {error}", path.display())))?;
+    use std::io::Write;
+    file.write_all(bytes)
+        .map_err(|error| fail(format!("write {}: {error}", path.display())))?;
+    file.sync_all()
+        .map_err(|error| fail(format!("sync {}: {error}", path.display())))
+}
+
+fn cmd_profile_keygen(args: &[String]) -> Result<(), CliError> {
+    if !positional(args).is_empty() {
+        return Err(CliError::Usage(
+            "profile-keygen takes no positional arguments".into(),
+        ));
+    }
+    let output =
+        flag_value(args, "-o").ok_or_else(|| CliError::Usage("profile-keygen needs -o".into()))?;
+    let key = rvah_profile::ProfileKey::generate();
+    write_private_new(Path::new(&output), format!("{}\n", key.to_hex()).as_bytes())?;
+    println!("wrote profile recovery key {output}");
+    println!("keep it separate from profile bundles and never commit it");
+    Ok(())
+}
+
+fn cmd_profile_export(args: &[String]) -> Result<(), CliError> {
+    if !positional(args).is_empty() {
+        return Err(CliError::Usage(
+            "profile-export takes no positional arguments".into(),
+        ));
+    }
+    let output =
+        flag_value(args, "-o").ok_or_else(|| CliError::Usage("profile-export needs -o".into()))?;
+    let data_dir = require_data_dir(args)?;
+    let key = profile_key(args)?;
+    let db = open_db(&data_dir)?;
+    let vault = open_vault(&data_dir)?;
+    let profile = rvah_profile::PortableProfile::collect(&db, vault.as_ref()).map_err(fail)?;
+    let addon_count = profile.addons.len();
+    let bytes = profile.encrypt(&key).map_err(fail)?;
+    write_private_new(Path::new(&output), &bytes)?;
+    println!("exported {addon_count} add-on profile(s) to {output}");
+    Ok(())
+}
+
+fn cmd_profile_import(args: &[String]) -> Result<(), CliError> {
+    let pos = positional(args);
+    let [bundle] = pos.as_slice() else {
+        return Err(CliError::Usage(
+            "profile-import takes one .rvah-profile path".into(),
+        ));
+    };
+    let data_dir = require_data_dir(args)?;
+    let key = profile_key(args)?;
+    let length = std::fs::metadata(bundle)
+        .map_err(|error| fail(format!("read profile bundle {bundle}: {error}")))?
+        .len();
+    if length > 512 * 1024 {
+        return Err(fail(
+            "profile bundle exceeds the 512 KiB portable-profile limit",
+        ));
+    }
+    let bytes = std::fs::read(bundle)
+        .map_err(|error| fail(format!("read profile bundle {bundle}: {error}")))?;
+    let profile = rvah_profile::PortableProfile::decrypt(&bytes, &key).map_err(fail)?;
+    let db = open_db(&data_dir)?;
+    let vault = open_vault(&data_dir)?;
+    let summary = profile.apply(&db, vault.as_ref()).map_err(fail)?;
+    println!(
+        "imported {} add-on profile(s): {} setting(s), {} secret(s)",
+        summary.addons, summary.settings, summary.secrets
+    );
+    Ok(())
 }
 
 fn cmd_browse(args: &[String]) -> Result<(), CliError> {

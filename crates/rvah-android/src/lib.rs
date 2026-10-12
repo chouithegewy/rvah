@@ -147,6 +147,21 @@ pub struct DiagnosticRecord {
     pub message: String,
 }
 
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ProfileImportSummary {
+    pub addons: u64,
+    pub settings: u64,
+    pub secrets: u64,
+}
+
+/// Generate the recovery key for one portable profile. UI code must move it
+/// into platform-protected storage and must never include it with the encrypted
+/// bundle sent to an untrusted sync service.
+#[uniffi::export]
+pub fn generate_profile_key() -> String {
+    rvah_profile::ProfileKey::generate().to_hex()
+}
+
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum CatalogEntry {
     Directory {
@@ -764,6 +779,36 @@ impl AndroidCore {
             .map_err(storage_error)
     }
 
+    /// Produce the same opaque encrypted profile used by the desktop CLI.
+    /// The bytes can be shared or placed in Veilid; account values never cross
+    /// the FFI boundary in plaintext.
+    pub fn export_profile(&self, profile_key_hex: String) -> Result<Vec<u8>, AndroidCoreError> {
+        let key = rvah_profile::ProfileKey::from_hex(&profile_key_hex).map_err(profile_error)?;
+        rvah_profile::PortableProfile::collect(&self.db, self.vault.as_ref())
+            .and_then(|profile| profile.encrypt(&key))
+            .map_err(profile_error)
+    }
+
+    /// Authenticate, decrypt, and overlay a portable profile. Add-on packages
+    /// and permission grants are intentionally not restored by this operation.
+    pub fn import_profile(
+        &self,
+        bytes: Vec<u8>,
+        profile_key_hex: String,
+    ) -> Result<ProfileImportSummary, AndroidCoreError> {
+        let key = rvah_profile::ProfileKey::from_hex(&profile_key_hex).map_err(profile_error)?;
+        let profile =
+            rvah_profile::PortableProfile::decrypt(&bytes, &key).map_err(profile_error)?;
+        let summary = profile
+            .apply(&self.db, self.vault.as_ref())
+            .map_err(profile_error)?;
+        Ok(ProfileImportSummary {
+            addons: summary.addons as u64,
+            settings: summary.settings as u64,
+            secrets: summary.secrets as u64,
+        })
+    }
+
     /// Verify a package against the build's trusted keys and describe what
     /// installing it would grant. Installs nothing.
     pub fn preview_install(
@@ -1210,6 +1255,12 @@ fn addon_error(error: rvah_core::CoreError) -> AndroidCoreError {
 }
 
 fn storage_error(error: rvah_data::DataError) -> AndroidCoreError {
+    AndroidCoreError::Storage {
+        reason: error.to_string(),
+    }
+}
+
+fn profile_error(error: rvah_profile::ProfileError) -> AndroidCoreError {
     AndroidCoreError::Storage {
         reason: error.to_string(),
     }

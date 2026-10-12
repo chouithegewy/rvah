@@ -1,0 +1,21 @@
+[package]
+name = "rvah-profile"
+description = "Encrypted, portable RVAH settings and linked-account bundles"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aes-gcm.workspace = true
+hex.workspace = true
+rand.workspace = true
+rvah-auth.workspace = true
+rvah-data.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
