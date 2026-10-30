@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""The RVAH logo: the letters as red lightning bolts.
+"""The RVAH logo: the letters as lightning bolts on black, R and H purple,
+V yellow, A green.
 
 Each letter is a few angular strokes; a long stroke runs full width to a
 kink, steps sideways there like a bolt, and narrows to a sharp tip. The
@@ -23,10 +24,21 @@ GAP = 12  # between letters, in letter units (a letter is 100 high)
 SPLIT = 50  # where the lit upper half ends, in letter units
 
 BACKGROUND = "#0B0F14"
-GLOW = ("#26FF1A1A", "#4DFF1A1A")  # an outer and an inner halo
-DEEP = "#9E0010"
-BRIGHT = "#E3121C"
-HIGHLIGHT = "#FF4436"
+
+
+class Palette:
+    """A letter's colours: its glow (an outer and an inner halo, faint), a
+    deep shade for the shadow, the letter itself, and its lit upper half."""
+
+    def __init__(self, glow, deep, bright, highlight):
+        rgb = glow.lstrip("#")
+        self.glow = (f"#26{rgb}", f"#4D{rgb}")
+        self.deep, self.bright, self.highlight = deep, bright, highlight
+
+
+PURPLE = Palette("#9B30FF", deep="#4B0F86", bright="#8E2DE2", highlight="#B77BFF")
+YELLOW = Palette("#FFC400", deep="#8F6400", bright="#F5B800", highlight="#FFDE59")
+GREEN = Palette("#1ED760", deep="#0A6B2C", bright="#19B450", highlight="#5EF08E")
 
 
 def bolt(top_l, top_r, y0, foot, y1, kink, jog, shelf=5):
@@ -93,20 +105,21 @@ def letter_h():
     ]
 
 
-def letters(makers):
-    """The letters set side by side, leaning, as polygons; and their width.
+def letters(entries):
+    """The letters set side by side, leaning: each letter's palette and
+    polygons, and their total width.
 
     The leftmost point is at x = 0, the top at y = 0 and the feet at y = 100.
     """
-    polygons, x = [], 0
-    for make in makers:
+    groups, x = [], 0
+    for make, palette in entries:
         width, parts = make()
-        for part in parts:
-            polygons.append([(x + px + (100 - py) * LEAN, py) for px, py in part])
+        groups.append((palette, [[(x + px + (100 - py) * LEAN, py) for px, py in part] for part in parts]))
         x += width + GAP
-    left = min(px for poly in polygons for px, _ in poly)
-    right = max(px for poly in polygons for px, _ in poly)
-    return [[(px - left, py) for px, py in poly] for poly in polygons], right - left
+    every = [point for _, polygons in groups for poly in polygons for point in poly]
+    left = min(px for px, _ in every)
+    right = max(px for px, _ in every)
+    return [(palette, [[(px - left, py) for px, py in poly] for poly in polygons]) for palette, polygons in groups], right - left
 
 
 def place(polygons, scale, dx, dy):
@@ -123,14 +136,22 @@ class Art:
     def card(self, radius):
         self.layers.append(("card", BACKGROUND, radius))
 
-    def word(self, polygons, scale, dx, dy):
-        """Lettering from `letters`, scaled and moved."""
-        placed = place(polygons, scale, dx, dy)
-        self.layers.append(("glow", GLOW[0], placed, 9 * scale))
-        self.layers.append(("glow", GLOW[1], placed, 4.5 * scale))
-        self.layers.append(("fill", DEEP, place(polygons, scale, dx + 1.6 * scale, dy + 1.6 * scale), None))
-        self.layers.append(("fill", BRIGHT, placed, None))
-        self.layers.append(("fill", HIGHLIGHT, placed, (dy, dy + SPLIT * scale)))
+    def word(self, groups, scale, dx, dy):
+        """Lettering from `letters`, scaled and moved: each layer for every
+        letter in its own colour before the next layer, so one letter's glow
+        never covers another's face."""
+        placed = [(palette, place(polygons, scale, dx, dy)) for palette, polygons in groups]
+        shadow = [(palette, place(polygons, scale, dx + 1.6 * scale, dy + 1.6 * scale)) for palette, polygons in groups]
+        for palette, polygons in placed:
+            self.layers.append(("glow", palette.glow[0], polygons, 9 * scale))
+        for palette, polygons in placed:
+            self.layers.append(("glow", palette.glow[1], polygons, 4.5 * scale))
+        for palette, polygons in shadow:
+            self.layers.append(("fill", palette.deep, polygons, None))
+        for palette, polygons in placed:
+            self.layers.append(("fill", palette.bright, polygons, None))
+        for palette, polygons in placed:
+            self.layers.append(("fill", palette.highlight, polygons, (dy, dy + SPLIT * scale)))
 
     def xml(self):
         vw, vh = self.viewport
@@ -224,7 +245,7 @@ def path(colour, d, stroke=None, indent=4):
     return f"{pad}<path\n" + "".join(f"{pad}    {a}\n" for a in attrs[:-1]) + f"{pad}    {attrs[-1]} />\n"
 
 
-ALL = (letter_r, letter_v, letter_a, letter_h)
+ALL = ((letter_r, PURPLE), (letter_v, YELLOW), (letter_a, GREEN), (letter_h, PURPLE))
 
 
 def drawables():
@@ -249,8 +270,8 @@ def drawables():
     icon.card(18)
     rows = [letters(ALL[:2]), letters(ALL[2:])]
     scale = min(80 / max(w for _, w in rows), 0.4)
-    for row, (polygons, width) in enumerate(rows):
-        icon.word(polygons, scale, (108 - width * scale) / 2, 12 + row * (100 * scale + 4))
+    for row, (groups, width) in enumerate(rows):
+        icon.word(groups, scale, (108 - width * scale) / 2, 12 + row * (100 * scale + 4))
     yield "ic_launcher.xml", icon
 
 
