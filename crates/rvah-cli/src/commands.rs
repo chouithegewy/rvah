@@ -20,6 +20,7 @@ USAGE:
   rvah validate <manifest.toml>
   rvah keygen -o <keydir>
   rvah package <addon-dir> -o <pkg.rvah> --key <signing.key>
+  rvah sign <pkg.rvah> --key <signing.key>
   rvah install <pkg.rvah> --pubkey <verify.pub> --data-dir <DIR> [--approve]
   rvah addons --data-dir <DIR>
   rvah enable|disable <id> --data-dir <DIR>
@@ -32,6 +33,7 @@ USAGE:
   rvah profile-keygen -o <profile.key>
   rvah profile-export -o <profile.rvah-profile> --key <profile.key> --data-dir <DIR>
   rvah profile-import <profile.rvah-profile> --key <profile.key> --data-dir <DIR>
+  rvah profile-restore <profile.rvah-profile> --key <profile.key> --index <url-or-path> --pubkey <verify.pub> --data-dir <DIR> [--channel stable] [--approve]
   rvah repo-index <packages-dir> -o <index.json> --key <signing.key> [--base-url URL] [--channel <id>=<channel>]
   rvah repo-check --index <url-or-path> --pubkey <verify.pub> --data-dir <DIR> [--channel stable]
   rvah repo-install <addon-id> --index <url-or-path> --pubkey <verify.pub> --data-dir <DIR> [--channel stable] [--approve]
@@ -70,6 +72,7 @@ fn dispatch(args: &[String]) -> Result<(), CliError> {
         "validate" => cmd_validate(rest),
         "keygen" => cmd_keygen(rest),
         "package" => cmd_package(rest),
+        "sign" => cmd_sign(rest),
         "install" => cmd_install(rest),
         "addons" => cmd_addons(rest),
         "enable" | "disable" => cmd_set_enabled(cmd == "enable", rest),
@@ -82,6 +85,7 @@ fn dispatch(args: &[String]) -> Result<(), CliError> {
         "profile-keygen" => cmd_profile_keygen(rest),
         "profile-export" => cmd_profile_export(rest),
         "profile-import" => cmd_profile_import(rest),
+        "profile-restore" => cmd_profile_restore(rest),
         "repo-index" => cmd_repo_index(rest),
         "repo-check" => cmd_repo_check(rest),
         "repo-install" => cmd_repo_install(rest),
@@ -262,6 +266,24 @@ fn cmd_package(args: &[String]) -> Result<(), CliError> {
     std::fs::write(&sig_path, hex::encode(sig)).map_err(fail)?;
     println!("packaged {} (sha256 {})", out.display(), hex::encode(hash));
     println!("signature {sig_path}");
+    Ok(())
+}
+
+/// Sign existing package bytes without repacking them. This preserves the
+/// exact digest recorded in an exported recovery profile.
+fn cmd_sign(args: &[String]) -> Result<(), CliError> {
+    let pos = positional(args);
+    let [package] = pos.as_slice() else {
+        return Err(CliError::Usage("sign takes one .rvah package path".into()));
+    };
+    let key_path =
+        flag_value(args, "--key").ok_or_else(|| CliError::Usage("sign needs --key".into()))?;
+    let package = PathBuf::from(package.as_str());
+    let key = read_signing_key(Path::new(&key_path))?;
+    let signature = sign_package(&package, &key).map_err(fail)?;
+    let signature_path = format!("{}.sig", package.display());
+    std::fs::write(&signature_path, hex::encode(signature)).map_err(fail)?;
+    println!("signed {} -> {signature_path}", package.display());
     Ok(())
 }
 
@@ -473,6 +495,111 @@ fn cmd_profile_import(args: &[String]) -> Result<(), CliError> {
     let summary = profile.apply(&db, vault.as_ref()).map_err(fail)?;
     println!(
         "imported {} add-on profile(s): {} setting(s), {} secret(s)",
+        summary.addons, summary.settings, summary.secrets
+    );
+    Ok(())
+}
+
+/// Recreate the signed add-on set described by a profile, then overlay its
+/// settings and credentials. Repository trust and permission approval are
+/// deliberately target-device decisions and are never copied from the source.
+fn cmd_profile_restore(args: &[String]) -> Result<(), CliError> {
+    let pos = positional(args);
+    let [bundle] = pos.as_slice() else {
+        return Err(CliError::Usage(
+            "profile-restore takes one .rvah-profile path".into(),
+        ));
+    };
+    let data_dir = require_data_dir(args)?;
+    let channel = flag_value(args, "--channel").unwrap_or_else(|| "stable".into());
+    let key = profile_key(args)?;
+    let bytes = std::fs::read(bundle)
+        .map_err(|error| fail(format!("read profile bundle {bundle}: {error}")))?;
+    let profile = rvah_profile::PortableProfile::decrypt(&bytes, &key).map_err(fail)?;
+    let (repo, transport) = open_repository(args)?;
+    let index = repo.fetch_index(transport.as_ref()).map_err(fail)?;
+
+    let mut plan = Vec::new();
+    for (addon_id, addon) in &profile.addons {
+        let recipe = addon.restore.as_ref().ok_or_else(|| {
+            fail(format!(
+                "{addon_id} has no signed-package restore recipe; install it manually before profile-import"
+            ))
+        })?;
+        let entry = index
+            .addons
+            .iter()
+            .find(|entry| {
+                entry.id == *addon_id
+                    && entry.channel == channel
+                    && entry.version.to_string() == addon.source_version
+            })
+            .ok_or_else(|| {
+                fail(format!(
+                    "{addon_id} v{} is not present in repository channel {channel}",
+                    addon.source_version
+                ))
+            })?;
+        if !entry
+            .sha256
+            .eq_ignore_ascii_case(recipe.package_sha256.trim())
+        {
+            return Err(fail(format!(
+                "{addon_id} v{} package hash differs from the encrypted restore recipe",
+                addon.source_version
+            )));
+        }
+        println!(
+            "restore\t{}\t{}\t{}\t{}",
+            addon_id,
+            addon.source_version,
+            if recipe.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            },
+            entry.sha256
+        );
+        plan.push((entry.clone(), recipe.enabled));
+    }
+
+    if !has_flag(args, "--approve") {
+        return Err(fail(
+            "restore plan not approved; inspect it and re-run with --approve",
+        ));
+    }
+
+    let (db, manager) = open_manager(&data_dir)?;
+    let work = data_dir.join("downloads");
+    std::fs::create_dir_all(&work).map_err(fail)?;
+    for (entry, enabled) in &plan {
+        let already_current = db
+            .get_addon(&entry.id)
+            .map_err(fail)?
+            .is_some_and(|installed| installed.package_hash.eq_ignore_ascii_case(&entry.sha256));
+        if already_current {
+            println!("already-installed\t{}\t{}", entry.id, entry.version);
+        } else {
+            let installed = repo
+                .install_entry(
+                    transport.as_ref(),
+                    entry,
+                    &manager,
+                    &work,
+                    InstallDecision::Approve,
+                )
+                .map_err(fail)?;
+            println!("installed\t{}\t{}", installed.id, installed.version);
+        }
+        if !enabled {
+            manager.disable(&entry.id).map_err(fail)?;
+        }
+    }
+
+    let vault = open_vault(&data_dir)?;
+    let summary = profile.apply(db.as_ref(), vault.as_ref()).map_err(fail)?;
+    println!(
+        "restored {} add-on(s): {} setting(s), {} secret(s)",
         summary.addons, summary.settings, summary.secrets
     );
     Ok(())

@@ -14,9 +14,12 @@ manifest as the security boundary.
 
 RVAH is pre-1.0 software under active development. The native Linux desktop
 application and CLI build on x86_64, and the Android TV shell targets API 23+
-with API 36 build tooling. There is no browser application target; WebAssembly
-is used to sandbox add-ons inside the native hosts. Interfaces and package
-formats may change before a stable release.
+with API 36 build tooling. An installable browser PWA now provides encrypted
+profile enrollment, editing, pairing, optional Veilid synchronization, a
+signed Wasmi add-on runtime, and bounded clear-media playback. Its relay path
+is an explicit finite-file proof of concept, not an unattended streaming or
+transcoding service. WebAssembly also sandboxes add-ons inside the native
+hosts. Interfaces and package formats may change before a stable release.
 
 RVAH ships no media or provider credentials. Third-party service names and
 example integrations belong to their respective owners and do not imply
@@ -34,6 +37,9 @@ unauthorized access, or hide data collection are outside project policy.
 | `rvah-data` | SQLite persistence: transactional migrations, add-on registry, per-add-on quota'd storage, favorites, watch state, diagnostics |
 | `rvah-auth` | Encrypted secret vault (AES-256-GCM), log redaction, device-code auth flow |
 | `rvah-profile` | Portable AES-256-GCM profile bundles for add-on settings and linked accounts |
+| `rvah-sync` | Transport-neutral, verified encrypted-profile snapshot/chunk layout |
+| `rvah-web` | Browser WebAssembly boundary for profiles, signed add-ons, snapshots, and relay verification |
+| `rvah-stream-relay` | Bounded RAM-only encrypted media frames and verified discard receipts |
 | `rvah-player` | Player state machine, source validation, watch-progress tracking, mock backend |
 | `rvah-core` | Use-case orchestration: browse/search/resolve→play, quarantine, navigation, resume |
 | `rvah-testkit` | Fixture providers and package builders for tests and the simulator |
@@ -146,8 +152,72 @@ Consume: `rvah repo-check` / `rvah repo-install … --approve` with `--index`
 `docs/repository-policy.md` and `docs/developer-guide.md`.
 
 Linked-account credentials are device-local by default. For encrypted export,
-cross-device enrollment, and the proposed Veilid synchronization/media design,
+cross-device enrollment, implemented profile synchronization, and the proposed
+media-relay design,
 see [`docs/portable-profiles-and-veilid.md`](docs/portable-profiles-and-veilid.md).
+
+Prowlarr remains one RVAH source add-on even when it contains many indexers;
+the indexers are provider-side inventory, not separate RVAH add-ons. Inspect
+the configured inventory without printing its API key with:
+
+```sh
+tools/prowlarr-add-indexers.sh --status
+```
+
+To reconstruct a signed add-on installation as well as its settings and linked
+account, use `profile-restore`. It verifies the repository signature, requires
+the exact package hash recorded by the source device, prints a dry run by
+default, and still requires `--approve` before installing anything. Permission
+grants are always reviewed again on the target device.
+
+```sh
+rvah profile-restore household.rvah-profile \
+  --key household.profile.key \
+  --index https://example.invalid/index.json \
+  --pubkey keys/verify.pub \
+  --data-dir ./data
+
+# Repeat only after reviewing the plan:
+rvah profile-restore household.rvah-profile \
+  --key household.profile.key \
+  --index https://example.invalid/index.json \
+  --pubkey keys/verify.pub \
+  --data-dir ./data --approve
+```
+
+## Web / WebAssembly developer build
+
+The `web/` PWA uses the same encrypted `.rvah-profile` format as the native
+CLI. It stores the profile ciphertext in IndexedDB and wraps the recovery key
+with a non-extractable WebCrypto device key. It also provides expiring ECDH
+pairing files and an opt-in Veilid DHT adapter; no account secret is compiled
+into the public assets. A Web Worker can verify and run a signed `.rvah`
+package for catalog/search/resolve operations after explicit permission
+approval. The browser host deliberately exposes no add-on HTTP, secret,
+storage, or logging imports. It can play a bounded clear-media response or a
+verified short-lived private-route relay session; DRM and unbounded streams
+remain unsupported.
+
+```sh
+cd web
+npm install
+npm run dev
+
+# Deterministic in-memory Veilid test; no sockets or external requests
+npm run test:mock-veilid
+
+# Reproducible production assets in web/dist/
+npm ci
+npm run build
+```
+
+The browser needs a direct `ws://` bootstrap during HTTP development or a
+`wss://` bootstrap in production. Set `VITE_VEILID_BOOTSTRAP` or enter one in
+the UI. For local development, enter `mock://local` to exercise DHT records,
+private routes, and bounded application calls entirely in memory. Mock mode is
+restricted to development/loopback builds and does not prove live-network
+interoperability. See [`web/README.md`](web/README.md) for the trust model,
+workflow, and deployment headers.
 
 ## Deferred (post-MVP)
 

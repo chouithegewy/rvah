@@ -17,7 +17,7 @@ rvah-core = { workspace = true }
 rvah-data = { workspace = true }
 rvah-net = { workspace = true }
 rvah-player = { workspace = true }
-rvah-profile = { workspace = true }
+rvah-profile = { workspace = true, features = ["native"] }
 rvah-repo = { workspace = true }
 rvah-testkit = { workspace = true }
 ed25519-dalek = { workspace = true }

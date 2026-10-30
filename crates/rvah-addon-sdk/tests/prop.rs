@@ -12,6 +12,7 @@ proptest! {
             let lower = url.to_ascii_lowercase();
             match protocol {
                 Protocol::File => prop_assert!(lower.starts_with("file://")),
+                Protocol::Veilid => prop_assert!(Protocol::veilid_media_id(&url).is_some()),
                 Protocol::Http => prop_assert!(lower.starts_with("http://")),
                 Protocol::Https | Protocol::Hls | Protocol::Dash => {
                     prop_assert!(lower.starts_with("http://") || lower.starts_with("https://"));

@@ -60,6 +60,11 @@ pub fn validate_source_opts(
         Protocol::Dash if allow_dash => {}
         Protocol::Dash => return Err(SourceRejection::UnsupportedProtocol("dash".into())),
         Protocol::File => return Err(SourceRejection::LocalPathDenied(source.url.clone())),
+        Protocol::Veilid => {
+            return Err(SourceRejection::UnsupportedProtocol(
+                "veilid requires the browser host transport".into(),
+            ));
+        }
     }
     if let Some(expires_at) = source.expires_at {
         if expires_at <= now_unix {

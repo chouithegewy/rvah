@@ -4,7 +4,9 @@
 
 #[cfg(any(feature = "wasm", feature = "wasm-wasmi"))]
 mod abi;
+#[cfg(feature = "native")]
 pub mod host_api;
+#[cfg(feature = "native")]
 pub mod install;
 pub mod manifest;
 pub mod package;
@@ -14,7 +16,9 @@ pub mod wasm_runtime;
 #[cfg(feature = "wasm-wasmi")]
 mod wasmi_runtime;
 
+#[cfg(feature = "native")]
 pub use host_api::BridgedHostApi;
+#[cfg(feature = "native")]
 pub use install::{AddonManager, InstallDecision, InstallError, InstalledAddon};
 pub use manifest::{
     AddonSection, Capability, Manifest, ManifestError, PermissionsSection, SettingSpec,

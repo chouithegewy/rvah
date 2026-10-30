@@ -33,6 +33,55 @@ data class HomeLayout(
     val downloads: List<ColumnSpec>,
 )
 
+/** A deliberately small home destination; its catalogs are not loaded until opened. */
+data class HomeSection(
+    val id: String,
+    val title: String,
+    val subtitle: String,
+    val columns: List<ColumnSpec> = emptyList(),
+    val groups: List<GroupTab> = emptyList(),
+)
+
+/** Turn many provider folders into a stable, uncluttered two-column home. */
+fun homeSections(layout: HomeLayout): List<HomeSection> {
+    val remaining = layout.discover.toMutableList()
+    fun take(matches: (ColumnSpec) -> Boolean): List<ColumnSpec> {
+        val found = remaining.filter(matches)
+        remaining.removeAll(found.toSet())
+        return found
+    }
+    val trending = take { spec ->
+        spec.title.contains("trending", ignoreCase = true) || spec.title.contains("popular", ignoreCase = true)
+    }
+    val recent = take { spec ->
+        spec.title.contains("recent", ignoreCase = true) ||
+            spec.title.contains("new", ignoreCase = true) ||
+            spec.title.contains("streaming", ignoreCase = true)
+    }
+    val genres = take { spec ->
+        val path = spec.path.orEmpty().lowercase(Locale.ROOT)
+        path.startsWith("genre/") || "/genre/" in path
+    }
+    val trakt = take { spec ->
+        spec.addonId == TRAKT_ADDON ||
+            spec.title.contains("trakt", ignoreCase = true) ||
+            spec.title.contains("up next", ignoreCase = true) ||
+            spec.title.contains("watchlist", ignoreCase = true) ||
+            spec.title.contains("might like", ignoreCase = true) ||
+            spec.title.contains("recommend", ignoreCase = true)
+    }
+    return buildList {
+        if (trending.isNotEmpty()) add(HomeSection("trending", "Trending & popular", "What people are watching", trending))
+        if (recent.isNotEmpty()) add(HomeSection("recent", "Recently added", "New releases and new to streaming", recent))
+        if (genres.isNotEmpty() || layout.groups.isNotEmpty()) {
+            add(HomeSection("genres", "Genres", "Browse by mood and category", columns = genres, groups = layout.groups))
+        }
+        if (trakt.isNotEmpty()) add(HomeSection("trakt", "Trakt", "Up next, watchlists and recommendations", trakt))
+        if (layout.downloads.isNotEmpty()) add(HomeSection("downloads", "Downloads", "Your debrid library", layout.downloads))
+        if (remaining.isNotEmpty()) add(HomeSection("more", "More to explore", "More collections from your add-ons", remaining))
+    }
+}
+
 /** Whether [addon] shows on its own: not nested in an installed RVAH Discover. */
 fun shownOnItsOwn(addon: AddonRecord, all: List<AddonRecord>): Boolean =
     addon.id !in DISCOVER_COMPONENTS || all.none { it.id == DISCOVER_ADDON && it.status == "enabled" }

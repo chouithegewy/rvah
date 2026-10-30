@@ -74,6 +74,48 @@ jobs:
       - name: Exercise guests through the Android host
         run: cargo test --locked -p rvah-android --tests -- --ignored
 
+  web-wasm:
+    name: web + WebAssembly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+      - name: Install browser dependencies
+        working-directory: web
+        run: npm ci
+      - name: Check browser sources
+        working-directory: web
+        run: |
+          npm run check
+          npm run test:mock-veilid
+      - name: Test browser Rust boundaries
+        run: cargo test --locked -p rvah-web --lib -p rvah-stream-relay
+      - name: Test and build Veilid metadata add-on
+        run: |
+          cargo test --locked --manifest-path examples/addons/veilid/Cargo.toml
+          sh examples/addons/veilid/build.sh
+      - name: Build production PWA
+        working-directory: web
+        run: npm run build
+      - name: Smoke test production PWA
+        working-directory: web
+        run: node scripts/browser-smoke.mjs
+      - name: Upload static web build
+        uses: actions/upload-artifact@v4
+        with:
+          name: rvah-web
+          path: web/dist
+
   audit:
     name: licenses + advisories (cargo-deny)
     runs-on: ubuntu-latest

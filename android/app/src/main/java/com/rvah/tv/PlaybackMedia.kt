@@ -1,5 +1,6 @@
 package com.rvah.tv
 
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MimeTypes
@@ -68,15 +69,16 @@ fun inferSubtitleMimeType(url: String): String = when (
     else -> MimeTypes.APPLICATION_SUBRIP
 }
 
-fun PlaybackSpec.toMediaItem(): MediaItem {
+fun PlaybackSpec.toMediaItem(preferredSubtitleUrl: String? = null): MediaItem {
     val subtitles = subtitles.map {
-        MediaItem.SubtitleConfiguration.Builder(android.net.Uri.parse(it.url))
+        val builder = MediaItem.SubtitleConfiguration.Builder(android.net.Uri.parse(it.url))
             // The track's format carries the URL, so a file added later can be found and picked.
             .setId(it.url)
             .setMimeType(it.mimeType)
             .setLanguage(it.language)
             .setLabel(it.label)
-            .build()
+        builder.setSelectionFlags(subtitleSelectionFlags(it.url, preferredSubtitleUrl))
+        builder.build()
     }
     return MediaItem.Builder()
         .setUri(url)
@@ -85,3 +87,18 @@ fun PlaybackSpec.toMediaItem(): MediaItem {
         .setMediaMetadata(MediaMetadata.Builder().setTitle(title).build())
         .build()
 }
+
+fun subtitleSelectionFlags(url: String, preferredSubtitleUrl: String?): Int =
+    if (url == preferredSubtitleUrl) C.SELECTION_FLAG_DEFAULT else 0
+
+/** Media3 may rewrite an external track id, so retain a language/label fallback. */
+fun subtitleTrackMatches(
+    id: String?,
+    language: String?,
+    label: String?,
+    wanted: SubtitleSpec,
+): Boolean = id == wanted.url || (
+    wanted.label != null &&
+    language.equals(wanted.language, ignoreCase = true) &&
+        label.equals(wanted.label, ignoreCase = true)
+)

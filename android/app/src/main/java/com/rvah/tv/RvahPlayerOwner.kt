@@ -12,6 +12,8 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackGroup
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
+import androidx.media3.common.VideoSize
+import androidx.media3.common.text.CueGroup
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
@@ -47,6 +49,10 @@ data class PlayerUi(
     val online: OnlineFind = OnlineFind.Unavailable,
     /** The online file added to this video, by URL. */
     val onlineInUse: String? = null,
+    /** Display aspect ratio reported by the decoder, including non-square pixels. */
+    val videoAspectRatio: Float? = null,
+    /** Text cues currently emitted by Media3; PlayerSurface does not draw them. */
+    val subtitleCues: List<String> = emptyList(),
 )
 
 /** Finds subtitle files online for what plays; called on an IO thread. */
@@ -122,7 +128,7 @@ class RvahPlayerOwner(
     /** Whether this video's tracks were checked for English subtitles yet. */
     private var checkedForEnglish = false
     /** An online file just added, to pick once the player lists it. */
-    private var pendingOnline: String? = null
+    private var pendingOnline: SubtitleSpec? = null
 
     fun play(spec: PlaybackSpec, scrobble: ScrobbleTarget? = null, online: OnlineSubtitles? = null) {
         active = spec
@@ -202,10 +208,18 @@ class RvahPlayerOwner(
         val previous = ui.onlineInUse
         val withFile = spec.copy(subtitles = spec.subtitles.filterNot { it.url == previous } + file)
         active = withFile
-        pendingOnline = file.url
-        ui = ui.copy(onlineInUse = file.url)
-        player.setMediaItem(withFile.toMediaItem(), player.currentPosition)
+        pendingOnline = file
+        ui = ui.copy(onlineInUse = file.url, subtitleCues = emptyList())
+        val resumeAt = player.currentPosition
+        val keepPlaying = player.playWhenReady
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .setPreferredTextLanguage(file.language)
+            .build()
+        player.setMediaItem(withFile.toMediaItem(preferredSubtitleUrl = file.url), resumeAt)
         player.prepare()
+        player.playWhenReady = keepPlaying
     }
 
     fun subtitlesOff() {
@@ -287,8 +301,11 @@ class RvahPlayerOwner(
     override fun onTracksChanged(tracks: Tracks) {
         ui = ui.copy(audio = options(tracks, C.TRACK_TYPE_AUDIO), subtitles = options(tracks, C.TRACK_TYPE_TEXT))
         // An online file just added: pick it as soon as it is listed.
-        pendingOnline?.let { url ->
-            ui.subtitles.firstOrNull { it.group.getFormat(it.index).id?.endsWith(url) == true }?.let {
+        pendingOnline?.let { wanted ->
+            ui.subtitles.firstOrNull {
+                val format = it.group.getFormat(it.index)
+                subtitleTrackMatches(format.id, format.language, format.label, wanted)
+            }?.let {
                 pendingOnline = null
                 select(it)
             }
@@ -315,6 +332,19 @@ class RvahPlayerOwner(
             }
             Log.d("rvah", "$name: ${line.joinToString(", ").ifEmpty { "none" }}")
         }
+    }
+
+    override fun onVideoSizeChanged(videoSize: VideoSize) {
+        val ratio = if (videoSize.width > 0 && videoSize.height > 0) {
+            videoSize.width.toFloat() * videoSize.pixelWidthHeightRatio / videoSize.height.toFloat()
+        } else {
+            null
+        }
+        ui = ui.copy(videoAspectRatio = ratio?.takeIf { it.isFinite() && it > 0f })
+    }
+
+    override fun onCues(cueGroup: CueGroup) {
+        ui = ui.copy(subtitleCues = cueGroup.cues.mapNotNull { it.text?.toString() })
     }
 
     private fun options(tracks: Tracks, type: Int): List<TrackOption> {

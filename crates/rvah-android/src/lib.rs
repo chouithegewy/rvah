@@ -488,7 +488,9 @@ impl From<PreparedPlayback> for NativePreparedPlayback {
             Protocol::Hls => NativeProtocol::Hls,
             Protocol::Dash => NativeProtocol::Dash,
             Protocol::Http | Protocol::Https => NativeProtocol::Progressive,
-            Protocol::File => unreachable!("file sources are rejected by the core"),
+            Protocol::File | Protocol::Veilid => {
+                unreachable!("file and unadapted Veilid sources are rejected by the core")
+            }
         };
         let subtitles = value
             .subtitles

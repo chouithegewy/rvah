@@ -22,6 +22,7 @@ semver = { version = "1", features = ["serde"] }
 thiserror = "2"
 url = "2"
 sha2 = "0.10"
+hmac = "0.12"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"
 aes-gcm = "0.10"
@@ -40,6 +41,10 @@ raw-window-handle = "0.6"
 winit = "0.30"
 x11-dl = "2"
 zeroize = "1"
+wasm-bindgen = "0.2"
+serde-wasm-bindgen = "0.6"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
 
 rvah-addon-sdk = { path = "crates/rvah-addon-sdk" }
 rvah-addon-host = { path = "crates/rvah-addon-host" }
@@ -52,4 +57,6 @@ rvah-testkit = { path = "crates/rvah-testkit" }
 rvah-player-mpv = { path = "crates/rvah-player-mpv" }
 rvah-ui = { path = "crates/rvah-ui" }
 rvah-repo = { path = "crates/rvah-repo" }
-rvah-profile = { path = "crates/rvah-profile" }
+rvah-profile = { path = "crates/rvah-profile", default-features = false }
+rvah-sync = { path = "crates/rvah-sync" }
+rvah-stream-relay = { path = "crates/rvah-stream-relay" }

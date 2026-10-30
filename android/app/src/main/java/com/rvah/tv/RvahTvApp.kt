@@ -4,19 +4,24 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text as FieldLabel
@@ -44,6 +49,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.media3.ui.compose.PlayerSurface
@@ -98,6 +104,7 @@ private sealed interface Screen {
         val release: ReleasePick? = null,
     ) : Screen
     data class Details(val addonId: String, val itemId: String, val title: String, val returnTo: Screen) : Screen
+    data class Trailer(val url: String, val title: String, val returnTo: Screen) : Screen
     data class Sources(val returnTo: Screen) : Screen
     /** A folder of folders (a series' seasons, say) as a board of columns. */
     data class Board(val addonId: String, val path: String, val title: String, val returnTo: Screen) : Screen
@@ -105,12 +112,14 @@ private sealed interface Screen {
     data class LinkAccount(val addon: AddonRecord, val returnTo: Screen = AddonSettings(addon)) : Screen
     data object Install : Screen
     data object Diagnostics : Screen
+    data object PortableProfile : Screen
 }
 
 /** The screen Back eventually leads to: the player, details and Link account return to where they were opened. */
 private val Screen.base: Screen get() = when (this) {
     is Screen.Player -> returnTo.base
     is Screen.Details -> returnTo.base
+    is Screen.Trailer -> returnTo.base
     is Screen.Sources -> returnTo.base
     is Screen.LinkAccount -> returnTo.base
     else -> this
@@ -301,7 +310,9 @@ private fun AppNavigation(
             onOpen = { spec, entry -> openFromBoard(spec, entry, Screen.Home) },
             onInstall = { screen = Screen.Install },
             onDiagnostics = { screen = Screen.Diagnostics },
+            onPortableProfile = { screen = Screen.PortableProfile },
             onAddonSettings = { screen = Screen.AddonSettings(it) },
+            onTrailer = { url, title -> screen = Screen.Trailer(url, title, Screen.Home) },
         )
         is Screen.Board -> FolderBoard(
             core = core,
@@ -309,6 +320,7 @@ private fun AppNavigation(
             state = boards.getOrPut(current.addonId + "\u0000" + current.path) { BoardState() },
             scope = scope,
             onOpen = { spec, entry -> openFromBoard(spec, entry, current) },
+            onTrailer = { url, title -> screen = Screen.Trailer(url, title, current) },
             onExit = { screen = current.returnTo },
         )
         is Screen.Browse -> BrowseScreen(
@@ -365,8 +377,10 @@ private fun AppNavigation(
             onEpisodes = { details ->
                 screen = Screen.Board(current.addonId, details.id, details.title, returnTo = current)
             },
+            onTrailer = { url, title -> screen = Screen.Trailer(url, title, current) },
             onExit = { screen = current.returnTo },
         )
+        is Screen.Trailer -> TrailerScreen(current.url) { screen = current.returnTo }
         is Screen.Sources -> {
             val state = sources
             val source = enabledWith("sources")
@@ -480,6 +494,11 @@ private fun AppNavigation(
             onExit = goHome,
         )
         Screen.Diagnostics -> DiagnosticsScreen(core, onExit = goHome)
+        Screen.PortableProfile -> PortableProfileScreen(
+            core = core,
+            onImported = { refresh++ },
+            onExit = goHome,
+        )
     }
 }
 
@@ -813,7 +832,30 @@ private fun PlayerScreen(
                 }
             },
     ) {
-        PlayerSurface(player = owner.player, modifier = Modifier.fillMaxSize())
+        FittedPlayerSurface(owner)
+        if (ui.subtitleCues.isNotEmpty()) {
+            Column(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = if (controls) 190.dp else 48.dp)
+                    .widthIn(max = 1000.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                ui.subtitleCues.forEach { cue ->
+                    Text(
+                        cue,
+                        color = Color.White,
+                        fontSize = 24.sp,
+                        lineHeight = 30.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .background(Color.Black.copy(alpha = 0.72f), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                    )
+                }
+            }
+        }
         if (controls) Column(
             Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(40.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -854,6 +896,25 @@ private fun PlayerScreen(
                 }
                 Button(onClick = onExit) { Text("Back") }
             }
+        }
+    }
+}
+
+/** Keep decoded video at its native display ratio instead of stretching it to the TV. */
+@Composable
+private fun FittedPlayerSurface(owner: RvahPlayerOwner) {
+    BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        val videoRatio = owner.ui.videoAspectRatio
+        if (videoRatio == null) {
+            PlayerSurface(player = owner.player, modifier = Modifier.fillMaxSize())
+        } else {
+            val availableRatio = maxWidth.value / maxHeight.value
+            val fitted = if (videoRatio >= availableRatio) {
+                Modifier.fillMaxWidth().aspectRatio(videoRatio)
+            } else {
+                Modifier.fillMaxHeight().aspectRatio(videoRatio)
+            }
+            PlayerSurface(player = owner.player, modifier = fitted)
         }
     }
 }
@@ -1320,6 +1381,7 @@ private fun FolderBoard(
     state: BoardState,
     scope: CoroutineScope,
     onOpen: (ColumnSpec, CatalogEntry) -> Unit,
+    onTrailer: (String, String) -> Unit,
     onExit: () -> Unit,
 ) {
     BackHandler(onBack = onExit)
@@ -1337,7 +1399,7 @@ private fun FolderBoard(
         Text(target.title, fontSize = 20.sp, color = Secondary, modifier = Modifier.padding(start = 32.dp, bottom = 8.dp))
         val shown = columns
         when {
-            shown != null -> Board(core, shown, state, scope, onOpen)
+            shown != null -> Board(core, shown, state, scope, onOpen, onTrailer = onTrailer)
             failure != null -> Text(failure.orEmpty(), color = ErrorText, modifier = Modifier.padding(horizontal = 32.dp))
             else -> Text("Loading…", color = Secondary, modifier = Modifier.padding(horizontal = 32.dp))
         }

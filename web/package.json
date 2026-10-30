@@ -1,0 +1,22 @@
+{
+  "name": "rvah-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "wasm:dev": "node scripts/build-wasm.mjs dev",
+    "wasm:release": "node scripts/build-wasm.mjs release",
+    "dev": "npm run wasm:dev && vite --host 127.0.0.1",
+    "build": "npm run wasm:release && vite build",
+    "check": "node --check src/app.js && node --check src/addon-client.js && node --check src/addon-worker.js && node --check src/mock-veilid.js && node --check src/playback.js && node --check src/storage.js && node --check src/pairing.js && node --check src/stream-transport.js && node --check src/veilid.js && node --check relay/relay.js && node --check public/sw.js",
+    "test:mock-veilid": "node --test tests/mock-veilid.test.mjs",
+    "smoke": "npm run build && node scripts/browser-smoke.mjs",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@bmv437/veilid-wasm": "0.5.6"
+  },
+  "devDependencies": {
+    "vite": "7.3.7"
+  }
+}

@@ -101,6 +101,8 @@ pub enum Protocol {
     Hls,
     Dash,
     File,
+    /// Opaque media reference resolved by the host's Veilid transport.
+    Veilid,
 }
 
 /// Subtitle container/codec hint. Existing add-ons may omit this and hosts
@@ -141,11 +143,24 @@ pub enum DrmScheme {
 }
 
 impl Protocol {
+    /// Return the opaque catalog ID of a canonical host-owned media reference.
+    /// Route blobs, credentials, query strings and filesystem paths are forbidden.
+    pub fn veilid_media_id(url: &str) -> Option<&str> {
+        let id = url.strip_prefix("rvah+veilid://media/")?;
+        (!id.is_empty()
+            && id.len() <= 128
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
+        .then_some(id)
+    }
+
     /// Classify a URL by scheme and well-known manifest extensions.
     pub fn from_url(url: &str) -> Option<Protocol> {
         let (scheme, rest) = url.split_once("://")?;
         let path = rest.split(['?', '#']).next().unwrap_or(rest);
         match scheme.to_ascii_lowercase().as_str() {
+            "rvah+veilid" => Self::veilid_media_id(url).map(|_| Protocol::Veilid),
             "file" => Some(Protocol::File),
             "http" | "https" => {
                 if path.to_ascii_lowercase().ends_with(".m3u8") {
@@ -524,6 +539,22 @@ mod tests {
 
     #[test]
     fn protocol_from_url() {
+        assert_eq!(
+            Protocol::from_url("rvah+veilid://media/demo_1"),
+            Some(Protocol::Veilid)
+        );
+        for invalid in [
+            "rvah+veilid://media/",
+            "rvah+veilid://media/../secret",
+            "rvah+veilid://media/demo?key=secret",
+            "rvah+veilid://media/demo#route",
+            "rvah+veilid://media/%61",
+            "rvah+veilid://user@media/demo",
+            "RVAH+VEILID://media/demo",
+            "rvah+veilid://media/a/b",
+        ] {
+            assert_eq!(Protocol::from_url(invalid), None, "{invalid}");
+        }
         assert_eq!(
             Protocol::from_url("https://a.example/x.mp4"),
             Some(Protocol::Https)

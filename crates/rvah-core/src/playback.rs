@@ -49,7 +49,7 @@ impl PlaybackCapabilities {
             Protocol::Http | Protocol::Https => self.progressive_http,
             Protocol::Hls => self.hls,
             Protocol::Dash => self.dash,
-            Protocol::File => false,
+            Protocol::File | Protocol::Veilid => false,
         }
     }
 }

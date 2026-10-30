@@ -60,4 +60,28 @@ class HomeLayoutTest {
         assertEquals("Anime,Drama,Sci-Fi", toggled("Anime,Drama", "Sci-Fi"))
         assertEquals("Horror", toggled("", "Horror"))
     }
+
+    @Test fun homeCondensesProviderFoldersIntoStableTiles() {
+        val discover = listOf(
+            ColumnSpec(DISCOVER_ADDON, "Popular to stream", null, "popular"),
+            ColumnSpec(DISCOVER_ADDON, "New to streaming", null, "new"),
+            ColumnSpec(DISCOVER_ADDON, "Up next", null, "up-next"),
+            ColumnSpec(DISCOVER_ADDON, "Anime", null, "genre/anime"),
+            ColumnSpec(DISCOVER_ADDON, "Documentaries", null, "docs"),
+        )
+        val layout = HomeLayout(
+            discover,
+            listOf(GroupTab(DISCOVER_ADDON, "Genres", "genres")),
+            listOf(ColumnSpec("downloads", "Downloads", null, null)),
+        )
+
+        val sections = homeSections(layout)
+        assertEquals(
+            listOf("Trending & popular", "Recently added", "Genres", "Trakt", "Downloads", "More to explore"),
+            sections.map { it.title },
+        )
+        assertEquals(listOf("Popular to stream"), sections.first { it.id == "trending" }.columns.map { it.title })
+        assertEquals(listOf("Anime"), sections.first { it.id == "genres" }.columns.map { it.title })
+        assertEquals(listOf("Up next"), sections.first { it.id == "trakt" }.columns.map { it.title })
+    }
 }

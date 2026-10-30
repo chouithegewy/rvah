@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#101815" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <title>RVAH Memory Relay</title>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="wordmark" href="/">RVAH</a>
+      <span id="relay-state" class="pill neutral">Offline</span>
+    </header>
+    <main>
+      <section class="hero compact-hero">
+        <p class="eyebrow">Explicit operator tool</p>
+        <h1>Relay one authorized media file from memory.</h1>
+        <p class="lede">
+          This page creates a short-lived Veilid private route. Media is encrypted
+          into bounded frames in RAM and discarded after a verified client receipt
+          or expiry. Nothing is uploaded to a DHT record.
+        </p>
+      </section>
+      <section id="relay-notice" class="notice" role="status" aria-live="polite">
+        Connect a browser Veilid node to begin.
+      </section>
+      <div class="dashboard">
+        <section class="panel">
+          <div class="panel-heading"><div><p class="step">01</p><h2>Network</h2></div></div>
+          <label>Direct WebSocket bootstrap
+            <input id="relay-bootstrap" type="url" placeholder="wss://bootstrap.example/ws" />
+          </label>
+          <div class="actions">
+            <button id="relay-connect" class="primary">Connect</button>
+            <button id="relay-disconnect" disabled>Disconnect</button>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-heading"><div><p class="step">02</p><h2>Authorized file</h2></div></div>
+          <label>Media ID
+            <input id="relay-asset" maxlength="128" pattern="[A-Za-z0-9_-]+" placeholder="demo" />
+          </label>
+          <label class="file-button">Choose finite media file
+            <input id="relay-file" type="file" accept="video/mp4,video/webm,audio/mp4,audio/webm,audio/mpeg" />
+          </label>
+          <label>Session lifetime (minutes)
+            <input id="relay-minutes" type="number" min="1" max="30" value="10" />
+          </label>
+          <button id="relay-create" disabled>Create private session</button>
+        </section>
+        <section class="panel span-two">
+          <div class="panel-heading"><div><p class="step">03</p><h2>Enrollment</h2></div></div>
+          <p class="muted">
+            Transfer the descriptor only to the intended player. It contains the
+            private route and session key, and expires at the displayed time.
+          </p>
+          <div class="actions">
+            <button id="relay-download" disabled>Download session descriptor</button>
+            <button id="relay-stop" class="danger" disabled>Stop and discard now</button>
+          </div>
+          <pre id="relay-summary" class="muted">No active session.</pre>
+        </section>
+      </div>
+    </main>
+    <footer><span>Manual proof-of-concept upstream</span><span>16 MiB hard media limit</span></footer>
+    <script type="module" src="./relay.js"></script>
+  </body>
+</html>

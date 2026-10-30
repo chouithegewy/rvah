@@ -7,7 +7,9 @@
 //! calls is bounded by fuel.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
 
 use rvah_addon_sdk::{AddonError, AddonErrorCode, HostApi};
 use wasmi::{
@@ -38,7 +40,21 @@ impl Default for WasmiLimits {
 struct StoreData {
     limits: StoreLimits,
     host: Arc<dyn HostApi>,
+    #[cfg(not(target_arch = "wasm32"))]
     deadline: Instant,
+}
+
+impl StoreData {
+    fn expired(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Instant::now() >= self.deadline
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            false
+        } // Browser host services never block; fuel bounds guest execution.
+    }
 }
 
 /// Trap raised from a host call once the invocation's wall-clock budget is
@@ -90,8 +106,7 @@ impl WasmiRuntime {
 }
 
 fn host_call(caller: &mut Caller<'_, StoreData>, ptr: i32, len: i32) -> Result<i64, wasmi::Error> {
-    let deadline = caller.data().deadline;
-    if Instant::now() >= deadline {
+    if caller.data().expired() {
         return Err(wasmi::Error::host(DeadlineExceeded));
     }
     let Some(Extern::Memory(memory)) = caller.get_export("memory") else {
@@ -106,7 +121,7 @@ fn host_call(caller: &mut Caller<'_, StoreData>, ptr: i32, len: i32) -> Result<i
     let response = dispatch_host_call(caller.data().host.as_ref(), &request);
     // The call may have blocked (network); do not resume a guest that is
     // already over budget.
-    if Instant::now() >= deadline {
+    if caller.data().expired() {
         return Err(wasmi::Error::host(DeadlineExceeded));
     }
     let Some(Extern::Func(alloc)) = caller.get_export("rvah_alloc") else {
@@ -132,8 +147,13 @@ impl AddonRuntime for WasmiRuntime {
         let data = StoreData {
             limits: StoreLimitsBuilder::new()
                 .memory_size(self.limits.max_memory_bytes)
+                .table_elements(16_384)
+                .tables(4)
+                .memories(1)
+                .instances(1)
                 .build(),
             host: Arc::clone(&ctx.host),
+            #[cfg(not(target_arch = "wasm32"))]
             deadline: Instant::now() + self.limits.timeout.min(ctx.timeout),
         };
         let mut store = Store::new(&self.engine, data);

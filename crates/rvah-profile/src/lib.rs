@@ -1,8 +1,9 @@
 //! Portable, encrypted RVAH profiles.
 //!
-//! A profile contains only explicit add-on settings and secrets. It does not
-//! contain add-on packages, permission grants, caches, diagnostics, favorites,
-//! or playback history. The encrypted bytes are suitable for untrusted storage;
+//! A profile contains explicit add-on settings and secrets plus an optional
+//! exact-package reconstruction recipe. It does not contain package bytes,
+//! repository trust, permission grants, caches, diagnostics, favorites, or
+//! playback history. The encrypted bytes are suitable for untrusted storage;
 //! the 256-bit profile key must be enrolled separately on each device.
 
 use std::collections::BTreeMap;
@@ -10,7 +11,9 @@ use std::collections::BTreeMap;
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use rand::RngCore;
+#[cfg(feature = "native")]
 use rvah_auth::{SecretVault, VaultError};
+#[cfg(feature = "native")]
 use rvah_data::{DataError, Database};
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
@@ -71,10 +74,25 @@ pub enum ProfileError {
     TooLarge,
     #[error("profile bundle serialization failed: {0}")]
     Serialization(String),
+    #[cfg(feature = "native")]
     #[error("profile database operation failed: {0}")]
     Data(#[from] DataError),
+    #[cfg(feature = "native")]
     #[error("profile secret-vault operation failed: {0}")]
     Vault(#[from] VaultError),
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddonRestore {
+    /// Exact SHA-256 of the signed package expected from a trusted repository.
+    pub package_sha256: String,
+    /// Disabled add-ons remain disabled after an explicitly approved restore.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +103,10 @@ pub struct AddonProfile {
     pub settings: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub secrets: BTreeMap<String, String>,
+    /// Optional package recipe. The repository URL and trust key stay outside
+    /// the bundle and must be supplied and approved on the target device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore: Option<AddonRestore>,
 }
 
 /// Plaintext exists only inside the trusted application boundary before it is
@@ -105,8 +127,17 @@ pub struct ImportSummary {
 }
 
 impl PortableProfile {
+    pub fn empty() -> Self {
+        Self {
+            format_version: FORMAT_VERSION,
+            created_at_unix: now_unix(),
+            addons: BTreeMap::new(),
+        }
+    }
+
     /// Capture all explicitly configured installed add-ons. Defaults and
     /// runtime storage are excluded; secret values are never logged.
+    #[cfg(feature = "native")]
     pub fn collect(db: &Database, vault: &dyn SecretVault) -> Result<Self, ProfileError> {
         let mut addons = BTreeMap::new();
         for addon in db.list_addons()? {
@@ -127,16 +158,16 @@ impl PortableProfile {
                     source_version: addon.version,
                     settings,
                     secrets,
+                    restore: Some(AddonRestore {
+                        package_sha256: addon.package_hash,
+                        enabled: matches!(addon.status, rvah_data::AddonStatus::Enabled),
+                    }),
                 },
             );
         }
-        let created_at_unix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0);
         Ok(Self {
             format_version: FORMAT_VERSION,
-            created_at_unix,
+            created_at_unix: now_unix(),
             addons,
         })
     }
@@ -145,6 +176,7 @@ impl PortableProfile {
     /// permission grants, or deleting target-device values absent from the
     /// bundle. Configuration can therefore be imported before add-ons arrive.
     /// Best-effort rollback restores earlier values when a write fails.
+    #[cfg(feature = "native")]
     pub fn apply(
         &self,
         db: &Database,
@@ -258,6 +290,22 @@ impl PortableProfile {
     }
 }
 
+fn now_unix() -> u64 {
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0)
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        (js_sys::Date::now() / 1_000.0) as u64
+    }
+}
+
+#[cfg(feature = "native")]
 fn rollback_secrets(vault: &dyn SecretVault, values: &[(String, String, Option<String>)]) {
     for (addon_id, name, old) in values.iter().rev() {
         match old {
@@ -271,6 +319,7 @@ fn rollback_secrets(vault: &dyn SecretVault, values: &[(String, String, Option<S
     }
 }
 
+#[cfg(feature = "native")]
 fn rollback_settings(db: &Database, values: &[(String, String, Option<String>)]) {
     for (addon_id, key, old) in values.iter().rev() {
         match old {
