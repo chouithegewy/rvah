@@ -47,6 +47,14 @@ refreshes the access token when it expires, so linking is a one-time step.
 Typing your private `api_token` (real-debrid.com/apitoken) on the same
 screen still works. Version 0.2.0 of the add-on is needed for linking.
 
+Settings → Portable profile creates or imports a profile recovery key and
+protects it with an Android Keystore AES-256-GCM key. Use the document picker
+to export/import an encrypted `.rvah-profile` and its recovery-key text file as
+separate documents. Import the key first on a new device. Imported settings and
+credentials are overlaid, but add-on packages and permissions are never
+silently installed or granted; use the native CLI's signed `profile-restore`
+flow when exact package reconstruction is required.
+
 An add-on that failed three times in a row is quarantined; the same screen
 re-enables it once its credentials are fixed. Diagnostics lists recent core
 events, including add-ons whose runtime failed to load.
@@ -57,6 +65,13 @@ D-pad moves between controls and Select activates them. In the player, the
 play/pause button has focus first; media keys (play/pause, fast-forward,
 rewind) work regardless of focus; Back stops playback and returns to the
 catalog.
+
+Home keeps discovery lightweight: search is at the top, then two columns of
+Trending & popular, Recently added, Genres, Trakt, Downloads, and any remaining
+collections. Opening one loads a poster grid; moving focus updates its synopsis
+and ratings pane. A small first batch of artwork and details is prefetched into
+bounded Coil caches. A valid YouTube trailer opens in an in-app embed, and the
+first trailer starts after four idle seconds on a focused title.
 
 ## Playback buffer
 
@@ -72,6 +87,11 @@ is kept behind the playhead. ExoPlayer would count that against the same
 budget, so rewinding re-fetches instead, which takes about a second. Debug
 builds show the live read-ahead and budget under the player controls and log
 the plan as `buffer plan:` under the tag `rvah`.
+
+The video surface is fitted to Media3's decoded display ratio, including
+non-square pixels. Media3 text cues are drawn in a separate Compose overlay;
+choosing an online subtitle explicitly enables text, marks that external track
+as preferred, and resumes the same playback position.
 
 ## Emulator
 
@@ -115,7 +135,7 @@ Kotlin side: `./gradlew :app:testDebugUnitTest` runs the JVM tests;
 First-frame rendering, D-pad focus, hardware decode, and audio sync still
 need a physical Android TV smoke test.
 
-Browse and search lists end in a "Load more" row while the add-on reports
-another page; the new rows take focus as they land. Loaded pages survive a
-trip to the player or into a subdirectory, and Back refocuses the row that was
-opened. The paging rules are in `Listing.kt` (JVM-tested in `ListingTest`).
+Browse and search grids include a "More" tile while the add-on reports another
+page. Loaded pages survive a trip to the player or into a subdirectory, and
+Back refocuses the poster that was opened. The paging rules are in `Listing.kt`
+(JVM-tested in `ListingTest`).

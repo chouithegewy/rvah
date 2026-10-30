@@ -110,6 +110,7 @@ struct FakeTrakt {
 fn answer(value: Value) -> Result<HttpResponse, NetError> {
     Ok(HttpResponse {
         status: 200,
+        truncated: false,
         headers: Default::default(),
         body: serde_json::to_vec(&value).unwrap(),
     })
@@ -158,6 +159,7 @@ impl Transport for FakeTrakt {
         }
         Ok(HttpResponse {
             status: 404,
+            truncated: false,
             headers: Default::default(),
             body: b"not routed".to_vec(),
         })

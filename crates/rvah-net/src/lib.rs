@@ -11,6 +11,6 @@ mod mock;
 mod resolve;
 
 pub use allowlist::Allowlist;
-pub use client::{NetError, PermissionedClient, Transport, UreqTransport};
+pub use client::{HttpTransport, NetError, PermissionedClient, Transport};
 pub use mock::{MockResolver, MockTransport};
 pub use resolve::{Resolve, SystemResolver};

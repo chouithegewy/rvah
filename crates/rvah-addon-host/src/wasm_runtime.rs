@@ -319,6 +319,7 @@ mod tests {
         fn http_fetch(&self, _req: HttpRequest) -> Result<HttpResponse, AddonError> {
             Ok(HttpResponse {
                 status: 200,
+                truncated: false,
                 headers: Default::default(),
                 body: b"fetched".to_vec(),
             })

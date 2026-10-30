@@ -6,8 +6,8 @@ import uniffi.rvah_android.AddonRecord
 import uniffi.rvah_android.CatalogEntry
 
 class HomeLayoutTest {
-    private fun addon(id: String, vararg caps: String, status: String = "enabled") =
-        AddonRecord(id, id.substringAfterLast('.'), "1.0.0", status == "enabled", status, caps.toList())
+    private fun addon(id: String, vararg caps: String, status: String = "enabled", name: String = id.substringAfterLast('.')) =
+        AddonRecord(id, name, "1.0.0", status == "enabled", status, caps.toList())
 
     private fun folder(title: String, path: String, groups: Boolean = false) =
         CatalogEntry.Directory(path, title, null, path, null, groups)
@@ -59,5 +59,72 @@ class HomeLayoutTest {
         assertEquals("Anime,Drama", toggled("Sci-Fi,Anime,Drama", "Sci-Fi"))
         assertEquals("Anime,Drama,Sci-Fi", toggled("Anime,Drama", "Sci-Fi"))
         assertEquals("Horror", toggled("", "Horror"))
+    }
+
+    @Test fun homeCondensesProviderFoldersIntoStableTiles() {
+        val discover = listOf(
+            ColumnSpec(DISCOVER_ADDON, "Popular to stream", null, "popular"),
+            ColumnSpec(DISCOVER_ADDON, "New to streaming", null, "new"),
+            ColumnSpec(DISCOVER_ADDON, "Up next", null, "up-next"),
+            ColumnSpec(DISCOVER_ADDON, "Anime", null, "genre/anime"),
+            ColumnSpec(DISCOVER_ADDON, "Documentaries", null, "docs"),
+        )
+        val layout = HomeLayout(
+            discover,
+            listOf(GroupTab(DISCOVER_ADDON, "Genres", "genres")),
+            listOf(ColumnSpec("downloads", "Downloads", null, null)),
+        )
+
+        val sections = homeSections(layout)
+        assertEquals(
+            listOf("Trending & popular", "Recently added", "Genres", "Trakt", "Downloads", "More to explore"),
+            sections.map { it.title },
+        )
+        assertEquals(listOf("Popular to stream"), sections.first { it.id == "trending" }.columns.map { it.title })
+        assertEquals(listOf("Anime"), sections.first { it.id == "genres" }.columns.map { it.title })
+        assertEquals(listOf("Up next"), sections.first { it.id == "trakt" }.columns.map { it.title })
+    }
+
+    @Test fun addOnWhoseFoldersAllFallToMoreGetsItsOwnBrowseTile() {
+        val addons = listOf(addon(DISCOVER_ADDON, "catalog"), addon("com.example.sports", "catalog", name = "Live Sports"))
+        val roots = mapOf(
+            DISCOVER_ADDON to listOf(folder("Trending", "trending"), folder("Odd shelf", "odd")),
+            "com.example.sports" to listOf(folder("NFL", "/nfl/"), folder("NBA", "/nba/")),
+        )
+        val sections = homeSections(homeLayout(addons, roots))
+        val tile = sections.single { it.browse != null }
+        assertEquals(BrowseTarget("com.example.sports", "Live Sports"), tile.browse)
+        assertEquals("addon:com.example.sports", tile.id)
+        assertEquals("Live Sports", tile.title)
+        assertEquals(emptyList<ColumnSpec>(), tile.columns)
+        // Its folders are not merged into More; Discover's odd shelf still is.
+        assertEquals(listOf("Odd shelf"), sections.single { it.id == "more" }.columns.map { it.title })
+        // Tiles for add-ons come after the fixed sections, before More.
+        assertEquals(listOf("trending", "addon:com.example.sports", "more"), sections.map { it.id })
+    }
+
+    @Test fun addOnWithAnyMatchingFolderStaysInSections() {
+        val addons = listOf(addon("com.example.mixed", "catalog", name = "Mixed"))
+        val roots = mapOf("com.example.mixed" to listOf(folder("Trending", "trending"), folder("NFL", "/nfl/")))
+        val sections = homeSections(homeLayout(addons, roots))
+        assertEquals(null, sections.firstOrNull { it.browse != null })
+        assertEquals(listOf("NFL"), sections.single { it.id == "more" }.columns.map { it.title })
+    }
+
+    @Test fun addOnWithGroupsStaysInSections() {
+        val addons = listOf(addon("com.example.grouped", "catalog", name = "Grouped"))
+        val roots = mapOf(
+            "com.example.grouped" to listOf(folder("Odd", "odd"), folder("By genre", "genres", groups = true)),
+        )
+        assertEquals(null, homeSections(homeLayout(addons, roots)).firstOrNull { it.browse != null })
+    }
+
+    @Test fun aFirstLevelOfFoldersIsABoardUnlessOpenedAsAList() {
+        val folders = listOf(folder("NFL", "/nfl/"), folder("NBA", "/nba/"))
+        assertEquals(true, firstLevelBoard(depth = 1, entries = folders, listFirst = false))
+        // An add-on's own Home tile opens on a list of its folders.
+        assertEquals(false, firstLevelBoard(depth = 1, entries = folders, listFirst = true))
+        assertEquals(false, firstLevelBoard(depth = 2, entries = folders, listFirst = false))
+        assertEquals(false, firstLevelBoard(depth = 1, entries = folders + media("m"), listFirst = false))
     }
 }

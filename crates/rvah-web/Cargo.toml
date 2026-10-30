@@ -1,0 +1,29 @@
+[package]
+name = "rvah-web"
+description = "Browser WebAssembly boundary for RVAH profiles, signed add-ons, and relay verification"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
+
+[dependencies]
+rvah-addon-host = { path = "../rvah-addon-host", default-features = false, features = ["wasm-wasmi"] }
+rvah-addon-sdk.workspace = true
+rvah-stream-relay = { path = "../rvah-stream-relay" }
+console_error_panic_hook.workspace = true
+js-sys.workspace = true
+rvah-profile.workspace = true
+rvah-sync.workspace = true
+serde.workspace = true
+serde-wasm-bindgen.workspace = true
+serde_json.workspace = true
+wasm-bindgen.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

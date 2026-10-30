@@ -20,6 +20,9 @@ use rvah_player::MockPlayer;
 
 uniffi::setup_scaffolding!();
 
+mod ad_blocker;
+pub use ad_blocker::AdBlocker;
+
 const REQUEST_QUOTA: u32 = 512;
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -118,6 +121,8 @@ pub struct InstallPreview {
     pub network: Vec<String>,
     pub storage_bytes: u64,
     pub secrets: Vec<String>,
+    /// It may open web pages full screen in the web player.
+    pub web: bool,
     /// The trusted key (hex) whose signature verified.
     pub signer_key_hex: String,
     pub permission_hash: String,
@@ -431,6 +436,8 @@ pub enum NativeProtocol {
     Progressive,
     Hls,
     Dash,
+    /// A web page for the web player, not Media3.
+    Web,
 }
 
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -480,6 +487,8 @@ pub struct NativePreparedPlayback {
     pub subtitles: Vec<NativeSubtitle>,
     pub title: String,
     pub subtitle: Option<String>,
+    /// Hosts the web player must never block (web sources only).
+    pub never_block: Vec<String>,
 }
 
 impl From<PreparedPlayback> for NativePreparedPlayback {
@@ -488,7 +497,10 @@ impl From<PreparedPlayback> for NativePreparedPlayback {
             Protocol::Hls => NativeProtocol::Hls,
             Protocol::Dash => NativeProtocol::Dash,
             Protocol::Http | Protocol::Https => NativeProtocol::Progressive,
-            Protocol::File => unreachable!("file sources are rejected by the core"),
+            Protocol::Web => NativeProtocol::Web,
+            Protocol::File | Protocol::Veilid => {
+                unreachable!("file and unadapted Veilid sources are rejected by the core")
+            }
         };
         let subtitles = value
             .subtitles
@@ -509,6 +521,7 @@ impl From<PreparedPlayback> for NativePreparedPlayback {
             subtitles,
             title: value.display.title,
             subtitle: value.display.subtitle,
+            never_block: value.source.never_block,
         }
     }
 }
@@ -832,6 +845,7 @@ impl AndroidCore {
             network: manifest.permissions.network.clone(),
             storage_bytes: manifest.permissions.storage_bytes,
             secrets: manifest.permissions.secrets.clone(),
+            web: manifest.permissions.web,
             signer_key_hex,
             permission_hash: manifest.permission_hash(),
             is_update,
@@ -1029,7 +1043,7 @@ impl AndroidCore {
         title: Option<String>,
     ) -> Result<NativePreparedPlayback, AndroidCoreError> {
         self.core()
-            .prepare_playback(&addon_id, &item_id, PlaybackCapabilities::media3())
+            .prepare_playback(&addon_id, &item_id, PlaybackCapabilities::android_tv())
             .map(|prepared| NativePreparedPlayback::from(prepared).with_title(title))
             .map_err(playback_error)
     }
@@ -1067,7 +1081,7 @@ impl AndroidCore {
                 season,
                 episode,
                 (&title_addon_id, &title_item_id),
-                PlaybackCapabilities::media3(),
+                PlaybackCapabilities::android_tv(),
             )
             .map(|prepared| NativePreparedPlayback::from(prepared).with_title(title))
             .map_err(playback_error)
@@ -1400,7 +1414,7 @@ fn load_wasmi_runtime(
         &manifest,
         Arc::clone(db),
         Arc::clone(vault),
-        Box::new(rvah_net::UreqTransport::default()),
+        Box::new(rvah_net::HttpTransport::default()),
         REQUEST_QUOTA,
     )
     .with_resolver(Box::new(rvah_net::SystemResolver));
@@ -1553,6 +1567,26 @@ mod tests {
             playback_error(offline),
             AndroidCoreError::Playback { .. }
         ));
+    }
+
+    #[test]
+    fn web_source_maps_to_native_web_with_never_block() {
+        let mut source = rvah_testkit::mp4_source("https://embed.example.com/ch.php");
+        source.protocol = Protocol::Web;
+        source.never_block = vec!["cdn.example.net".into()];
+        let native = NativePreparedPlayback::from(PreparedPlayback {
+            session_id: PlaybackSessionId(3),
+            source,
+            resume_position_secs: 0.0,
+            subtitles: vec![],
+            display: rvah_core::PlaybackDisplayMetadata {
+                title: "Live".into(),
+                subtitle: None,
+            },
+        });
+        assert!(matches!(native.protocol, NativeProtocol::Web));
+        assert_eq!(native.url, "https://embed.example.com/ch.php");
+        assert_eq!(native.never_block, vec!["cdn.example.net".to_string()]);
     }
 
     #[test]

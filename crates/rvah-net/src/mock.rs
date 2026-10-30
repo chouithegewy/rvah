@@ -71,11 +71,15 @@ impl Transport for MockTransport {
             .iter()
             .find(|r| r.method == req.method && req.url.starts_with(&r.url_prefix));
         match hit {
-            Some(r) => Ok(HttpResponse {
-                status: r.status,
-                headers: r.headers.iter().cloned().collect(),
-                body: r.body.clone(),
-            }),
+            Some(r) => {
+                let cap = req.max_bytes.map_or(usize::MAX, |n| n as usize);
+                Ok(HttpResponse {
+                    status: r.status,
+                    headers: r.headers.iter().cloned().collect(),
+                    truncated: r.body.len() > cap,
+                    body: r.body.iter().copied().take(cap).collect(),
+                })
+            }
             None => Err(NetError::Transport(format!(
                 "no mock route for {}",
                 req.url

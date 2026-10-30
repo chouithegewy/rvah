@@ -74,6 +74,19 @@ fn case_colliding_entries_are_refused() {
 }
 
 #[test]
+fn platform_ambiguous_paths_are_refused() {
+    for name in ["assets\\manifest.toml", "C:manifest.toml"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = tmp.path().join("nonportable.rvah");
+        build(&pkg, |tar| {
+            append(tar, "manifest.toml", b"preview permissions");
+            append(tar, name, b"ambiguous on another platform");
+        });
+        assert_refused(&pkg, &tmp.path().join("out"));
+    }
+}
+
+#[test]
 fn symlink_entries_are_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let pkg = tmp.path().join("link.rvah");

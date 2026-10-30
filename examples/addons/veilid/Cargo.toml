@@ -1,0 +1,21 @@
+[package]
+name = "rvah-addon-veilid"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "RVAH catalog provider for host-owned Veilid media sessions"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rvah-addon-sdk = { path = "../../../crates/rvah-addon-sdk", features = ["guest"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[workspace]
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

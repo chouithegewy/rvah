@@ -17,6 +17,43 @@ pub enum SourceRejection {
     UnsafeSubtitle(String),
     #[error("header value contains control characters: {0}")]
     InvalidHeaderValue(String),
+    #[error("never_block entry is not a host name: {0}")]
+    InvalidNeverBlock(String),
+    #[error("add-on {0} did not declare permission to open web pages")]
+    WebNotDeclared(String),
+}
+
+/// What the host can play beyond plain http(s) and HLS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SourcePolicy {
+    /// The backend plays DASH manifests.
+    pub dash: bool,
+    /// The host opens web sources in its web player (Android TV).
+    pub web: bool,
+}
+
+/// The most hosts a web source may ask its player never to block.
+const MAX_NEVER_BLOCK: usize = 16;
+
+/// A plain host name: two or more dot-separated labels of letters, digits
+/// and inner hyphens, 1–63 characters each, the last not all digits. No
+/// scheme, port, path, wildcard, bare top-level name or numeric address:
+/// entries match by suffix, so `com` would unblock every `.com` host.
+fn is_host_name(entry: &str) -> bool {
+    let labels: Vec<&str> = entry.split('.').collect();
+    entry.len() <= 253
+        && labels.len() >= 2
+        && labels
+            .last()
+            .is_some_and(|tld| !tld.bytes().all(|b| b.is_ascii_digit()))
+        && labels.iter().all(|label| {
+            (1..=63).contains(&label.len())
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        })
 }
 
 const ALLOWED_HEADERS: [&str; 2] = ["user-agent", "referer"];
@@ -38,15 +75,32 @@ fn check_network_url(raw: &str) -> Result<(), SourceRejection> {
     }
 }
 
-/// Gate every resolver output before it reaches a player backend.
-///
-/// Allows http/https/HLS always; DASH only when the backend declares support
-/// (`allow_dash`); file/local paths never (TC-PLY-003/004/005). Header
-/// policy: only `User-Agent` and `Referer` may accompany a source (FR-063).
+/// [`validate_source_with`] for a host without web sources.
 pub fn validate_source_opts(
     source: &PlayableSource,
     now_unix: u64,
     allow_dash: bool,
+) -> Result<(), SourceRejection> {
+    validate_source_with(
+        source,
+        now_unix,
+        SourcePolicy {
+            dash: allow_dash,
+            web: false,
+        },
+    )
+}
+
+/// Gate every resolver output before it reaches a player backend.
+///
+/// Allows http/https/HLS always; DASH only when the backend declares support;
+/// web pages only on a host with a web player, over https and with no
+/// headers; file/local paths never (TC-PLY-003/004/005). Header policy:
+/// only `User-Agent` and `Referer` may accompany a source (FR-063).
+pub fn validate_source_with(
+    source: &PlayableSource,
+    now_unix: u64,
+    policy: SourcePolicy,
 ) -> Result<(), SourceRejection> {
     if let Some(drm) = source.drm {
         return Err(SourceRejection::UnsupportedDrm(
@@ -57,9 +111,42 @@ pub fn validate_source_opts(
     check_network_url(&source.url)?;
     match source.protocol {
         Protocol::Http | Protocol::Https | Protocol::Hls => {}
-        Protocol::Dash if allow_dash => {}
+        Protocol::Dash if policy.dash => {}
         Protocol::Dash => return Err(SourceRejection::UnsupportedProtocol("dash".into())),
         Protocol::File => return Err(SourceRejection::LocalPathDenied(source.url.clone())),
+        Protocol::Web if policy.web => {
+            if !source
+                .url
+                .trim()
+                .to_ascii_lowercase()
+                .starts_with("https://")
+            {
+                return Err(SourceRejection::UnsupportedProtocol("web over http".into()));
+            }
+            if let Some(header) = source.headers.keys().next() {
+                return Err(SourceRejection::ForbiddenHeader(header.clone()));
+            }
+        }
+        Protocol::Web => return Err(SourceRejection::UnsupportedProtocol("web".into())),
+        Protocol::Veilid => {
+            return Err(SourceRejection::UnsupportedProtocol(
+                "veilid requires the browser host transport".into(),
+            ));
+        }
+    }
+    if !source.never_block.is_empty() && source.protocol != Protocol::Web {
+        return Err(SourceRejection::InvalidNeverBlock(
+            "never_block is for web sources".into(),
+        ));
+    }
+    if source.never_block.len() > MAX_NEVER_BLOCK {
+        return Err(SourceRejection::InvalidNeverBlock(format!(
+            "{} entries (at most {MAX_NEVER_BLOCK})",
+            source.never_block.len()
+        )));
+    }
+    if let Some(bad) = source.never_block.iter().find(|e| !is_host_name(e)) {
+        return Err(SourceRejection::InvalidNeverBlock(bad.clone()));
     }
     if let Some(expires_at) = source.expires_at {
         if expires_at <= now_unix {
@@ -102,7 +189,72 @@ mod tests {
             audio_lang: None,
             expires_at: None,
             drm: None,
+            never_block: Vec::new(),
         }
+    }
+
+    fn web(url: &str) -> PlayableSource {
+        source(Protocol::Web, url)
+    }
+
+    const WEB: SourcePolicy = SourcePolicy {
+        dash: false,
+        web: true,
+    };
+
+    #[test]
+    fn web_needs_the_policy() {
+        assert!(matches!(
+            validate_source_with(&web("https://ex.com/p"), 0, SourcePolicy::default()),
+            Err(SourceRejection::UnsupportedProtocol(_))
+        ));
+        assert!(validate_source_with(&web("https://ex.com/p"), 0, WEB).is_ok());
+    }
+
+    #[test]
+    fn web_must_be_https_and_headerless() {
+        assert!(validate_source_with(&web("http://ex.com/p"), 0, WEB).is_err());
+        let mut s = web("https://ex.com/p");
+        s.headers.insert("Referer".into(), "https://ex.com".into());
+        assert!(matches!(
+            validate_source_with(&s, 0, WEB),
+            Err(SourceRejection::ForbiddenHeader(_))
+        ));
+    }
+
+    #[test]
+    fn never_block_must_be_plain_hosts() {
+        let mut s = web("https://ex.com/p");
+        s.never_block = vec!["cdn.example.net".into(), "Example.ORG".into()];
+        assert!(validate_source_with(&s, 0, WEB).is_ok());
+        for bad in [
+            "https://x.com",
+            "x.com/a",
+            "*.x.com",
+            "x.com:443",
+            "",
+            "-x.com",
+            "x..com",
+            // A bare top-level name or a numeric address would unblock a
+            // whole namespace by suffix.
+            "com",
+            "localhost",
+            "10.0.0.1",
+        ] {
+            s.never_block = vec![bad.into()];
+            assert!(
+                matches!(
+                    validate_source_with(&s, 0, WEB),
+                    Err(SourceRejection::InvalidNeverBlock(_))
+                ),
+                "{bad}"
+            );
+        }
+        s.never_block = (0..17).map(|i| format!("h{i}.example.com")).collect();
+        assert!(validate_source_with(&s, 0, WEB).is_err());
+        let mut hls = source(Protocol::Hls, "https://ex.com/a.m3u8");
+        hls.never_block = vec!["cdn.example.net".into()];
+        assert!(validate_source_with(&hls, 0, WEB).is_err());
     }
 
     #[test]

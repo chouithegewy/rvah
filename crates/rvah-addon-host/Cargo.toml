@@ -7,9 +7,9 @@ license.workspace = true
 
 [dependencies]
 rvah-addon-sdk.workspace = true
-rvah-auth.workspace = true
-rvah-data.workspace = true
-rvah-net.workspace = true
+rvah-auth = { workspace = true, optional = true }
+rvah-data = { workspace = true, optional = true }
+rvah-net = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
@@ -25,6 +25,8 @@ wasmtime = { workspace = true, optional = true }
 wasmi = { workspace = true, optional = true }
 
 [features]
+default = ["native"]
+native = ["dep:rvah-auth", "dep:rvah-data", "dep:rvah-net"]
 wasm = ["dep:wasmtime"]
 wasm-wasmi = ["dep:wasmi"]
 

@@ -101,6 +101,11 @@ pub enum Protocol {
     Hls,
     Dash,
     File,
+    /// Opaque media reference resolved by the host's Veilid transport.
+    Veilid,
+    /// An https web page the host opens in its locked-down web player.
+    /// Never inferred from a URL: an add-on says so explicitly.
+    Web,
 }
 
 /// Subtitle container/codec hint. Existing add-ons may omit this and hosts
@@ -141,11 +146,24 @@ pub enum DrmScheme {
 }
 
 impl Protocol {
+    /// Return the opaque catalog ID of a canonical host-owned media reference.
+    /// Route blobs, credentials, query strings and filesystem paths are forbidden.
+    pub fn veilid_media_id(url: &str) -> Option<&str> {
+        let id = url.strip_prefix("rvah+veilid://media/")?;
+        (!id.is_empty()
+            && id.len() <= 128
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
+        .then_some(id)
+    }
+
     /// Classify a URL by scheme and well-known manifest extensions.
     pub fn from_url(url: &str) -> Option<Protocol> {
         let (scheme, rest) = url.split_once("://")?;
         let path = rest.split(['?', '#']).next().unwrap_or(rest);
         match scheme.to_ascii_lowercase().as_str() {
+            "rvah+veilid" => Self::veilid_media_id(url).map(|_| Protocol::Veilid),
             "file" => Some(Protocol::File),
             "http" | "https" => {
                 if path.to_ascii_lowercase().ends_with(".m3u8") {
@@ -200,6 +218,9 @@ pub struct PlayableSource {
     /// scheme with a clear unsupported-DRM error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drm: Option<DrmScheme>,
+    /// Host suffixes a web player must never block; web sources only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub never_block: Vec<String>,
 }
 
 /// Outcome of resolving a media item.
@@ -510,6 +531,7 @@ mod tests {
             audio_lang: Some("en".into()),
             expires_at: Some(1_800_000_000),
             drm: None,
+            never_block: Vec::new(),
         }]);
         let json = serde_json::to_string(&rr).unwrap();
         assert_eq!(rr, serde_json::from_str::<ResolveResult>(&json).unwrap());
@@ -524,6 +546,22 @@ mod tests {
 
     #[test]
     fn protocol_from_url() {
+        assert_eq!(
+            Protocol::from_url("rvah+veilid://media/demo_1"),
+            Some(Protocol::Veilid)
+        );
+        for invalid in [
+            "rvah+veilid://media/",
+            "rvah+veilid://media/../secret",
+            "rvah+veilid://media/demo?key=secret",
+            "rvah+veilid://media/demo#route",
+            "rvah+veilid://media/%61",
+            "rvah+veilid://user@media/demo",
+            "RVAH+VEILID://media/demo",
+            "rvah+veilid://media/a/b",
+        ] {
+            assert_eq!(Protocol::from_url(invalid), None, "{invalid}");
+        }
         assert_eq!(
             Protocol::from_url("https://a.example/x.mp4"),
             Some(Protocol::Https)
@@ -546,5 +584,33 @@ mod tests {
         );
         assert_eq!(Protocol::from_url("rtmp://a.example/live"), None);
         assert_eq!(Protocol::from_url("not-a-url"), None);
+    }
+
+    #[test]
+    fn web_protocol_round_trips_as_web() {
+        assert_eq!(serde_json::to_string(&Protocol::Web).unwrap(), "\"web\"");
+        assert_eq!(
+            serde_json::from_str::<Protocol>("\"web\"").unwrap(),
+            Protocol::Web
+        );
+    }
+
+    #[test]
+    fn from_url_never_infers_web() {
+        for url in [
+            "https://ex.com/page.php",
+            "https://ex.com/",
+            "http://ex.com/embed",
+        ] {
+            assert_ne!(Protocol::from_url(url), Some(Protocol::Web));
+        }
+    }
+
+    #[test]
+    fn never_block_defaults_empty_and_is_skipped() {
+        let s: PlayableSource =
+            serde_json::from_str(r#"{"url":"https://ex.com/","protocol":"web"}"#).unwrap();
+        assert!(s.never_block.is_empty());
+        assert!(!serde_json::to_string(&s).unwrap().contains("never_block"));
     }
 }

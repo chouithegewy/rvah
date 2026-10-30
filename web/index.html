@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#101815" />
+    <meta
+      name="description"
+      content="RVAH encrypted profile enrollment and Veilid synchronization"
+    />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <title>RVAH Web Player</title>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="wordmark" href="/" aria-label="RVAH home">RVAH</a>
+      <div class="runtime-state">
+        <span id="wasm-state" class="pill pending">WASM loading</span>
+        <span id="veilid-state" class="pill neutral">Veilid offline</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <p class="eyebrow">Portable accounts, device-owned keys</p>
+        <h1>Sign in once. Enroll each screen safely.</h1>
+        <p class="lede">
+          Import an encrypted RVAH profile, keep its recovery key wrapped by this
+          browser, and optionally replicate ciphertext through Veilid. Credentials
+          are never embedded in this public application build.
+        </p>
+      </section>
+
+      <section id="notice" class="notice" role="status" aria-live="polite">
+        Initializing the WebAssembly profile engine…
+      </section>
+
+      <div class="dashboard">
+        <section class="panel span-two" aria-labelledby="media-heading">
+          <div class="panel-heading"><h2 id="media-heading">Browse and play</h2><span id="addon-state" class="pill neutral">No add-on loaded</span></div>
+          <p class="muted">Load a signed RVAH add-on using a publisher key you trust. Review its permissions before allowing execution. Packages and playback sessions stay in memory for this tab.</p>
+          <div class="actions">
+            <label class="file-button">Package <input id="addon-package" type="file" accept=".rvah" /></label>
+            <label class="file-button">Detached signature <input id="addon-signature" type="file" accept=".sig" /></label>
+            <label class="file-button">Trusted publisher key <input id="addon-pubkey" type="file" accept=".pub" /></label>
+            <button id="addon-inspect">Verify package</button>
+          </div>
+          <pre id="addon-permissions" class="muted"></pre>
+          <div class="actions"><button id="addon-approve" disabled>Approve declared capabilities</button><button id="addon-unload" disabled>Unload</button></div>
+          <label>Add-on settings JSON (or use this add-on’s enrolled profile settings)<textarea id="addon-settings" spellcheck="false" rows="3">{}</textarea></label>
+          <div class="actions"><button id="addon-profile-settings" disabled>Use profile settings</button><button id="media-browse" disabled>Browse home</button><input id="media-query" aria-label="Search catalog" placeholder="Search catalog" /><button id="media-search" disabled>Search</button></div>
+          <div id="media-catalog" class="profile-list"></div>
+          <button id="media-more" hidden>Load more</button>
+          <details><summary>Private Veilid playback session</summary>
+            <p class="muted">Import the private session descriptor supplied by your relay operator. It grants access to that session and is never passed to the add-on. Connect to Veilid below before playing. <a href="/relay/">Open relay operator</a>.</p>
+            <label class="file-button">Session descriptor <input id="media-session" type="file" accept=".json" /></label>
+            <button id="media-import-session">Import session</button><span id="media-session-state"></span>
+          </details>
+          <p id="media-status" role="status" aria-live="polite">Choose an add-on to begin.</p>
+          <video id="media-video" controls playsinline preload="metadata" style="width:100%;max-height:65vh" aria-label="Media player"></video>
+          <button id="media-stop">Stop and release media</button>
+          <p class="muted">Clear media only. Veilid playback is a bounded in-memory download (maximum 16 MiB), then browser playback. Codec support depends on your browser. Direct HTTP(S) playback requires an approved domain and browser access; custom headers, DRM, DASH and non-native HLS are unsupported.</p>
+        </section>
+        <section class="panel span-two" aria-labelledby="profile-heading">
+          <div class="panel-heading">
+            <div>
+              <p class="step">01</p>
+              <h2 id="profile-heading">Encrypted profile</h2>
+            </div>
+            <span id="profile-badge" class="pill neutral">No device profile</span>
+          </div>
+
+          <div class="actions primary-actions">
+            <button id="create-profile" class="primary">Create new profile</button>
+            <label class="file-button">
+              Select encrypted profile
+              <input id="profile-file" type="file" accept=".rvah-profile,application/octet-stream" />
+            </label>
+            <label class="file-button">
+              Select recovery key
+              <input id="key-file" type="file" accept=".key,text/plain" />
+            </label>
+            <button id="import-profile">Import and enroll</button>
+          </div>
+
+          <div id="profile-summary" class="empty-state">
+            No profile is enrolled in this browser.
+          </div>
+
+          <div class="actions">
+            <button id="download-profile" disabled>Download ciphertext</button>
+            <button id="download-key" disabled>Export recovery key</button>
+            <button id="rotate-key" disabled>Rotate profile key</button>
+            <button id="forget-device" class="danger" disabled>Forget this device</button>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="service-heading">
+          <div class="panel-heading">
+            <div>
+              <p class="step">02</p>
+              <h2 id="service-heading">Service configuration</h2>
+            </div>
+          </div>
+          <p class="muted">
+            Developer entry point for API keys and tokens. Existing secret values
+            are never rendered back into the page.
+          </p>
+          <form id="service-form">
+            <label>
+              Add-on ID
+              <input name="addonId" list="addon-presets" required placeholder="com.rvah.tmdb" />
+            </label>
+            <datalist id="addon-presets">
+              <option value="com.rvah.tmdb"></option>
+              <option value="com.rvah.trakt"></option>
+              <option value="com.rvah.real-debrid"></option>
+              <option value="com.rvah.mdblist"></option>
+              <option value="com.rvah.prowlarr"></option>
+              <option value="com.rvah.subdl"></option>
+            </datalist>
+            <label>
+              Add-on version
+              <input name="sourceVersion" required value="0.1.0" />
+            </label>
+            <label>
+              Settings JSON
+              <textarea name="settings" spellcheck="false" rows="4">{}</textarea>
+            </label>
+            <label>
+              New secrets JSON
+              <textarea name="secrets" class="secret-input" spellcheck="false" rows="4">{}</textarea>
+            </label>
+            <button class="primary" type="submit" disabled>Encrypt configuration</button>
+          </form>
+        </section>
+
+        <section class="panel" aria-labelledby="pair-heading">
+          <div class="panel-heading">
+            <div>
+              <p class="step">03</p>
+              <h2 id="pair-heading">Pair another device</h2>
+            </div>
+          </div>
+          <p class="muted">
+            Pairing files use ephemeral ECDH and expire after ten minutes. The
+            response carries an encrypted profile and recovery key only for the
+            requesting device.
+          </p>
+          <div class="stack">
+            <button id="pair-request">Create request on this new device</button>
+            <label class="file-button">
+              Select request on enrolled device
+              <input id="pair-request-file" type="file" accept=".json,application/json" />
+            </label>
+            <button id="pair-respond" disabled>Create encrypted response</button>
+            <label class="file-button">
+              Select response on new device
+              <input id="pair-response-file" type="file" accept=".json,application/json" />
+            </label>
+            <button id="pair-accept">Accept pairing response</button>
+          </div>
+        </section>
+
+        <section class="panel span-two" aria-labelledby="veilid-heading">
+          <div class="panel-heading">
+            <div>
+              <p class="step">04</p>
+              <h2 id="veilid-heading">Veilid replication</h2>
+            </div>
+            <span class="experimental">Explicit opt-in</span>
+          </div>
+          <p class="muted">
+            Veilid receives encrypted chunks only. Browser nodes require a direct
+            WebSocket bootstrap URL; use <code>wss://</code> from an HTTPS deployment.
+          </p>
+          <div class="veilid-grid">
+            <label>
+              Bootstrap WebSocket URL
+              <input id="bootstrap-url" type="url" placeholder="wss://bootstrap.example/ws" />
+            </label>
+            <div class="actions aligned">
+              <button id="veilid-connect">Connect</button>
+              <button id="veilid-disconnect" disabled>Disconnect</button>
+            </div>
+            <label class="wide">
+              Profile record key
+              <input id="record-key" autocomplete="off" placeholder="VLD0:…" />
+            </label>
+            <div class="actions aligned wide">
+              <button id="veilid-publish" disabled>Publish current ciphertext</button>
+              <button id="veilid-fetch" disabled>Fetch and verify</button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <footer>
+      <span>Local-first enrollment shell</span>
+      <span>Secrets remain encrypted at rest and over the wire</span>
+    </footer>
+
+    <script type="module" src="/src/app.js"></script>
+  </body>
+</html>

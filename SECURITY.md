@@ -32,5 +32,8 @@ is offered.
 Examples of in-scope issues include sandbox escapes, signature or consent
 bypasses, archive extraction attacks, secret or diagnostic leakage, network
 allowlist bypasses, unsafe native-player input, and unauthorized update paths.
+That includes an add-on opening a web page without declaring `web = true` in
+its manifest (shown at install), and the web player leaving the page it was
+given (pop-ups, new windows, navigation to another site).
 Third-party service outages, account disputes, unsupported DRM, and findings
 that require committing a user's own secrets are generally out of scope.

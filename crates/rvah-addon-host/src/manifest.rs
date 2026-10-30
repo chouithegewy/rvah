@@ -58,6 +58,10 @@ pub struct RawPermissions {
     pub storage: Option<String>,
     #[serde(default)]
     pub secrets: Vec<String>,
+    /// May return web sources, which a host opens full screen in its web
+    /// player.
+    #[serde(default)]
+    pub web: bool,
 }
 
 /// Validated permissions with the storage quota resolved to bytes.
@@ -66,6 +70,10 @@ pub struct PermissionsSection {
     pub network: Vec<String>,
     pub storage_bytes: u64,
     pub secrets: Vec<String>,
+    /// Left out when false, so add-ons without it keep their permission
+    /// hash.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub web: bool,
 }
 
 pub const DEFAULT_STORAGE_BYTES: u64 = 1024 * 1024;
@@ -149,6 +157,7 @@ impl Manifest {
                 network,
                 storage_bytes,
                 secrets: raw.permissions.secrets,
+                web: raw.permissions.web,
             },
             settings: raw.settings,
         })
@@ -271,6 +280,25 @@ secrets = ["provider_token"]
 [settings]
 region = { type = "string", default = "us", enum = ["us", "gb", "ca"] }
 "#;
+
+    #[test]
+    fn web_permission_defaults_false_and_parses_true() {
+        assert!(!Manifest::parse(FULL).unwrap().permissions.web);
+        let with = FULL.replace("[permissions]", "[permissions]\nweb = true");
+        assert!(Manifest::parse(&with).unwrap().permissions.web);
+    }
+
+    #[test]
+    fn permission_hash_unchanged_without_web() {
+        let plain = Manifest::parse(FULL).unwrap().permission_hash();
+        let explicit_false = FULL.replace("[permissions]", "[permissions]\nweb = false");
+        assert_eq!(
+            plain,
+            Manifest::parse(&explicit_false).unwrap().permission_hash()
+        );
+        let on = FULL.replace("[permissions]", "[permissions]\nweb = true");
+        assert_ne!(plain, Manifest::parse(&on).unwrap().permission_hash());
+    }
 
     #[test]
     fn parses_full_manifest() {

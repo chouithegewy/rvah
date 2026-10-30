@@ -114,7 +114,7 @@ fn wasm_runtime_for(
         &manifest,
         Arc::clone(db),
         Arc::clone(vault),
-        Box::new(rvah_net::UreqTransport::default()),
+        Box::new(rvah_net::HttpTransport::default()),
         SESSION_REQUEST_QUOTA,
     )
     .with_resolver(Box::new(rvah_net::SystemResolver));

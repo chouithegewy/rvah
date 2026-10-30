@@ -10,6 +10,9 @@ android/app/build/
 android/app/src/main/jniLibs/
 android/local.properties
 android/app/src/main/generated/
+web/node_modules/
+web/pkg/
+web/dist/
 
 # Developer environment and editor/OS state.
 .env

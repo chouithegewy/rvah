@@ -1,10 +1,8 @@
 package com.rvah.tv
 
-import android.content.ActivityNotFoundException
-import android.content.Intent
-import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +13,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -24,11 +23,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -38,6 +38,7 @@ import androidx.tv.material3.Text
 import coil3.ImageLoader
 import coil3.compose.AsyncImage
 import coil3.compose.setSingletonImageLoaderFactory
+import coil3.svg.SvgDecoder
 import coil3.disk.DiskCache
 import coil3.memory.MemoryCache
 import coil3.request.crossfade
@@ -62,6 +63,7 @@ internal fun ArtworkLoader() {
                     .maxSizeBytes(64L * 1024 * 1024)
                     .build()
             }
+            .components { add(SvgDecoder.Factory()) }
             .crossfade(true)
             .build()
     }
@@ -86,18 +88,17 @@ internal fun DetailsScreen(
     /** Null when no add-ons can find and play releases. */
     onFindSources: ((ItemDetailsRecord) -> Unit)?,
     onEpisodes: (ItemDetailsRecord) -> Unit,
+    onTrailer: (String, String) -> Unit,
     onExit: () -> Unit,
 ) {
     BackHandler(onBack = onExit)
     var details by remember(itemId) { mutableStateOf<ItemDetailsRecord?>(null) }
     var failure by remember(itemId) { mutableStateOf<Throwable?>(null) }
-    var notice by remember(itemId) { mutableStateOf<String?>(null) }
     LaunchedEffect(addonId, itemId) {
         onIo { core.details(addonId, itemId) }
             .onSuccess { details = it }
             .onFailure { failure = it }
     }
-    val context = LocalContext.current
     Box(Modifier.fillMaxSize().background(Background)) {
         val shown = details
         shown?.fanart?.let {
@@ -143,16 +144,31 @@ internal fun DetailsScreen(
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             shown.ratings.forEach { rating ->
-                                Text(
-                                    "${ratingLabel(rating.source)}  ${rating.value}",
-                                    color = Primary,
-                                    fontSize = 16.sp,
-                                    maxLines = 1,
-                                    softWrap = false,
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
                                         .background(Color(0x33FFFFFF), RoundedCornerShape(6.dp))
                                         .padding(horizontal = 10.dp, vertical = 4.dp),
-                                )
+                                ) {
+                                    val icon = ratingIcon(rating.source)
+                                    if (icon != null) {
+                                        Image(
+                                            painter = painterResource(icon),
+                                            contentDescription = ratingLabel(rating.source),
+                                            modifier = Modifier.size(22.dp),
+                                        )
+                                    } else {
+                                        Text(
+                                            ratingLabel(rating.source),
+                                            color = Primary,
+                                            fontSize = 14.sp,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                        )
+                                    }
+                                    Text(rating.value, color = Primary, fontSize = 16.sp, maxLines = 1, softWrap = false)
+                                }
                             }
                         }
                     }
@@ -190,19 +206,11 @@ internal fun DetailsScreen(
                     }
                     shown?.trailers?.forEachIndexed { index, trailer ->
                         Button(
-                            onClick = {
-                                notice = try {
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(trailer.url)))
-                                    null
-                                } catch (missing: ActivityNotFoundException) {
-                                    "No app on this TV opens YouTube links."
-                                }
-                            },
+                            onClick = { onTrailer(trailer.url, trailer.name) },
                             modifier = if (index == 0 && players.isEmpty() && !series && !sourcesFirst) Modifier.focusRequester(first) else Modifier,
                         ) { Text(if (index == 0) "Play trailer" else trailer.name, maxLines = 1, softWrap = false) }
                     }
                 }
-                notice?.let { Body(it, ErrorText) }
                 if (players.isEmpty() && shown != null) {
                     // Real-Debrid before 0.3.0, say, plays but cannot search.
                     Body("To watch this, install or update an add-on that can search and play, such as Real-Debrid.", Secondary)
@@ -213,4 +221,10 @@ internal fun DetailsScreen(
             }
         }
     }
+}
+
+internal fun ratingIcon(source: String): Int? = when (source) {
+    "rotten_tomatoes" -> R.drawable.ic_rating_tomato
+    "rt_audience" -> R.drawable.ic_rating_popcorn
+    else -> null
 }

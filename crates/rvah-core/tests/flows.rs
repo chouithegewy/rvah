@@ -1226,3 +1226,89 @@ fn subtitles_come_from_every_finder_with_only_files_the_player_may_load() {
     assert!(found("com.rvah.fixtures.subtitles.broken").1.is_err());
     assert_eq!(finder.asked.lock().unwrap().as_slice(), [request]);
 }
+
+fn web_source() -> rvah_addon_sdk::PlayableSource {
+    let mut source = rvah_testkit::mp4_source("https://embed.example.com/ch.php");
+    source.protocol = rvah_addon_sdk::Protocol::Web;
+    source.never_block = vec!["cdn.example.net".into()];
+    source
+}
+
+impl World {
+    fn add_web_addon(&mut self, id: &str, declares_web: bool) {
+        let provider = Arc::new(ResolverStaticProvider {
+            sources: vec![web_source()],
+        });
+        if !declares_web {
+            self.add_addon(id, &["resolve"], provider, vec![Capability::Resolve]);
+            return;
+        }
+        let (pkg, sig, pubkey) =
+            rvah_testkit::write_web_fixture_package(self._tmp.path(), id, &["resolve"]);
+        self.core
+            .manager
+            .install(&pkg, &sig, &pubkey, InstallDecision::Approve)
+            .unwrap();
+        self.core.register_runtime(
+            id,
+            Box::new(InProcessRuntime::new(provider, vec![Capability::Resolve])),
+            Arc::new(NoopHost::default()),
+        );
+    }
+}
+
+#[test]
+fn web_source_rejected_without_web_capability() {
+    let mut w = World::new();
+    w.add_web_addon("com.rvah.fixtures.web", true);
+    let error = w
+        .core
+        .prepare_playback(
+            "com.rvah.fixtures.web",
+            "x",
+            rvah_core::PlaybackCapabilities::media3(),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        CoreError::SourceRejected(rvah_player::SourceRejection::UnsupportedProtocol(_))
+    ));
+}
+
+#[test]
+fn web_source_rejected_when_addon_lacks_web_permission() {
+    let mut w = World::new();
+    w.add_web_addon("com.rvah.fixtures.web", false);
+    let error = w
+        .core
+        .prepare_playback(
+            "com.rvah.fixtures.web",
+            "x",
+            rvah_core::PlaybackCapabilities::android_tv(),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        CoreError::SourceRejected(rvah_player::SourceRejection::WebNotDeclared(ref id))
+            if id == "com.rvah.fixtures.web"
+    ));
+}
+
+#[test]
+fn web_source_prepared_for_declared_addon_on_android_tv() {
+    let mut w = World::new();
+    w.add_web_addon("com.rvah.fixtures.web", true);
+    let prepared = w
+        .core
+        .prepare_playback(
+            "com.rvah.fixtures.web",
+            "x",
+            rvah_core::PlaybackCapabilities::android_tv(),
+        )
+        .unwrap();
+    assert_eq!(prepared.source.protocol, rvah_addon_sdk::Protocol::Web);
+    assert_eq!(
+        prepared.source.never_block,
+        vec!["cdn.example.net".to_string()]
+    );
+}

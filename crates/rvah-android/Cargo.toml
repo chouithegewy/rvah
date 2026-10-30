@@ -10,6 +10,7 @@ description = "UniFFI boundary for the native Android TV application"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+adblock.workspace = true
 rvah-addon-host = { workspace = true, features = ["wasm-wasmi"] }
 rvah-addon-sdk.workspace = true
 rvah-auth.workspace = true
@@ -17,7 +18,7 @@ rvah-core.workspace = true
 rvah-data.workspace = true
 rvah-net.workspace = true
 rvah-player.workspace = true
-rvah-profile.workspace = true
+rvah-profile = { workspace = true, features = ["native"] }
 ed25519-dalek.workspace = true
 hex.workspace = true
 serde_json.workspace = true

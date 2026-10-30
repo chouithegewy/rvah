@@ -7,13 +7,13 @@ use rvah_addon_host::{
 };
 use rvah_addon_sdk::{
     AccountStatus, AddonError, AddonErrorCode, AuthPoll, Credentials, Filter, HostApi, ItemDetails,
-    Page, Release, ResolveResult, ScrobbleAction, ScrobbleItem, SourceRequest, SubtitleRequest,
-    SubtitleTrack,
+    Page, Protocol, Release, ResolveResult, ScrobbleAction, ScrobbleItem, SourceRequest,
+    SubtitleRequest, SubtitleTrack,
 };
 use rvah_auth::{DeviceCodeFlow, DeviceCodeState, PollOutcome, SecretVault};
 use rvah_data::{AddonStatus, Database, DiagnosticEvent, FavoriteRecord};
 use rvah_player::{
-    validate_source_opts, PlayerBackend, PlayerController, PlayerEvent, PlayerState,
+    validate_source_with, PlayerBackend, PlayerController, PlayerEvent, PlayerState, SourcePolicy,
     SourceRejection,
 };
 
@@ -476,7 +476,7 @@ impl<B: PlayerBackend> AppCore<B> {
                 source_id: None,
             },
         )?;
-        self.prepare_resolved(resp, (addon_id, item_id), capabilities)
+        self.prepare_resolved(resp, addon_id, (addon_id, item_id), capabilities)
     }
 
     /// Releases of one film or episode from a `sources` add-on, each with a
@@ -520,13 +520,15 @@ impl<B: PlayerBackend> AppCore<B> {
                 episode,
             },
         )?;
-        self.prepare_resolved(resp, title, capabilities)
+        self.prepare_resolved(resp, debrid_id, title, capabilities)
     }
 
-    /// A playback session for a resolve answer, tracked under `progress`.
+    /// A playback session for a resolve answer from the add-on `resolver`,
+    /// tracked under `progress`.
     fn prepare_resolved(
         &mut self,
         resp: AddonResponse,
+        resolver: &str,
         progress: (&str, &str),
         capabilities: PlaybackCapabilities,
     ) -> Result<PreparedPlayback, CoreError> {
@@ -554,6 +556,13 @@ impl<B: PlayerBackend> AppCore<B> {
             }
         };
 
+        // Only an add-on that declared it may have a page opened full screen.
+        let may_open_web = sources.iter().any(|s| s.protocol == Protocol::Web)
+            && self.installed_manifest(resolver)?.permissions.web;
+        let policy = SourcePolicy {
+            dash: capabilities.dash,
+            web: capabilities.web,
+        };
         let now = unix_now();
         let mut last_rejection: Option<SourceRejection> = None;
         let source = sources.into_iter().find(|s| {
@@ -563,7 +572,11 @@ impl<B: PlayerBackend> AppCore<B> {
                 ));
                 return false;
             }
-            match validate_source_opts(s, now, capabilities.dash) {
+            if s.protocol == Protocol::Web && !may_open_web {
+                last_rejection = Some(SourceRejection::WebNotDeclared(resolver.to_string()));
+                return false;
+            }
+            match validate_source_with(s, now, policy) {
                 Ok(()) => true,
                 Err(r) => {
                     last_rejection = Some(r);

@@ -45,6 +45,8 @@ struct RawHttpResponse<'a> {
     status: u16,
     #[serde(default)]
     headers: BTreeMap<String, String>,
+    #[serde(default)]
+    truncated: bool,
     #[serde(borrow, default)]
     body: Option<&'a serde_json::value::RawValue>,
 }
@@ -67,6 +69,7 @@ fn http_response(payload: &[u8]) -> Result<HttpResponse, AddonError> {
     Ok(HttpResponse {
         status: raw.status,
         headers: raw.headers,
+        truncated: raw.truncated,
         body,
     })
 }
@@ -158,6 +161,28 @@ pub fn http_get(
     http_send(host, "GET", url, headers, None)
 }
 
+/// A GET whose answer's body stops after `max_bytes` (the host reads no
+/// further), for a page whose useful part is near the top: the answer says
+/// whether it was `truncated`.
+pub fn http_get_capped(
+    host: &dyn Host,
+    url: &str,
+    headers: BTreeMap<String, String>,
+    max_bytes: u64,
+) -> Result<HttpResponse, AddonError> {
+    let resp = host.call(json!({
+        "fn": "http_fetch",
+        "req": crate::HttpRequest {
+            method: "GET".to_string(),
+            url: url.to_string(),
+            headers,
+            body: None,
+            max_bytes: Some(max_bytes),
+        },
+    }))?;
+    http_response(&resp)
+}
+
 /// Any request: `DELETE`, `PUT`, a `POST` with a JSON body, …
 pub fn http_send(
     host: &dyn Host,
@@ -173,6 +198,7 @@ pub fn http_send(
             url: url.to_string(),
             headers,
             body,
+            max_bytes: None,
         },
     }))?;
     http_response(&resp)
@@ -198,6 +224,7 @@ pub fn http_send_within(
             url: url.to_string(),
             headers,
             body,
+            max_bytes: None,
         },
     }))?;
     if resp.len() > max_answer {
@@ -408,11 +435,14 @@ impl Host for ScriptedHost {
             Some("http_fetch") => {
                 let req: crate::HttpRequest = serde_json::from_value(request["req"].clone())
                     .map_err(|e| internal(&format!("scripted host: {e}")))?;
-                let (status, body) = self
+                let (status, mut body) = self
                     .http
                     .get(&req.url)
                     .cloned()
                     .unwrap_or((404, b"not routed".to_vec()));
+                let cap = req.max_bytes.map_or(usize::MAX, |n| n as usize);
+                let truncated = body.len() > cap;
+                body.truncate(cap);
                 let headers = self
                     .response_headers
                     .get(&req.url)
@@ -422,6 +452,7 @@ impl Host for ScriptedHost {
                 serde_json::to_value(HttpResponse {
                     status,
                     headers,
+                    truncated,
                     body,
                 })
                 .expect("answer serializes")
@@ -576,6 +607,17 @@ macro_rules! export_guest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scripted_host_honours_max_bytes() {
+        let mut host = ScriptedHost::default();
+        host.http
+            .insert("https://ex.com/p".into(), (200, vec![b'y'; 500]));
+        let resp = http_get_capped(&host, "https://ex.com/p", BTreeMap::new(), 64).unwrap();
+        assert_eq!(resp.body.len(), 64);
+        assert!(resp.truncated);
+        assert_eq!(host.requests()[0].max_bytes, Some(64));
+    }
 
     #[test]
     fn byte_arrays_decode_like_serde_does() {

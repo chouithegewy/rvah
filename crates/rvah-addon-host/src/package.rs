@@ -77,7 +77,16 @@ fn for_each_entry(
     ) -> Result<(), PackageError>,
 ) -> Result<(), PackageError> {
     let file = std::fs::File::open(pkg_path)?;
-    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    walk_entries(flate2::read::GzDecoder::new(file), |path, entry| {
+        visit(path, entry)
+    })
+}
+
+fn walk_entries<R: Read>(
+    reader: R,
+    mut visit: impl FnMut(&Path, &mut tar::Entry<'_, R>) -> Result<(), PackageError>,
+) -> Result<(), PackageError> {
+    let mut archive = tar::Archive::new(reader);
     let mut seen = std::collections::HashSet::new();
     for entry in archive.entries()? {
         let mut entry = entry?;
@@ -108,7 +117,15 @@ fn for_each_entry(
             .components()
             .filter(|c| matches!(c, std::path::Component::Normal(_)))
             .collect::<std::path::PathBuf>();
-        let key = normalized.to_string_lossy().to_lowercase();
+        let portable = normalized
+            .to_str()
+            .ok_or_else(|| PackageError::Malformed("non-UTF8 archive path".into()))?;
+        if portable.contains(['\\', ':']) {
+            return Err(PackageError::Malformed(format!(
+                "nonportable archive path: {portable}"
+            )));
+        }
+        let key = portable.to_lowercase();
         if !key.is_empty() && !seen.insert(key) {
             return Err(PackageError::Malformed(format!(
                 "duplicate entry: {}",
@@ -118,6 +135,52 @@ fn for_each_entry(
         visit(&normalized, &mut entry)?;
     }
     Ok(())
+}
+
+/// Verify before decompressing, then read a bounded archive entirely in memory.
+/// Browser and native package readers share the same path/type/duplicate checks.
+pub fn verified_package_bytes(
+    bytes: &[u8],
+    signature: &[u8],
+    public_key: &[u8],
+) -> Result<std::collections::BTreeMap<String, Vec<u8>>, PackageError> {
+    const MAX: usize = 16 * 1024 * 1024;
+    if bytes.len() > MAX {
+        return Err(PackageError::Malformed("archive exceeds 16 MiB".into()));
+    }
+    let key: &[u8; 32] = public_key
+        .try_into()
+        .map_err(|_| PackageError::BadSignature)?;
+    let key = VerifyingKey::from_bytes(key).map_err(|_| PackageError::BadSignature)?;
+    let signature = Signature::from_slice(signature).map_err(|_| PackageError::BadSignature)?;
+    key.verify_strict(&Sha256::digest(bytes), &signature)
+        .map_err(|_| PackageError::BadSignature)?;
+    // Bound the decompressed tar stream including headers and ignored padding.
+    let mut decoded = Vec::new();
+    flate2::read::GzDecoder::new(bytes)
+        .take((MAX + 1) as u64)
+        .read_to_end(&mut decoded)?;
+    if decoded.len() > MAX {
+        return Err(PackageError::Malformed(
+            "expanded archive exceeds 16 MiB".into(),
+        ));
+    }
+    let mut files = std::collections::BTreeMap::new();
+    let mut entries = 0;
+    walk_entries(decoded.as_slice(), |path, entry| {
+        entries += 1;
+        if entries > 256 {
+            return Err(PackageError::Malformed("too many archive entries".into()));
+        }
+        if entry.header().entry_type().is_file() {
+            let name = path.to_str().expect("walk_entries validates UTF-8 paths");
+            let mut contents = Vec::new();
+            entry.read_to_end(&mut contents)?;
+            files.insert(name.to_owned(), contents);
+        }
+        Ok(())
+    })?;
+    Ok(files)
 }
 
 /// Extract a verified package into `dest`. The whole archive is validated
@@ -150,6 +213,41 @@ pub fn read_package_file(pkg_path: &Path, name: &str) -> Result<Vec<u8>, Package
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_reader_rejects_duplicates_links_and_expansion() {
+        let (signing, verifying) = keygen();
+        let make = |names: &[(&str, tar::EntryType)], content: &[u8]| {
+            let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            let mut archive = tar::Builder::new(encoder);
+            for (name, kind) in names {
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(*kind);
+                header.set_size(content.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                archive.append_data(&mut header, name, content).unwrap();
+            }
+            archive.into_inner().unwrap().finish().unwrap()
+        };
+        for bytes in [
+            make(
+                &[
+                    ("manifest.toml", tar::EntryType::Regular),
+                    ("MANIFEST.toml", tar::EntryType::Regular),
+                ],
+                b"a",
+            ),
+            make(&[("main.wasm", tar::EntryType::Symlink)], b""),
+            make(
+                &[("main.wasm", tar::EntryType::Regular)],
+                &vec![0; 16 * 1024 * 1024],
+            ),
+        ] {
+            let signature = signing.sign(&Sha256::digest(&bytes)).to_bytes();
+            assert!(verified_package_bytes(&bytes, &signature, &verifying.to_bytes()).is_err());
+        }
+    }
 
     fn addon_dir(dir: &Path) {
         std::fs::write(dir.join("manifest.toml"), "id = \"x\"").unwrap();

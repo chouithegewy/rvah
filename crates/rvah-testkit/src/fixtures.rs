@@ -93,6 +93,26 @@ pub fn write_fixture_package_with_permissions(
     (pkg, sig, verifying)
 }
 
+/// Same as [`write_named_fixture_package`], declaring `web = true`: the
+/// add-on may return web sources.
+pub fn write_web_fixture_package(
+    dir: &Path,
+    id: &str,
+    caps: &[&str],
+) -> (PathBuf, [u8; 64], VerifyingKey) {
+    let src = dir.join(format!("{id}-src"));
+    std::fs::create_dir_all(&src).expect("fixture src dir");
+    let manifest =
+        fixture_manifest(id, caps, &[], &[]).replace("[permissions]", "[permissions]\nweb = true");
+    std::fs::write(src.join("manifest.toml"), manifest).expect("fixture manifest");
+    std::fs::write(src.join("main"), "fixture entry").expect("fixture entry");
+    let pkg = dir.join(format!("{id}.rvah"));
+    package_dir(&src, &pkg).expect("package fixture");
+    let (signing, verifying) = keygen();
+    let sig = sign_package(&pkg, &signing).expect("sign fixture");
+    (pkg, sig, verifying)
+}
+
 fn media(id: &str, title: &str) -> PageItem {
     PageItem::Media(MediaItem {
         id: id.into(),
@@ -132,6 +152,7 @@ pub fn mp4_source(url: &str) -> PlayableSource {
         audio_lang: None,
         expires_at: None,
         drm: None,
+        never_block: Vec::new(),
     }
 }
 

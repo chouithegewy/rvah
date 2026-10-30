@@ -150,6 +150,37 @@ fn install_rejects_tampered_package() {
 }
 
 #[test]
+fn sign_preserves_existing_package_bytes_and_makes_them_installable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (pkg, pubkey) = package_fixture(tmp.path(), "com.example.resigned");
+    let signature = format!("{pkg}.sig");
+    let package_bytes = std::fs::read(&pkg).unwrap();
+
+    std::fs::remove_file(&signature).unwrap();
+    let out = rvah(&[
+        "sign",
+        &pkg,
+        "--key",
+        tmp.path().join("keys/signing.key").to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "sign failed: {}", stderr(&out));
+    assert!(Path::new(&signature).is_file());
+    assert_eq!(std::fs::read(&pkg).unwrap(), package_bytes);
+
+    let out = rvah(&[
+        "install",
+        &pkg,
+        "--pubkey",
+        &pubkey,
+        "--data-dir",
+        tmp.path().join("data").to_str().unwrap(),
+        "--approve",
+    ]);
+    assert!(out.status.success(), "install failed: {}", stderr(&out));
+    assert!(stdout(&out).contains("installed com.example.resigned v1.0.0"));
+}
+
+#[test]
 fn repo_index_check_install_flow() {
     let tmp = tempfile::tempdir().unwrap();
     let packages = tmp.path().join("packages");
@@ -369,6 +400,117 @@ fn encrypted_profile_moves_a_linked_account_without_exposing_its_value() {
             0o600
         );
     }
+}
+
+#[test]
+fn profile_restore_reinstalls_exact_signed_addon_before_credentials() {
+    use rvah_auth::{EncryptedFileVault, SecretVault};
+    use std::process::Stdio;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let repo_dir = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    let (pkg, pubkey) = package_fixture(&repo_dir, "com.example.rebuildable");
+    let source = tmp.path().join("source");
+    let target = tmp.path().join("target");
+    let key = tmp.path().join("restore.profile.key");
+    let bundle = tmp.path().join("restore.rvah-profile");
+    let index = tmp.path().join("index.json");
+
+    let out = rvah(&[
+        "repo-index",
+        repo_dir.to_str().unwrap(),
+        "-o",
+        index.to_str().unwrap(),
+        "--key",
+        repo_dir.join("keys/signing.key").to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "repo-index failed: {}", stderr(&out));
+
+    let out = rvah(&[
+        "install",
+        &pkg,
+        "--pubkey",
+        &pubkey,
+        "--data-dir",
+        source.to_str().unwrap(),
+        "--approve",
+    ]);
+    assert!(out.status.success(), "install failed: {}", stderr(&out));
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rvah"))
+        .args([
+            "secret-set",
+            "com.example.rebuildable",
+            "api_token",
+            "--data-dir",
+            source.to_str().unwrap(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"restored-secret\n")
+        .unwrap();
+    assert!(child.wait_with_output().unwrap().status.success());
+
+    assert!(rvah(&["profile-keygen", "-o", key.to_str().unwrap()])
+        .status
+        .success());
+    assert!(rvah(&[
+        "profile-export",
+        "-o",
+        bundle.to_str().unwrap(),
+        "--key",
+        key.to_str().unwrap(),
+        "--data-dir",
+        source.to_str().unwrap(),
+    ])
+    .status
+    .success());
+
+    let restore_args = [
+        "profile-restore",
+        bundle.to_str().unwrap(),
+        "--key",
+        key.to_str().unwrap(),
+        "--index",
+        index.to_str().unwrap(),
+        "--pubkey",
+        &pubkey,
+        "--data-dir",
+        target.to_str().unwrap(),
+    ];
+    let out = rvah(&restore_args);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stdout(&out).contains("restore\tcom.example.rebuildable\t1.0.0"));
+    assert!(stderr(&out).contains("not approved"));
+    assert!(
+        !target.exists(),
+        "dry-run restore mutated the target device"
+    );
+
+    let mut approved = restore_args.to_vec();
+    approved.push("--approve");
+    let out = rvah(&approved);
+    assert!(out.status.success(), "restore failed: {}", stderr(&out));
+    assert!(stdout(&out).contains("installed\tcom.example.rebuildable\t1.0.0"));
+    assert!(stdout(&out).contains("restored 1 add-on(s)"));
+
+    let vault =
+        EncryptedFileVault::open(target.join("secrets.vault"), target.join("vault.key")).unwrap();
+    assert_eq!(
+        vault
+            .get("com.example.rebuildable", "api_token")
+            .unwrap()
+            .as_deref(),
+        Some("restored-secret")
+    );
 }
 
 #[test]
