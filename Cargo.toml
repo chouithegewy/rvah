@@ -33,7 +33,7 @@ flate2 = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "http2"] }
 hex = "0.4"
 tempfile = "3"
-wasmtime = "36.0.16"
+wasmtime = "47.0.4"
 wasmi = "0.46.0"
 uniffi = "0.32.0"
 # Network filtering for the Android TV web player. Without `single-thread`
