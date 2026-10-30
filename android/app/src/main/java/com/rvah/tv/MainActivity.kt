@@ -13,6 +13,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         owner = RvahPlayerOwner(this, lifecycleScope)
+        // The web player's ad blocker: fetch due filter lists and build it now.
+        FilterLists.warmUp(applicationContext, lifecycleScope)
         // Opening the core touches SQLite and compiles every installed add-on;
         // RvahTvApp calls this on Dispatchers.IO, never on the main thread.
         val openCore = {

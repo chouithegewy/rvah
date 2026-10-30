@@ -26,6 +26,10 @@ pub struct HttpRequest {
     pub headers: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<Vec<u8>>,
+    /// Read at most this many bytes of the answer's body; the rest is left
+    /// unread and the answer says it was `truncated`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
 }
 
 impl HttpRequest {
@@ -35,6 +39,7 @@ impl HttpRequest {
             url: url.into(),
             headers: BTreeMap::new(),
             body: None,
+            max_bytes: None,
         }
     }
 }
@@ -44,6 +49,10 @@ pub struct HttpResponse {
     pub status: u16,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
+    /// The body stops at the request's `max_bytes`; the page went on.
+    /// Before `body`, which guests find fastest as the last field.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub body: Vec<u8>,
 }

@@ -51,6 +51,7 @@ impl Transport for FakeProwlarr {
             .collect();
         Ok(HttpResponse {
             status: 200,
+            truncated: false,
             headers: Default::default(),
             body: serde_json::to_vec(&results).unwrap(),
         })

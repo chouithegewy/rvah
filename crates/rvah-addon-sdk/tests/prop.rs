@@ -17,6 +17,7 @@ proptest! {
                 Protocol::Https | Protocol::Hls | Protocol::Dash => {
                     prop_assert!(lower.starts_with("http://") || lower.starts_with("https://"));
                 }
+                Protocol::Web => prop_assert!(false, "from_url inferred web for {url}"),
             }
         }
     }

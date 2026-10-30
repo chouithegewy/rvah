@@ -243,6 +243,12 @@ class RvahPlayerOwner(
         }
     }
 
+    /** End a web source's session with its web player: Media3 has nothing to stop. */
+    fun endWebSession(sessionId: ULong) {
+        val core = core ?: return
+        scope.launch(Dispatchers.IO) { runCatching { core.stopPlayback(sessionId) } }
+    }
+
     override fun onPlaybackStateChanged(state: Int) {
         when (state) {
             Player.STATE_BUFFERING -> {

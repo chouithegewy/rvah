@@ -111,6 +111,7 @@ impl Transport for FileTransport {
         match std::fs::read(path) {
             Ok(body) => Ok(rvah_addon_sdk::HttpResponse {
                 status: 200,
+                truncated: false,
                 headers: Default::default(),
                 body,
             }),
@@ -123,7 +124,7 @@ impl Transport for FileTransport {
 /// anything else is treated as a local path.
 pub fn transport_for(url: &str) -> Box<dyn Transport> {
     if url.starts_with("http://") || url.starts_with("https://") {
-        Box::new(rvah_net::UreqTransport::default())
+        Box::new(rvah_net::HttpTransport::default())
     } else {
         Box::new(FileTransport)
     }

@@ -5,7 +5,10 @@ import androidx.media3.common.MimeTypes
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Test
+import uniffi.rvah_android.NativePreparedPlayback
+import uniffi.rvah_android.NativeProtocol
 
 class PlaybackMediaTest {
     @Test fun protocolMappingIsExplicit() {
@@ -35,5 +38,21 @@ class PlaybackMediaTest {
         assertTrue(subtitleTrackMatches("generated-id", "EN", "English", wanted))
         assertFalse(subtitleTrackMatches("generated-id", "es", "Spanish", wanted))
         assertFalse(subtitleTrackMatches("generated-id", "en", null, wanted.copy(label = null)))
+    }
+
+    @Test fun webPreparedPlaybackIsWebAndHasNoMediaSpec() {
+        val p = NativePreparedPlayback(
+            sessionId = 1uL,
+            url = "https://embed.example.com/ch.php",
+            protocol = NativeProtocol.WEB,
+            headers = emptyList(),
+            resumePositionMs = 0uL,
+            subtitles = emptyList(),
+            title = "Live",
+            subtitle = null,
+            neverBlock = listOf("cdn.example.net"),
+        )
+        assertTrue(p.isWeb)
+        assertThrows(IllegalArgumentException::class.java) { p.toSpec() }
     }
 }

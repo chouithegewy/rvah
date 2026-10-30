@@ -29,7 +29,7 @@ pub enum NetError {
     ResolveFailed(String),
 }
 
-/// Pluggable HTTP execution. The real transport is [`UreqTransport`];
+/// Pluggable HTTP execution. The real transport is [`HttpTransport`];
 /// tests use [`crate::MockTransport`].
 pub trait Transport: Send + Sync {
     fn execute(&self, req: &HttpRequest) -> Result<HttpResponse, NetError>;
@@ -46,82 +46,139 @@ pub trait Transport: Send + Sync {
     }
 }
 
-/// Real transport backed by `ureq`.
-pub struct UreqTransport {
-    agent: ureq::Agent,
+/// Real transport, backed by reqwest: HTTP/2 when a server offers it (some
+/// sites refuse HTTP/1.1), rustls, and never following redirects itself.
+pub struct HttpTransport {
+    client: reqwest::blocking::Client,
     pins: PinnedAddrs,
+    /// How long a whole request may take, body included.
+    timeout: std::time::Duration,
 }
 
-/// ureq resolver that serves pinned addresses installed by `execute_pinned`
-/// and falls back to the system resolver for unpinned hosts.
+/// `inner`, failing once `deadline` passes: a body that trickles in must not
+/// hold an add-on call past the transport's timeout (reqwest's own timeout
+/// covers each read, not the whole body).
+struct Deadline<R> {
+    inner: R,
+    deadline: std::time::Instant,
+}
+
+impl<R: std::io::Read> std::io::Read for Deadline<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if std::time::Instant::now() >= self.deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the answer took too long",
+            ));
+        }
+        self.inner.read(buf)
+    }
+}
+
+/// Resolver that serves pinned addresses installed by `execute_pinned` and
+/// falls back to the system resolver for unpinned hosts.
 #[derive(Clone, Default)]
 struct PinnedAddrs(Arc<Mutex<HashMap<String, Vec<SocketAddr>>>>);
 
-impl ureq::Resolver for PinnedAddrs {
-    fn resolve(&self, netloc: &str) -> std::io::Result<Vec<SocketAddr>> {
-        let (host, port) = netloc.rsplit_once(':').unwrap_or((netloc, "443"));
-        let host = host
-            .trim_matches(|c| c == '[' || c == ']')
-            .to_ascii_lowercase();
-        let port: u16 = port.parse().unwrap_or(443);
-        if let Some(addrs) = self.0.lock().unwrap().get(&host) {
-            return Ok(addrs
-                .iter()
-                .map(|sa| SocketAddr::new(sa.ip(), port))
-                .collect());
-        }
-        use std::net::ToSocketAddrs;
-        netloc.to_socket_addrs().map(|it| it.collect())
+impl reqwest::dns::Resolve for PinnedAddrs {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_ascii_lowercase();
+        let pinned = self.0.lock().unwrap().get(&host).cloned();
+        Box::pin(async move {
+            // The URL's port replaces the 0 here.
+            let addrs: Vec<SocketAddr> = match pinned {
+                Some(addrs) => addrs,
+                None => {
+                    use std::net::ToSocketAddrs;
+                    (host.as_str(), 0).to_socket_addrs()?.collect()
+                }
+            };
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
     }
 }
 
-impl Default for UreqTransport {
+/// The most of any answer's body the transport reads.
+const MAX_BODY: u64 = 32 * 1024 * 1024;
+
+/// Up to `cap` bytes of `reader`, and whether it had more: one byte past
+/// the cap is read to tell, and dropped.
+fn read_capped(reader: impl std::io::Read, cap: u64) -> std::io::Result<(Vec<u8>, bool)> {
+    use std::io::Read;
+    let mut body = Vec::new();
+    reader.take(cap.saturating_add(1)).read_to_end(&mut body)?;
+    let cut = body.len() as u64 > cap;
+    body.truncate(cap as usize);
+    Ok((body, cut))
+}
+
+impl Default for HttpTransport {
     fn default() -> Self {
+        Self::with_timeout(std::time::Duration::from_secs(30))
+    }
+}
+
+impl HttpTransport {
+    /// A transport whose every request ends within about `timeout`.
+    pub fn with_timeout(timeout: std::time::Duration) -> Self {
         let pins = PinnedAddrs::default();
-        UreqTransport {
-            agent: ureq::AgentBuilder::new()
-                .timeout(std::time::Duration::from_secs(30))
-                // The transport never follows redirects: PermissionedClient
-                // re-checks the allowlist on every hop (SDD §9).
-                .redirects(0)
-                .resolver(pins.clone())
-                .build(),
+        let client = reqwest::blocking::Client::builder()
+            .timeout(timeout)
+            // The transport never follows redirects: PermissionedClient
+            // re-checks the allowlist on every hop (SDD §9).
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent(concat!("rvah/", env!("CARGO_PKG_VERSION")))
+            // Never a proxy from the environment: it would resolve hosts
+            // itself, past the vetted, pinned addresses.
+            .no_proxy()
+            .dns_resolver(Arc::new(pins.clone()))
+            .build()
+            .expect("HTTP client");
+        HttpTransport {
+            client,
             pins,
+            timeout,
         }
     }
 }
 
-impl Transport for UreqTransport {
+impl Transport for HttpTransport {
     fn execute(&self, req: &HttpRequest) -> Result<HttpResponse, NetError> {
-        let mut r = self.agent.request(&req.method, &req.url);
-        for (k, v) in &req.headers {
-            r = r.set(k, v);
+        let deadline = std::time::Instant::now() + self.timeout;
+        let method = reqwest::Method::from_bytes(req.method.as_bytes())
+            .map_err(|e| NetError::InvalidUrl(e.to_string()))?;
+        let mut request = self.client.request(method, &req.url);
+        for (name, value) in &req.headers {
+            request = request.header(name, value);
         }
-        let result = match &req.body {
-            Some(body) => r.send_bytes(body),
-            None => r.call(),
-        };
-        let resp = match result {
-            Ok(resp) => resp,
-            // Non-2xx statuses are still responses for the add-on to inspect.
-            Err(ureq::Error::Status(_, resp)) => resp,
-            Err(e) => return Err(NetError::Transport(e.to_string())),
-        };
-        let status = resp.status();
-        let headers = resp
-            .headers_names()
-            .into_iter()
-            .filter_map(|name| resp.header(&name).map(|v| (name.clone(), v.to_string())))
-            .collect();
-        let mut body = Vec::new();
-        use std::io::Read;
-        resp.into_reader()
-            .take(32 * 1024 * 1024)
-            .read_to_end(&mut body)
+        if let Some(body) = &req.body {
+            request = request.body(body.clone());
+        }
+        // Non-2xx statuses are still responses for the add-on to inspect.
+        let resp = request
+            .send()
             .map_err(|e| NetError::Transport(e.to_string()))?;
+        let status = resp.status().as_u16();
+        let mut headers = std::collections::BTreeMap::new();
+        for (name, value) in resp.headers() {
+            if let Ok(value) = value.to_str() {
+                headers
+                    .entry(name.as_str().to_string())
+                    .or_insert_with(|| value.to_string());
+            }
+        }
+        // Past the ceiling a body is cut off, as ever; only a cap the
+        // add-on asked for is reported as `truncated`.
+        let cap = req.max_bytes.map_or(MAX_BODY, |n| n.min(MAX_BODY));
+        let body = Deadline {
+            inner: resp,
+            deadline,
+        };
+        let (body, cut) = read_capped(body, cap).map_err(|e| NetError::Transport(e.to_string()))?;
         Ok(HttpResponse {
             status,
             headers,
+            truncated: cut && req.max_bytes.is_some_and(|n| n <= MAX_BODY),
             body,
         })
     }
@@ -240,6 +297,7 @@ impl PermissionedClient {
                 url: current_url.clone(),
                 headers: req.headers.clone(),
                 body: body.clone(),
+                max_bytes: req.max_bytes,
             };
             let resp = match &pinned {
                 Some(addrs) => self.transport.execute_pinned(&hop_req, addrs),
@@ -370,6 +428,176 @@ mod tests {
         assert_eq!(err, NetError::DomainDenied("evil.example.org".into()));
         // The disallowed hop never reached the transport.
         assert_eq!(mock.request_count(), 1);
+    }
+
+    /// A one-shot HTTP/1.1 server on 127.0.0.1 that answers `response` as
+    /// is; the handle yields the request it read.
+    fn serve_once(response: Vec<u8>) -> (u16, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).unwrap();
+            stream.write_all(&response).unwrap();
+            String::from_utf8_lossy(&buf[..n]).into_owned()
+        });
+        (port, handle)
+    }
+
+    fn reply(head: &str, body: &[u8]) -> Vec<u8> {
+        let mut out = format!(
+            "{head}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        out.extend_from_slice(body);
+        out
+    }
+
+    #[test]
+    fn http_transport_reads_status_headers_and_body() {
+        let (port, server) =
+            serve_once(reply("HTTP/1.1 418 I'm a teapot\r\nX-Test: yes", b"hello"));
+        let mut req = HttpRequest::get(format!("http://127.0.0.1:{port}/x"));
+        req.headers.insert("Cookie".into(), "a=1".into());
+        let resp = HttpTransport::default().execute(&req).unwrap();
+        assert_eq!(resp.status, 418);
+        assert_eq!(resp.headers.get("x-test").map(String::as_str), Some("yes"));
+        assert_eq!(resp.body, b"hello");
+        assert!(!resp.truncated);
+        let sent = server.join().unwrap().to_ascii_lowercase();
+        assert!(sent.contains("cookie: a=1"));
+        // Some sites refuse requests that name no client.
+        assert!(sent.contains("user-agent: rvah/"));
+    }
+
+    #[test]
+    fn http_transport_does_not_follow_redirects() {
+        let (port, _server) = serve_once(reply("HTTP/1.1 302 Found\r\nLocation: /elsewhere", b""));
+        let resp = HttpTransport::default()
+            .execute(&HttpRequest::get(format!("http://127.0.0.1:{port}/")))
+            .unwrap();
+        assert_eq!(resp.status, 302);
+        assert_eq!(
+            resp.headers.get("location").map(String::as_str),
+            Some("/elsewhere")
+        );
+    }
+
+    #[test]
+    fn http_transport_caps_the_body() {
+        let (port, _server) = serve_once(reply("HTTP/1.1 200 OK", &[b'x'; 1000]));
+        let mut req = HttpRequest::get(format!("http://127.0.0.1:{port}/"));
+        req.max_bytes = Some(100);
+        let resp = HttpTransport::default().execute(&req).unwrap();
+        assert_eq!(resp.body.len(), 100);
+        assert!(resp.truncated);
+    }
+
+    #[test]
+    fn http_transport_pinned_reaches_the_given_address() {
+        let (port, _server) = serve_once(reply("HTTP/1.1 200 OK", b"pinned"));
+        // `.invalid` never resolves: only the pin can make this connect.
+        let req = HttpRequest::get(format!("http://pinned.invalid:{port}/"));
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        let resp = HttpTransport::default()
+            .execute_pinned(&req, &[addr])
+            .unwrap();
+        assert_eq!(resp.body, b"pinned");
+    }
+
+    /// Against a real site that refuses HTTP/1.1 (403) but serves HTTP/2:
+    /// `RVAH_H2_ONLY_URL=https://… cargo test -p rvah-net -- --ignored`.
+    /// `RVAH_H2_ONLY_COOKIE` is sent as the Cookie header when set.
+    #[test]
+    #[ignore = "network: needs RVAH_H2_ONLY_URL"]
+    fn http_transport_reaches_a_site_that_refuses_http1() {
+        let Ok(url) = std::env::var("RVAH_H2_ONLY_URL") else {
+            return;
+        };
+        let mut req = HttpRequest::get(url);
+        if let Ok(cookie) = std::env::var("RVAH_H2_ONLY_COOKIE") {
+            req.headers.insert("Cookie".into(), cookie);
+        }
+        assert_eq!(HttpTransport::default().execute(&req).unwrap().status, 200);
+    }
+
+    #[test]
+    fn http_transport_bounds_the_whole_body_read() {
+        use std::io::{Read, Write};
+        // Headers at once, then the body a byte every 100 ms for 3 s.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 30\r\n\r\n");
+            for _ in 0..30 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                if stream.write_all(b"x").is_err() {
+                    return;
+                }
+            }
+        });
+        let started = std::time::Instant::now();
+        let result = HttpTransport::with_timeout(std::time::Duration::from_millis(500))
+            .execute(&HttpRequest::get(format!("http://127.0.0.1:{port}/")));
+        assert!(result.is_err(), "a slow body must not outlast the deadline");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    fn capped(url: &str, cap: u64) -> HttpRequest {
+        let mut req = HttpRequest::get(url);
+        req.max_bytes = Some(cap);
+        req
+    }
+
+    #[test]
+    fn max_bytes_truncates_and_flags() {
+        let mock = MockTransport::default();
+        mock.route("GET", "https://api.example.com/big", 200, vec![b'x'; 1000]);
+        let c = PermissionedClient::new(Box::new(mock), Allowlist::new(["api.example.com"]), 10);
+        let resp = c
+            .fetch(&capped("https://api.example.com/big", 100))
+            .unwrap();
+        assert_eq!(resp.body.len(), 100);
+        assert!(resp.truncated);
+    }
+
+    #[test]
+    fn max_bytes_larger_than_body_is_not_truncated() {
+        let mock = MockTransport::default();
+        mock.route("GET", "https://api.example.com/big", 200, vec![b'x'; 1000]);
+        let c = PermissionedClient::new(Box::new(mock), Allowlist::new(["api.example.com"]), 10);
+        let resp = c
+            .fetch(&capped("https://api.example.com/big", 5000))
+            .unwrap();
+        assert_eq!(resp.body.len(), 1000);
+        assert!(!resp.truncated);
+    }
+
+    #[test]
+    fn max_bytes_survives_redirect() {
+        let mock = MockTransport::default();
+        mock.route_redirect("GET", "https://api.example.com/old", 302, "/big");
+        mock.route("GET", "https://api.example.com/big", 200, vec![b'x'; 1000]);
+        let c = PermissionedClient::new(Box::new(mock), Allowlist::new(["api.example.com"]), 10);
+        let resp = c
+            .fetch(&capped("https://api.example.com/old", 100))
+            .unwrap();
+        assert_eq!(resp.body.len(), 100);
+        assert!(resp.truncated);
+    }
+
+    #[test]
+    fn read_capped_reads_one_past_cap_only() {
+        let (body, cut) = read_capped(&b"abcdef"[..], 4).unwrap();
+        assert_eq!((body.as_slice(), cut), (&b"abcd"[..], true));
+        let (body, cut) = read_capped(&b"abcd"[..], 4).unwrap();
+        assert_eq!((body.as_slice(), cut), (&b"abcd"[..], false));
     }
 
     #[test]

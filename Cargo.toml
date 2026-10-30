@@ -29,12 +29,16 @@ aes-gcm = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tar = "0.4"
 flate2 = "1"
-ureq = "2"
+# Add-on HTTP: HTTP/2 when a server offers it (some sites refuse HTTP/1.1).
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "http2"] }
 hex = "0.4"
 tempfile = "3"
 wasmtime = "36.0.16"
 wasmi = "0.46.0"
 uniffi = "0.32.0"
+# Network filtering for the Android TV web player. Without `single-thread`
+# the engine is Send + Sync.
+adblock = { version = "0.13.5", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling"] }
 eframe = "0.29"
 proptest = "1"
 raw-window-handle = "0.6"

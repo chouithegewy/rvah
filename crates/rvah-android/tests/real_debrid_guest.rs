@@ -27,6 +27,7 @@ struct FakeRd {
 fn json(status: u16, value: serde_json::Value) -> Result<HttpResponse, NetError> {
     Ok(HttpResponse {
         status,
+        truncated: false,
         headers: Default::default(),
         body: serde_json::to_vec(&value).unwrap(),
     })

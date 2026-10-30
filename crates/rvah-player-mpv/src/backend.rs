@@ -410,6 +410,7 @@ mod tests {
             audio_lang: None,
             expires_at: None,
             drm: None,
+            never_block: Vec::new(),
         }
     }
 

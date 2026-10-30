@@ -16,6 +16,7 @@ fn source(url: &str) -> PlayableSource {
         audio_lang: None,
         expires_at: None,
         drm: None,
+        never_block: Vec::new(),
     }
 }
 

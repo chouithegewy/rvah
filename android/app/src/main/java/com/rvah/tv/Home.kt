@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -110,6 +109,8 @@ internal fun HomeScreen(
     onPortableProfile: () -> Unit,
     onAddonSettings: (AddonRecord) -> Unit,
     onTrailer: (String, String) -> Unit,
+    /** Open an add-on's own tile: its folders as a list. */
+    onBrowse: (BrowseTarget) -> Unit,
 ) {
     val catalogs = addons.filter { it.status == "enabled" && "catalog" in it.capabilities && shownOnItsOwn(it, addons) }
     val detailsAddons = addons.filter { it.status == "enabled" && "details" in it.capabilities }.mapTo(mutableSetOf()) { it.id }
@@ -156,7 +157,9 @@ internal fun HomeScreen(
                         Text(it, fontSize = 13.sp, color = ErrorText, modifier = Modifier.padding(horizontal = 32.dp))
                     }
                     when {
-                        sections.isNotEmpty() -> HomeTiles(sections) { home.tab = HomeTab.Section(it) }
+                        sections.isNotEmpty() -> HomeTiles(sections) { section ->
+                            section.browse?.let(onBrowse) ?: run { home.tab = HomeTab.Section(section) }
+                        }
                         catalogs.isEmpty() -> Note("No discovery add-ons yet. Install one in Settings.")
                         else -> Note("Loading collections…")
                     }

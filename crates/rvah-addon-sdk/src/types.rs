@@ -103,6 +103,9 @@ pub enum Protocol {
     File,
     /// Opaque media reference resolved by the host's Veilid transport.
     Veilid,
+    /// An https web page the host opens in its locked-down web player.
+    /// Never inferred from a URL: an add-on says so explicitly.
+    Web,
 }
 
 /// Subtitle container/codec hint. Existing add-ons may omit this and hosts
@@ -215,6 +218,9 @@ pub struct PlayableSource {
     /// scheme with a clear unsupported-DRM error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drm: Option<DrmScheme>,
+    /// Host suffixes a web player must never block; web sources only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub never_block: Vec<String>,
 }
 
 /// Outcome of resolving a media item.
@@ -525,6 +531,7 @@ mod tests {
             audio_lang: Some("en".into()),
             expires_at: Some(1_800_000_000),
             drm: None,
+            never_block: Vec::new(),
         }]);
         let json = serde_json::to_string(&rr).unwrap();
         assert_eq!(rr, serde_json::from_str::<ResolveResult>(&json).unwrap());
@@ -577,5 +584,33 @@ mod tests {
         );
         assert_eq!(Protocol::from_url("rtmp://a.example/live"), None);
         assert_eq!(Protocol::from_url("not-a-url"), None);
+    }
+
+    #[test]
+    fn web_protocol_round_trips_as_web() {
+        assert_eq!(serde_json::to_string(&Protocol::Web).unwrap(), "\"web\"");
+        assert_eq!(
+            serde_json::from_str::<Protocol>("\"web\"").unwrap(),
+            Protocol::Web
+        );
+    }
+
+    #[test]
+    fn from_url_never_infers_web() {
+        for url in [
+            "https://ex.com/page.php",
+            "https://ex.com/",
+            "http://ex.com/embed",
+        ] {
+            assert_ne!(Protocol::from_url(url), Some(Protocol::Web));
+        }
+    }
+
+    #[test]
+    fn never_block_defaults_empty_and_is_skipped() {
+        let s: PlayableSource =
+            serde_json::from_str(r#"{"url":"https://ex.com/","protocol":"web"}"#).unwrap();
+        assert!(s.never_block.is_empty());
+        assert!(!serde_json::to_string(&s).unwrap().contains("never_block"));
     }
 }

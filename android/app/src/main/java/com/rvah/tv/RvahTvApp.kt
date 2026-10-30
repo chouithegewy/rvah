@@ -26,6 +26,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text as FieldLabel
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -93,6 +94,8 @@ private sealed interface Screen {
         val addonName: String,
         val stack: List<String?> = listOf(null),
         val returnTo: Screen? = null,
+        /** Open on a list of the first level's folders, never a board of them. */
+        val listFirst: Boolean = false,
     ) : Screen
     data object Search : Screen
     /** A catalog item, or with [release] a release of it through a debrid add-on. */
@@ -313,6 +316,7 @@ private fun AppNavigation(
             onPortableProfile = { screen = Screen.PortableProfile },
             onAddonSettings = { screen = Screen.AddonSettings(it) },
             onTrailer = { url, title -> screen = Screen.Trailer(url, title, Screen.Home) },
+            onBrowse = { screen = Screen.Browse(it.addonId, it.addonName, listFirst = true) },
         )
         is Screen.Board -> FolderBoard(
             core = core,
@@ -544,7 +548,7 @@ private fun BrowseScreen(
             loaded == null -> Body("Loading…")
             loaded.entries.isEmpty() && !loaded.hasMore -> Body("Nothing here.")
             // A first level of only folders: a board of them.
-            browse.stack.size == 1 && loaded.entries.all { it is CatalogEntry.Directory } -> {
+            firstLevelBoard(browse.stack.size, loaded.entries, browse.listFirst) -> {
                 val board = remember(level) { BoardState() }
                 val columns = loaded.entries.filterIsInstance<CatalogEntry.Directory>()
                     .map { ColumnSpec(browse.addonId, it.title, null, it.path) }
@@ -617,8 +621,10 @@ private fun <T : CatalogEntry> ListingView(
     }
 }
 
-private fun entryLabel(entry: CatalogEntry): String = when (entry) {
-    is CatalogEntry.Directory -> "▸ ${entry.title}"
+/** A list row's text: a folder's title and subtitle ("LIVE · 2nd"), a title's year. */
+internal fun entryLabel(entry: CatalogEntry): String = when (entry) {
+    is CatalogEntry.Directory ->
+        listOfNotNull("▸ ${entry.title}", entry.subtitle?.trim()?.takeIf { it.isNotEmpty() }).joinToString("  ·  ")
     is CatalogEntry.Media -> listOfNotNull(entry.title, entry.year?.toString()).joinToString("  ·  ")
 }
 
@@ -756,14 +762,26 @@ private fun PlayerScreen(
     onExit: () -> Unit,
 ) {
     var started by remember(target) { mutableStateOf(false) }
+    // A web source plays in the web player, not Media3.
+    var web by remember(target) { mutableStateOf<NativePreparedPlayback?>(null) }
     LaunchedEffect(target) {
         onIo { prepare() }.onSuccess {
             started = true
-            owner.play(it.toSpec(), scrobble = target.release?.target?.scrobble, online = online)
+            if (it.isWeb) {
+                web = it
+            } else {
+                owner.play(it.toSpec(), scrobble = target.release?.target?.scrobble, online = online)
+            }
         }.onFailure { error ->
             val message = error.userMessage()
             if (onPrepareFailed != null) onPrepareFailed(message) else owner.fail(message)
         }
+    }
+    web?.let { page ->
+        // However the web player is left, its session ends with it.
+        DisposableEffect(page.sessionId) { onDispose { owner.endWebSession(page.sessionId) } }
+        WebPlayerScreen(page.url, page.neverBlock, onExit)
+        return
     }
     val ui = owner.ui
     // The controls hide after a quiet spell while playing, or on Back; any
@@ -1280,6 +1298,7 @@ private fun ConsentPanel(
     )
     Body("• store up to ${formatBytes(preview.storageBytes.toLong())}")
     Body("• read secrets: ${preview.secrets.joinToString().ifEmpty { "none" }}")
+    if (preview.web) Body("• open web pages full screen")
     val approve = rememberInitialFocus(preview.permissionHash)
     Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
         Button(onClick = { if (!busy) onApprove() }, modifier = Modifier.focusRequester(approve)) {

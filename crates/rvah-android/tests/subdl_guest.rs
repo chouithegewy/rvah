@@ -72,12 +72,14 @@ impl Transport for FakeSubdl {
             eprintln!("SubDL answer: {} KB", body.len() / 1024);
             return Ok(HttpResponse {
                 status: 200,
+                truncated: false,
                 headers: Default::default(),
                 body,
             });
         }
         Ok(HttpResponse {
             status: 404,
+            truncated: false,
             headers: Default::default(),
             body: b"not routed".to_vec(),
         })

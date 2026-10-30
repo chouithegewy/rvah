@@ -12,7 +12,9 @@ mod validate;
 pub use backend::{MockPlayer, PlayerBackend, PlayerError, PlayerErrorCode, PlayerEvent};
 pub use controller::{PlayerController, PlayerState};
 pub use progress::{ProgressTracker, ProgressUpdate};
-pub use validate::{validate_source, validate_source_opts, SourceRejection};
+pub use validate::{
+    validate_source, validate_source_opts, validate_source_with, SourcePolicy, SourceRejection,
+};
 
 /// Allow runtime-chosen backends (`AppCore<Box<dyn PlayerBackend + Send>>`).
 impl PlayerBackend for Box<dyn PlayerBackend + Send> {

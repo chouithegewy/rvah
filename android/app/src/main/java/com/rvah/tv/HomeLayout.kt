@@ -31,7 +31,20 @@ data class HomeLayout(
     val groups: List<GroupTab>,
     /** Add-ons whose top level is titles, such as a downloads history. */
     val downloads: List<ColumnSpec>,
+    /** Add-on names by id, for tiles of their own. */
+    val names: Map<String, String> = emptyMap(),
 )
+
+/**
+ * Whether a browsed level shows as a board of its folders: a first level of
+ * only folders does, unless it was opened as a list ([listFirst], an
+ * add-on's own Home tile), where each folder opens in turn.
+ */
+fun firstLevelBoard(depth: Int, entries: List<CatalogEntry>, listFirst: Boolean): Boolean =
+    !listFirst && depth == 1 && entries.all { it is CatalogEntry.Directory }
+
+/** An add-on opened as a list of its folders, from its own Home tile. */
+data class BrowseTarget(val addonId: String, val addonName: String)
 
 /** A deliberately small home destination; its catalogs are not loaded until opened. */
 data class HomeSection(
@@ -40,6 +53,8 @@ data class HomeSection(
     val subtitle: String,
     val columns: List<ColumnSpec> = emptyList(),
     val groups: List<GroupTab> = emptyList(),
+    /** Set for an add-on's own tile: it opens the add-on's folders as a list. */
+    val browse: BrowseTarget? = null,
 )
 
 /** Turn many provider folders into a stable, uncluttered two-column home. */
@@ -70,6 +85,16 @@ fun homeSections(layout: HomeLayout): List<HomeSection> {
             spec.title.contains("might like", ignoreCase = true) ||
             spec.title.contains("recommend", ignoreCase = true)
     }
+    // An add-on none of whose folders fits a section above gets a tile of
+    // its own, rather than being scattered into More.
+    val grouped = layout.groups.map { it.addonId }.toSet() + DISCOVER_ADDON
+    val tiles = remaining.map { it.addonId }.distinct()
+        .filter { id -> id !in grouped && remaining.count { it.addonId == id } == layout.discover.count { it.addonId == id } }
+        .map { id ->
+            remaining.removeAll { it.addonId == id }
+            val name = layout.names[id] ?: id
+            HomeSection("addon:$id", name, "Browse", browse = BrowseTarget(id, name))
+        }
     return buildList {
         if (trending.isNotEmpty()) add(HomeSection("trending", "Trending & popular", "What people are watching", trending))
         if (recent.isNotEmpty()) add(HomeSection("recent", "Recently added", "New releases and new to streaming", recent))
@@ -78,6 +103,7 @@ fun homeSections(layout: HomeLayout): List<HomeSection> {
         }
         if (trakt.isNotEmpty()) add(HomeSection("trakt", "Trakt", "Up next, watchlists and recommendations", trakt))
         if (layout.downloads.isNotEmpty()) add(HomeSection("downloads", "Downloads", "Your debrid library", layout.downloads))
+        addAll(tiles)
         if (remaining.isNotEmpty()) add(HomeSection("more", "More to explore", "More collections from your add-ons", remaining))
     }
 }
@@ -120,7 +146,7 @@ fun homeLayout(addons: List<AddonRecord>, roots: Map<String, List<CatalogEntry>>
     }
     // Name the add-on under a column only when columns come from several.
     val named = if (discover.map { it.addonId }.distinct().size > 1) discover else discover.map { it.copy(tag = null) }
-    return HomeLayout(named, groups, downloads)
+    return HomeLayout(named, groups, downloads, shown.associate { it.id to it.name })
 }
 
 /** A card's small line: "2026 · ★ 8.4", leaving out what is unknown. */

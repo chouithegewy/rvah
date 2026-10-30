@@ -25,6 +25,8 @@ pub struct PlaybackCapabilities {
     pub progressive_http: bool,
     pub hls: bool,
     pub dash: bool,
+    /// Opens web sources in a locked-down web player.
+    pub web: bool,
 }
 
 impl PlaybackCapabilities {
@@ -33,6 +35,15 @@ impl PlaybackCapabilities {
             progressive_http: true,
             hls: true,
             dash: true,
+            web: false,
+        }
+    }
+
+    /// Media3 plus the Android TV app's web player.
+    pub const fn android_tv() -> Self {
+        Self {
+            web: true,
+            ..Self::media3()
         }
     }
 
@@ -41,6 +52,7 @@ impl PlaybackCapabilities {
             progressive_http: true,
             hls: true,
             dash: backend.supports_dash(),
+            web: false,
         }
     }
 
@@ -49,6 +61,7 @@ impl PlaybackCapabilities {
             Protocol::Http | Protocol::Https => self.progressive_http,
             Protocol::Hls => self.hls,
             Protocol::Dash => self.dash,
+            Protocol::Web => self.web,
             Protocol::File | Protocol::Veilid => false,
         }
     }

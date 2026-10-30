@@ -38,6 +38,7 @@ import androidx.tv.material3.Text
 import coil3.ImageLoader
 import coil3.compose.AsyncImage
 import coil3.compose.setSingletonImageLoaderFactory
+import coil3.svg.SvgDecoder
 import coil3.disk.DiskCache
 import coil3.memory.MemoryCache
 import coil3.request.crossfade
@@ -62,6 +63,7 @@ internal fun ArtworkLoader() {
                     .maxSizeBytes(64L * 1024 * 1024)
                     .build()
             }
+            .components { add(SvgDecoder.Factory()) }
             .crossfade(true)
             .build()
     }
