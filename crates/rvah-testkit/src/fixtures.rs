@@ -209,9 +209,9 @@ impl AddonProvider for CatalogEchoProvider {
             "m1" => Ok(ResolveResult::Playables(vec![mp4_source(
                 "https://cdn.example.com/m1.mp4",
             )])),
-            _ => Ok(ResolveResult::Unavailable {
-                reason: format!("{item_id} has no sources"),
-            }),
+            _ => Ok(ResolveResult::unavailable(format!(
+                "{item_id} has no sources"
+            ))),
         }
     }
 
@@ -275,16 +275,21 @@ pub type ReleaseRequest = (Release, Option<u32>, Option<u32>);
 
 /// Answers `resolve_release` with a fixed result, recording each request.
 pub struct DebridProvider {
-    pub result: ResolveResult,
+    pub result: Mutex<ResolveResult>,
     pub seen: Mutex<Vec<ReleaseRequest>>,
 }
 
 impl DebridProvider {
     pub fn new(result: ResolveResult) -> Self {
         DebridProvider {
-            result,
+            result: Mutex::new(result),
             seen: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Answer `result` from now on.
+    pub fn answer(&self, result: ResolveResult) {
+        *self.result.lock().unwrap() = result;
     }
 }
 
@@ -300,7 +305,7 @@ impl AddonProvider for DebridProvider {
             .lock()
             .unwrap()
             .push((release.clone(), season, episode));
-        Ok(self.result.clone())
+        Ok(self.result.lock().unwrap().clone())
     }
 }
 

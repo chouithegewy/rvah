@@ -22,6 +22,10 @@ pub enum CoreError {
     AddonDisabled(String),
     #[error("add-on error: {0}")]
     Provider(AddonError),
+    /// The add-on answered, but cannot play this (not cached, say, or
+    /// `refused` outright); `reason` is written for the user.
+    #[error("{reason}")]
+    Unavailable { reason: String, refused: bool },
     #[error("source rejected: {0}")]
     SourceRejected(SourceRejection),
     #[error("player error: {0}")]
@@ -35,9 +39,10 @@ pub enum CoreError {
 impl CoreError {
     pub fn class(&self) -> ErrorClass {
         match self {
-            CoreError::AddonNotFound(_) | CoreError::AddonDisabled(_) | CoreError::NoSignIn(_) => {
-                ErrorClass::UserActionable
-            }
+            CoreError::AddonNotFound(_)
+            | CoreError::AddonDisabled(_)
+            | CoreError::NoSignIn(_)
+            | CoreError::Unavailable { .. } => ErrorClass::UserActionable,
             CoreError::Provider(e) => match e.code {
                 AddonErrorCode::Auth
                 | AddonErrorCode::PermissionDenied

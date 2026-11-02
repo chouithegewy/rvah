@@ -11,8 +11,8 @@ mod nav;
 mod playback;
 
 pub use app::{
-    AppCore, AuthPrompt, DEFAULT_INVOKE_TIMEOUT, QUARANTINE_THRESHOLD, RELEASE_TIMEOUT,
-    SOURCES_TIMEOUT,
+    AppCore, AuthPrompt, DEFAULT_INVOKE_TIMEOUT, QUARANTINE_THRESHOLD, REFUSALS_KEPT_SECS,
+    RELEASE_TIMEOUT, SOURCES_TIMEOUT,
 };
 pub use errors::{CoreError, ErrorClass};
 pub use nav::NavHistory;

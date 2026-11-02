@@ -688,7 +688,12 @@ fn cmd_resolve(args: &[String]) -> Result<(), CliError> {
         ResolveResult::AuthRequired { provider_hint } => {
             println!("auth-required\t{provider_hint}")
         }
-        ResolveResult::Unavailable { reason } => println!("unavailable\t{reason}"),
+        ResolveResult::Unavailable { reason, refused } => {
+            println!(
+                "{}\t{reason}",
+                if refused { "refused" } else { "unavailable" }
+            )
+        }
     }
     Ok(())
 }

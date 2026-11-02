@@ -5,9 +5,10 @@ pub struct Migration {
     pub sql: &'static str,
 }
 
-pub static MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    sql: r#"
+pub static MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        sql: r#"
 CREATE TABLE addons (
     id TEXT PRIMARY KEY,
     version TEXT NOT NULL,
@@ -74,4 +75,17 @@ CREATE TABLE diagnostic_events (
     message TEXT NOT NULL
 );
 "#,
-}];
+    },
+    Migration {
+        version: 2,
+        sql: r#"
+CREATE TABLE refused_releases (
+    debrid_id TEXT NOT NULL,
+    info_hash TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    refused_at INTEGER NOT NULL,
+    PRIMARY KEY (debrid_id, info_hash)
+);
+"#,
+    },
+];
