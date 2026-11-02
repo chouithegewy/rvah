@@ -6,7 +6,7 @@ import android.view.ViewGroup
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -70,7 +70,8 @@ internal fun trailerEmbed(videoId: String) =
 private fun identity(packageName: String) = mapOf("Referer" to "https://$packageName/")
 
 /** How long the picture and sound take to come up, and to go at the end. */
-private const val FADE_MS = 2000
+private const val FADE_IN_MS = 4000
+private const val FADE_OUT_MS = 2000
 
 /**
  * YouTube lays its own controls (title, "More videos", logo) over the first
@@ -114,7 +115,7 @@ private data class PlayerState(
      * Over, or close enough that fading out now ends the fade with the
      * video, before YouTube puts up its end screen.
      */
-    val ending get() = state == 0 || (duration > 0 && time >= duration - FADE_MS / 1000.0)
+    val ending get() = state == 0 || (duration > 0 && time >= duration - FADE_OUT_MS / 1000.0)
 
     /** Playing, with nothing of YouTube's over the picture. */
     val bare get() = playing && when (controls) {
@@ -163,7 +164,9 @@ internal fun TrailerScreen(url: String, onExit: () -> Unit) {
     var failed by remember(embed) { mutableStateOf(false) }
     val alpha by animateFloatAsState(
         targetValue = if (shown) 1f else 0f,
-        animationSpec = tween(FADE_MS, easing = LinearOutSlowInEasing),
+        // Even steps of opacity look like an even fade; an eased curve
+        // that front-loads the change just looks like the picture appearing.
+        animationSpec = tween(if (shown) FADE_IN_MS else FADE_OUT_MS, easing = LinearEasing),
         label = "trailer fade",
     )
 
@@ -179,7 +182,7 @@ internal fun TrailerScreen(url: String, onExit: () -> Unit) {
                 }
                 shown && player.ending -> {
                     shown = false
-                    delay(FADE_MS.toLong())
+                    delay(FADE_OUT_MS.toLong())
                     onExit()
                     return@LaunchedEffect
                 }
@@ -205,10 +208,14 @@ internal fun TrailerScreen(url: String, onExit: () -> Unit) {
             view.evaluateJavascript("(function(){var p=document.getElementById('movie_player');if(p){p.setVolume(0);p.unMute();}})()", null)
             unmuted = true
         }
-        val steps = 20
+        val steps = 40
+        val fade = (if (shown) FADE_IN_MS else FADE_OUT_MS).toLong()
         for (step in 1..steps) {
-            delay(FADE_MS.toLong() / steps)
-            val volume = (if (shown) step else steps - step) * 100 / steps
+            delay(fade / steps)
+            // Loudness follows the square of the level better than the level
+            // itself: a straight ramp sounds as if it jumps up at once.
+            val level = (if (shown) step else steps - step).toDouble() / steps
+            val volume = (level * level * 100).toInt()
             view.evaluateJavascript("(function(){var p=document.getElementById('movie_player');if(p)p.setVolume($volume);})()", null)
         }
     }
