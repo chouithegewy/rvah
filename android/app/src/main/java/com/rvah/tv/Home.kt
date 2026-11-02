@@ -123,7 +123,6 @@ internal fun HomeScreen(
     onDiagnostics: () -> Unit,
     onPortableProfile: () -> Unit,
     onAddonSettings: (AddonRecord) -> Unit,
-    onTrailer: (String, String) -> Unit,
     /** Open an add-on's own tile: its folders as a list. */
     onBrowse: (BrowseTarget) -> Unit,
 ) {
@@ -190,7 +189,6 @@ internal fun HomeScreen(
                     scope = scope,
                     detailsAddons = detailsAddons,
                     onOpen = onOpen,
-                    onTrailer = onTrailer,
                     modifier = content,
                 )
                 HomeTab.Search -> SearchResults(
@@ -200,7 +198,6 @@ internal fun HomeScreen(
                     scope = scope,
                     detailsAddons = detailsAddons,
                     onOpen = onOpen,
-                    onTrailer = onTrailer,
                     modifier = content,
                 )
                 HomeTab.Settings -> SettingsTab(
@@ -307,7 +304,6 @@ private fun SectionBoard(
     scope: CoroutineScope,
     detailsAddons: Set<String>,
     onOpen: (ColumnSpec, CatalogEntry) -> Unit,
-    onTrailer: (String, String) -> Unit,
     modifier: Modifier,
 ) {
     section.groups.forEach { group ->
@@ -334,7 +330,6 @@ private fun SectionBoard(
                 scope,
                 onOpen,
                 detailsAddons = detailsAddons,
-                onTrailer = onTrailer,
             )
             section.id == "genres" && columns.isNotEmpty() -> GenrePicker(columns, home.lastGenre) {
                 home.lastGenre = it.key
@@ -347,7 +342,6 @@ private fun SectionBoard(
                 scope,
                 onOpen,
                 detailsAddons = detailsAddons,
-                onTrailer = onTrailer,
             )
             section.groups.any { groupKey(it) !in home.groupFailures } -> Note("Loading ${section.title.lowercase()}…")
             else -> Note(section.groups.joinToString("\n") { home.groupFailures[groupKey(it)].orEmpty() }, ErrorText)
@@ -398,7 +392,6 @@ private fun SearchResults(
     scope: CoroutineScope,
     detailsAddons: Set<String>,
     onOpen: (ColumnSpec, CatalogEntry) -> Unit,
-    onTrailer: (String, String) -> Unit,
     modifier: Modifier,
 ) {
     val searchable = addons.filter { it.status == "enabled" && "search" in it.capabilities && shownOnItsOwn(it, addons) }
@@ -417,7 +410,6 @@ private fun SearchResults(
                         scope,
                         onOpen,
                         detailsAddons = detailsAddons,
-                        onTrailer = onTrailer,
                     )
                 }
             }

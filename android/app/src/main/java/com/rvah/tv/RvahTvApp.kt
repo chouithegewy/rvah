@@ -26,6 +26,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text as FieldLabel
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -167,8 +168,15 @@ fun RvahTvApp(
     trustedKeys: List<String>,
 ) {
     ArtworkLoader()
+    val preview = remember { TrailerPreview() }
     RvahTheme {
-        Box(Modifier.fillMaxSize().background(Background)) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Background)
+                // A trailer playing over the screen takes the next key press.
+                .onPreviewKeyEvent { preview.onKey(it) },
+        ) {
             var core by remember { mutableStateOf<AndroidCore?>(null) }
             var startupError by remember { mutableStateOf<String?>(null) }
             LaunchedEffect(Unit) {
@@ -181,11 +189,14 @@ fun RvahTvApp(
             }
             val ready = core
             val failed = startupError
-            when {
-                ready != null -> AppNavigation(ready, owner, packagesDir, trustedKeys)
-                failed != null -> Page("RVAH could not start") { Body(failed, ErrorText) }
-                else -> Page("RVAH") { Body("Starting…") }
+            CompositionLocalProvider(LocalTrailerPreview provides preview) {
+                when {
+                    ready != null -> AppNavigation(ready, owner, packagesDir, trustedKeys)
+                    failed != null -> Page("RVAH could not start") { Body(failed, ErrorText) }
+                    else -> Page("RVAH") { Body("Starting…") }
+                }
             }
+            TrailerPreviewLayer(preview)
         }
     }
 }
@@ -315,7 +326,6 @@ private fun AppNavigation(
             onDiagnostics = { screen = Screen.Diagnostics },
             onPortableProfile = { screen = Screen.PortableProfile },
             onAddonSettings = { screen = Screen.AddonSettings(it) },
-            onTrailer = { url, title -> screen = Screen.Trailer(url, title, Screen.Home) },
             onBrowse = { screen = Screen.Browse(it.addonId, it.addonName, listFirst = true) },
         )
         is Screen.Board -> FolderBoard(
@@ -324,7 +334,6 @@ private fun AppNavigation(
             state = boards.getOrPut(current.addonId + "\u0000" + current.path) { BoardState() },
             scope = scope,
             onOpen = { spec, entry -> openFromBoard(spec, entry, current) },
-            onTrailer = { url, title -> screen = Screen.Trailer(url, title, current) },
             onExit = { screen = current.returnTo },
         )
         is Screen.Browse -> BrowseScreen(
@@ -1398,7 +1407,6 @@ private fun FolderBoard(
     state: BoardState,
     scope: CoroutineScope,
     onOpen: (ColumnSpec, CatalogEntry) -> Unit,
-    onTrailer: (String, String) -> Unit,
     onExit: () -> Unit,
 ) {
     BackHandler(onBack = onExit)
@@ -1416,7 +1424,7 @@ private fun FolderBoard(
         Text(target.title, fontSize = 20.sp, color = Secondary, modifier = Modifier.padding(start = 32.dp, bottom = 8.dp))
         val shown = columns
         when {
-            shown != null -> Board(core, shown, state, scope, onOpen, onTrailer = onTrailer)
+            shown != null -> Board(core, shown, state, scope, onOpen)
             failure != null -> Text(failure.orEmpty(), color = ErrorText, modifier = Modifier.padding(horizontal = 32.dp))
             else -> Text("Loading…", color = Secondary, modifier = Modifier.padding(horizontal = 32.dp))
         }
