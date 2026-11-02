@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use hmac::{Hmac, Mac};
-use rand::RngCore;
+use rand::TryRng;
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
@@ -33,7 +33,9 @@ pub struct SessionId(String);
 impl SessionId {
     pub fn generate() -> Self {
         let mut bytes = [0_u8; 16];
-        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        rand::rngs::SysRng
+            .try_fill_bytes(&mut bytes)
+            .expect("operating system random number generator failed");
         Self(hex::encode(bytes))
     }
 
@@ -66,7 +68,9 @@ pub struct SessionKey([u8; 32]);
 impl SessionKey {
     pub fn generate() -> Self {
         let mut bytes = [0_u8; 32];
-        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        rand::rngs::SysRng
+            .try_fill_bytes(&mut bytes)
+            .expect("operating system random number generator failed");
         Self(bytes)
     }
 

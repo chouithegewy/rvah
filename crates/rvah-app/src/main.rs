@@ -20,6 +20,7 @@ fn main() -> Result<(), String> {
     }
     let mpv_window = wants_mpv_window(&args);
 
+    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
     let mut options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1100.0, 720.0])

@@ -23,7 +23,12 @@ impl From<std::io::Error> for PackageError {
 
 /// Generate a fresh ed25519 keypair for signing packages.
 pub fn keygen() -> (SigningKey, VerifyingKey) {
-    let signing = SigningKey::generate(&mut rand::rngs::OsRng);
+    use rand::TryRng;
+    let mut secret = ed25519_dalek::SecretKey::default();
+    rand::rngs::SysRng
+        .try_fill_bytes(&mut secret)
+        .expect("operating system random number generator failed");
+    let signing = SigningKey::from_bytes(&secret);
     let verifying = signing.verifying_key();
     (signing, verifying)
 }

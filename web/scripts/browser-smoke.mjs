@@ -24,6 +24,20 @@ function launch(command, args, options = {}) {
   return child;
 }
 
+// Chrome keeps writing to its profile while it shuts down, so removing the
+// profile right after SIGTERM races it (ENOTEMPTY). Wait for each exit.
+function stop(child, graceMs = 5000) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const force = setTimeout(() => child.kill("SIGKILL"), graceMs);
+    child.once("exit", () => {
+      clearTimeout(force);
+      resolve();
+    });
+    child.kill("SIGTERM");
+  });
+}
+
 async function waitFor(url, attempts = 100) {
   let lastError;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -298,6 +312,6 @@ try {
   cdp.close();
   console.log(JSON.stringify({ firstPass, mockNetworkPass, pairing, secondPass, relayPass }, null, 2));
 } finally {
-  for (const child of children.reverse()) child.kill("SIGTERM");
-  rmSync(profileDir, { recursive: true, force: true });
+  for (const child of children.reverse()) await stop(child);
+  rmSync(profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }

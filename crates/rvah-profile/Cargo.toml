@@ -22,7 +22,10 @@ thiserror.workspace = true
 zeroize.workspace = true
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# Browser entropy for both copies: 0.2 behind aes-gcm's rand_core 0.6 OsRng,
+# 0.4 behind rand 0.10's SysRng.
 getrandom = { version = "0.2", features = ["js"] }
+getrandom-v04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
 js-sys.workspace = true
 
 [dev-dependencies]

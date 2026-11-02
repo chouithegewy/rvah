@@ -15,6 +15,13 @@ ignore = [
     # XML reaches either. Revisit on the next eframe upgrade.
     { id = "RUSTSEC-2026-0194", reason = "transitive via winit/accesskit; parses trusted local data only" },
     { id = "RUSTSEC-2026-0195", reason = "transitive via winit/accesskit; parses trusted local data only" },
+    { id = "RUSTSEC-2026-0374", reason = "basic-toml unmaintained; transitive via uniffi_bindgen (askama), reads our own uniffi.toml at bindgen time, no vulnerability" },
+    # zbus folded these into zbus 6. Our copies come from secret-service
+    # (zbus 5, `keychain` feature) and egui's accesskit (zbus 4); both talk to
+    # the local session bus only. Revisit on the next eframe/secret-service bump.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained (merged into zbus 6); transitive via secret-service/accesskit, no vulnerability" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained (merged into zbus 6); transitive via secret-service/accesskit, no vulnerability" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained (merged into zbus 6); transitive via secret-service/accesskit, no vulnerability" },
 ]
 
 [licenses]
