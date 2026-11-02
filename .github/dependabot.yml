@@ -5,6 +5,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # Stay on the wasmtime LTS line (currently 36); move to the next LTS by
+      # hand. Patch releases on the line still come through.
+      - dependency-name: wasmtime
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: cargo
     directory: /examples/addons/discover
