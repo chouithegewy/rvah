@@ -4281,6 +4281,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "getrandom 0.2.17",
+ "getrandom 0.4.3",
  "hex",
  "js-sys",
  "rand 0.10.3",
