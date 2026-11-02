@@ -37,6 +37,12 @@ fun youtubeVideoId(url: String): String? {
     return candidate?.takeIf { YouTubeId.matches(it) }
 }
 
+/**
+ * YouTube refuses embeds that don't identify the app embedding them (player
+ * error 153), and a WebView's own navigation sends no Referer.
+ */
+private fun identity(packageName: String) = mapOf("Referer" to "https://$packageName/")
+
 /** YouTube's supported embed player, kept inside the TV app and streamed by the device. */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -62,10 +68,10 @@ internal fun TrailerScreen(url: String, onExit: () -> Unit) {
                     view.settings.javaScriptEnabled = true
                     view.settings.mediaPlaybackRequiresUserGesture = false
                     view.webViewClient = WebViewClient()
-                    view.loadUrl(embed)
+                    view.loadUrl(embed, identity(context.packageName))
                 }
             },
-            update = { view -> if (view.url != embed) view.loadUrl(embed) },
+            update = { view -> if (view.url != embed) view.loadUrl(embed, identity(view.context.packageName)) },
             modifier = Modifier.fillMaxSize(),
         )
     }
