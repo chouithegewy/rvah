@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use aes_gcm::aead::{Aead, KeyInit, OsRng};
 use aes_gcm::{AeadCore, Aes256Gcm, Key, Nonce};
-use rand::RngCore;
+use rand::TryRng;
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum VaultError {
@@ -127,7 +127,9 @@ fn load_or_create_key(key_path: &Path) -> Result<[u8; 32], VaultError> {
             .map_err(|_| VaultError::Crypto("key file must hold 32 bytes".into()))
     } else {
         let mut key = [0u8; 32];
-        rand::rngs::OsRng.fill_bytes(&mut key);
+        rand::rngs::SysRng
+            .try_fill_bytes(&mut key)
+            .map_err(|e| VaultError::Crypto(e.to_string()))?;
         std::fs::write(key_path, hex::encode(key)).map_err(|e| VaultError::Io(e.to_string()))?;
         #[cfg(unix)]
         {

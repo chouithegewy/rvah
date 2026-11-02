@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
-use rand::RngCore;
+use rand::TryRng;
 #[cfg(feature = "native")]
 use rvah_auth::{SecretVault, VaultError};
 #[cfg(feature = "native")]
@@ -32,7 +32,9 @@ pub struct ProfileKey([u8; 32]);
 impl ProfileKey {
     pub fn generate() -> Self {
         let mut bytes = [0_u8; 32];
-        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        rand::rngs::SysRng
+            .try_fill_bytes(&mut bytes)
+            .expect("operating system random number generator failed");
         Self(bytes)
     }
 
