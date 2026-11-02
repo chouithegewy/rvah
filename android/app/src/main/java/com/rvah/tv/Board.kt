@@ -369,8 +369,8 @@ private fun PreviewPane(item: BoardItem.Entry?, details: ItemDetailsRecord?, mod
                             ) {
                                 ratingIcon(rating.source)?.let {
                                     Image(painterResource(it), ratingLabel(rating.source), Modifier.size(19.dp))
-                                } ?: Text(ratingLabel(rating.source), fontSize = 11.sp)
-                                Text(rating.value, fontSize = 13.sp)
+                                } ?: Text(ratingLabel(rating.source), color = Secondary, fontSize = 11.sp)
+                                Text(rating.value, color = Primary, fontSize = 13.sp)
                             }
                         }
                     }
