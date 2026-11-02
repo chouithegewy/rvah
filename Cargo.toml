@@ -24,7 +24,7 @@ url = "2"
 sha2 = "0.10"
 hmac = "0.12"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
-rand = "0.8"
+rand = "0.10"
 aes-gcm = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tar = "0.4"
