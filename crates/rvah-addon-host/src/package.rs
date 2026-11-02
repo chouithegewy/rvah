@@ -118,18 +118,28 @@ fn walk_entries<R: Read>(
                 path.display()
             )));
         }
+        // Judge the name as stored in the archive, not the platform PathBuf:
+        // on Windows a PathBuf both splits on and joins with `\`, so
+        // `assets/icon.txt` would read back as `assets\icon.txt`.
+        {
+            let raw = entry.path_bytes();
+            let raw = std::str::from_utf8(&raw)
+                .map_err(|_| PackageError::Malformed("non-UTF8 archive path".into()))?;
+            if raw.contains(['\\', ':']) {
+                return Err(PackageError::Malformed(format!(
+                    "nonportable archive path: {raw}"
+                )));
+            }
+        }
         let normalized = path
             .components()
             .filter(|c| matches!(c, std::path::Component::Normal(_)))
             .collect::<std::path::PathBuf>();
         let portable = normalized
-            .to_str()
-            .ok_or_else(|| PackageError::Malformed("non-UTF8 archive path".into()))?;
-        if portable.contains(['\\', ':']) {
-            return Err(PackageError::Malformed(format!(
-                "nonportable archive path: {portable}"
-            )));
-        }
+            .iter()
+            .map(|c| c.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
         let key = portable.to_lowercase();
         if !key.is_empty() && !seen.insert(key) {
             return Err(PackageError::Malformed(format!(

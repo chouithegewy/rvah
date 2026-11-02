@@ -19,10 +19,15 @@ fn build(pkg: &Path, fill: impl FnOnce(&mut TarBuilder)) {
 
 fn append(tar: &mut TarBuilder, name: &str, body: &[u8]) {
     let mut header = tar::Header::new_gnu();
+    // Store the name verbatim, as a hostile packer would: `set_path` normalizes
+    // it, and on Windows refuses names like `C:manifest.toml` outright.
+    let raw = name.as_bytes();
+    assert!(raw.len() < 100, "test names must fit the ustar name field");
+    header.as_old_mut().name[..raw.len()].copy_from_slice(raw);
     header.set_size(body.len() as u64);
     header.set_mode(0o644);
     header.set_cksum();
-    tar.append_data(&mut header, name, body).unwrap();
+    tar.append(&header, body).unwrap();
 }
 
 fn assert_refused(pkg: &Path, out: &Path) {
