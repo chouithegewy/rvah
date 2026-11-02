@@ -95,10 +95,10 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     // Posters and backdrops on Discover rows and details pages.
-    implementation("io.coil-kt.coil3:coil-compose:3.2.0")
-    implementation("io.coil-kt.coil3:coil-network-okhttp:3.2.0")
+    implementation("io.coil-kt.coil3:coil-compose:3.6.3")
+    implementation("io.coil-kt.coil3:coil-network-okhttp:3.6.3")
     // Add-on artwork may be SVG (team crests, say).
-    implementation("io.coil-kt.coil3:coil-svg:3.2.0")
+    implementation("io.coil-kt.coil3:coil-svg:3.6.3")
     implementation("net.java.dev.jna:jna:5.17.0@aar")
 
     testImplementation("junit:junit:4.13.2")
