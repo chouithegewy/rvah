@@ -38,6 +38,26 @@ function stop(child, graceMs = 5000) {
   });
 }
 
+// Chrome can still be committing its first navigation when /json/list already
+// reports the app URL; evaluating then fails with "Cannot find default
+// execution context". Wait until the app document has loaded.
+async function waitForDocument(cdp, url, attempts = 100) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const state = await cdp.call(
+        "Runtime.evaluate",
+        { expression: "location.href + ' ' + document.readyState", returnByValue: true },
+        1000,
+      );
+      if (state.result?.value === `${url} complete`) return;
+    } catch {
+      // No execution context yet.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for ${url} to load`);
+}
+
 async function waitFor(url, attempts = 100) {
   let lastError;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -86,10 +106,25 @@ class Cdp {
     });
   }
 
-  call(method, params = {}) {
+  // Bounded, so a wedged browser fails the run with the stuck method's name
+  // instead of hanging the job.
+  call(method, params = {}, timeoutMs = 60000) {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`CDP ${method} got no answer within ${timeoutMs} ms`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
       this.socket.send(JSON.stringify({ id, method, params }));
     });
   }
@@ -131,7 +166,8 @@ try {
     `--user-data-dir=${profileDir}`,
     appUrl,
   ]);
-  await waitFor(`http://127.0.0.1:${debugPort}/json/version`);
+  // A cold Chrome on a CI runner can take well over 10 s to open its port.
+  await waitFor(`http://127.0.0.1:${debugPort}/json/version`, 300);
   const pages = await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json();
   const page = pages.find((candidate) => candidate.type === "page" && candidate.url === appUrl);
   if (!page) throw new Error("Chrome did not open the RVAH page");
@@ -140,6 +176,7 @@ try {
   await cdp.open();
   await cdp.call("Runtime.enable");
   await cdp.call("Page.enable");
+  await waitForDocument(cdp, appUrl);
   await cdp.call("Browser.setDownloadBehavior", {
     behavior: "allow",
     downloadPath: profileDir,
@@ -152,7 +189,8 @@ try {
         if (predicate()) return;
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
-      throw new Error('timed out waiting for ' + label);
+      const notice = (document.querySelector('#notice')?.textContent || '').trim();
+      throw new Error('timed out waiting for ' + label + ' (notice: ' + notice + ')');
     };
     await waitFor(() => document.querySelector('#wasm-state')?.textContent.includes('0.1.0'), 'WASM');
     document.querySelector('#create-profile').click();
@@ -182,7 +220,8 @@ try {
         if (predicate()) return;
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
-      throw new Error('timed out waiting for ' + label);
+      const notice = (document.querySelector('#notice')?.textContent || '').trim();
+      throw new Error('timed out waiting for ' + label + ' (notice: ' + notice + ')');
     };
     document.querySelector('#bootstrap-url').value = 'mock://browser-smoke';
     document.querySelector('#veilid-connect').click();
