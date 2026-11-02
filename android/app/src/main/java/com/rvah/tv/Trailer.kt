@@ -1,6 +1,7 @@
 package com.rvah.tv
 
 import android.annotation.SuppressLint
+import android.view.ViewGroup
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
@@ -64,6 +65,13 @@ internal fun TrailerScreen(url: String, onExit: () -> Unit) {
             factory = { context ->
                 WebView(context).also { view ->
                     webView[0] = view
+                    // Without explicit params the view is WRAP_CONTENT, and WebView
+                    // then lays pages out at zero height (100vh = 0): YouTube's
+                    // player collapses and only the sound plays.
+                    view.layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                    )
                     view.setBackgroundColor(android.graphics.Color.BLACK)
                     view.settings.javaScriptEnabled = true
                     view.settings.mediaPlaybackRequiresUserGesture = false

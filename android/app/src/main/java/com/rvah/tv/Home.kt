@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.OutlinedTextField
@@ -81,6 +82,10 @@ internal class HomeState {
     val groupFailures = mutableStateMapOf<String, String>()
     private val boards = mutableMapOf<String, BoardState>()
     var tab by mutableStateOf<HomeTab>(HomeTab.Discover)
+    /** The genre open inside Genres; null shows the genre picker. */
+    var genre by mutableStateOf<ColumnSpec?>(null)
+    /** The genre last opened, focused again when the picker returns. */
+    var lastGenre: String? = null
     var query by mutableStateOf("")
     var searched by mutableStateOf<String?>(null)
 
@@ -93,6 +98,16 @@ internal class HomeState {
         boards.clear()
         groupColumns.clear()
         groupFailures.clear()
+        genre = null
+    }
+
+    /** Back: out of an open genre to the picker, otherwise to Home. */
+    fun back() {
+        if (genre != null) {
+            genre = null
+        } else {
+            tab = HomeTab.Discover
+        }
     }
 }
 
@@ -133,10 +148,11 @@ internal fun HomeScreen(
     val layout = homeLayout(addons, home.roots)
     val sections = homeSections(layout)
 
-    if (home.tab != HomeTab.Discover) BackHandler { home.tab = HomeTab.Discover }
+    if (home.tab != HomeTab.Discover) BackHandler { home.back() }
     Column(Modifier.fillMaxSize()) {
         HomeHeader(
             tab = home.tab,
+            title = home.genre?.let { "${home.tab.label} · ${it.title}" } ?: home.tab.label,
             query = home.query,
             onQueryChange = { home.query = it },
             onSearch = {
@@ -145,7 +161,7 @@ internal fun HomeScreen(
                     home.tab = HomeTab.Search
                 }
             },
-            onBack = { home.tab = HomeTab.Discover },
+            onBack = { home.back() },
             onSettings = { home.tab = HomeTab.Settings },
         )
         error?.let { Text(it, fontSize = 13.sp, color = ErrorText, modifier = Modifier.padding(horizontal = 32.dp)) }
@@ -158,7 +174,10 @@ internal fun HomeScreen(
                     }
                     when {
                         sections.isNotEmpty() -> HomeTiles(sections) { section ->
-                            section.browse?.let(onBrowse) ?: run { home.tab = HomeTab.Section(section) }
+                            section.browse?.let(onBrowse) ?: run {
+                                home.genre = null
+                                home.tab = HomeTab.Section(section)
+                            }
                         }
                         catalogs.isEmpty() -> Note("No discovery add-ons yet. Install one in Settings.")
                         else -> Note("Loading collections…")
@@ -200,6 +219,7 @@ internal fun HomeScreen(
 @Composable
 private fun HomeHeader(
     tab: HomeTab,
+    title: String,
     query: String,
     onQueryChange: (String) -> Unit,
     onSearch: () -> Unit,
@@ -228,7 +248,7 @@ private fun HomeHeader(
             Button(onClick = onSettings) { Text("Settings") }
         } else {
             Button(onClick = onBack) { Text("Back") }
-            Text(tab.label, color = Primary, fontSize = 23.sp, modifier = Modifier.weight(1f))
+            Text(title, color = Primary, fontSize = 23.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             if (tab != HomeTab.Settings) Button(onClick = onSettings) { Text("Settings") }
         }
     }
@@ -274,7 +294,11 @@ private fun HomeTiles(sections: List<HomeSection>, onOpen: (HomeSection) -> Unit
 
 private fun groupKey(group: GroupTab) = group.addonId + "\u0000" + group.path
 
-/** Load genre folders only after Genres opens, then show their posters in the common grid. */
+/**
+ * Load genre folders only after Genres opens, then show their posters in the
+ * common grid. Genres first offers the genres themselves, and shows one
+ * genre's posters at a time.
+ */
 @Composable
 private fun SectionBoard(
     core: AndroidCore,
@@ -300,8 +324,22 @@ private fun SectionBoard(
     }
     val groupColumns = section.groups.flatMap { home.groupColumns[groupKey(it)].orEmpty() }
     val columns = section.columns + groupColumns
+    val genre = home.genre
     Column(modifier) {
         when {
+            section.id == "genres" && genre != null -> Board(
+                core,
+                listOf(genre),
+                home.board("genre:${genre.key}"),
+                scope,
+                onOpen,
+                detailsAddons = detailsAddons,
+                onTrailer = onTrailer,
+            )
+            section.id == "genres" && columns.isNotEmpty() -> GenrePicker(columns, home.lastGenre) {
+                home.lastGenre = it.key
+                home.genre = it
+            }
             columns.isNotEmpty() -> Board(
                 core,
                 columns,
@@ -313,6 +351,40 @@ private fun SectionBoard(
             )
             section.groups.any { groupKey(it) !in home.groupFailures } -> Note("Loading ${section.title.lowercase()}…")
             else -> Note(section.groups.joinToString("\n") { home.groupFailures[groupKey(it)].orEmpty() }, ErrorText)
+        }
+    }
+}
+
+/** The genres as tiles; the one opened last takes focus again. */
+@Composable
+private fun GenrePicker(genres: List<ColumnSpec>, last: String?, onPick: (ColumnSpec) -> Unit) {
+    val start = genres.indexOfFirst { it.key == last }.coerceAtLeast(0)
+    val focus = rememberInitialFocus(genres[start].key)
+    // Name the source only when genres come from more than one.
+    val tagged = genres.mapNotNull { it.tag }.distinct().size > 1
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(4),
+        state = rememberLazyGridState(initialFirstVisibleItemIndex = start),
+        contentPadding = PaddingValues(horizontal = 48.dp, vertical = 18.dp),
+        horizontalArrangement = Arrangement.spacedBy(18.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        itemsIndexed(genres, key = { _, genre -> genre.key }) { index, genre ->
+            val shade = listOf(Color(0xFF28364A), Color(0xFF3A2F4C), Color(0xFF253F3A), Color(0xFF44332D))[index % 4]
+            Card(
+                onClick = { onPick(genre) },
+                modifier = (if (index == start) Modifier.focusRequester(focus) else Modifier).height(96.dp),
+                scale = CardDefaults.scale(focusedScale = 1.05f),
+            ) {
+                Column(
+                    Modifier.fillMaxSize().background(shade, RoundedCornerShape(10.dp)).padding(horizontal = 18.dp, vertical = 14.dp),
+                    verticalArrangement = Arrangement.Bottom,
+                ) {
+                    Text(genre.title, color = Primary, fontSize = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (tagged) genre.tag?.let { Text(it, color = Secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                }
+            }
         }
     }
 }
