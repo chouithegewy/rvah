@@ -1,5 +1,6 @@
 package com.rvah.tv
 
+import android.os.SystemClock
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -50,6 +51,7 @@ import coil3.SingletonImageLoader
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import uniffi.rvah_android.AndroidCore
 import uniffi.rvah_android.CatalogEntry
@@ -110,7 +112,6 @@ internal fun Board(
     onOpen: (ColumnSpec, CatalogEntry) -> Unit,
     modifier: Modifier = Modifier,
     detailsAddons: Set<String> = emptySet(),
-    onTrailer: (String, String) -> Unit = { _, _ -> },
 ) {
     columns.forEach { spec ->
         key(spec.key) {
@@ -169,13 +170,23 @@ internal fun Board(
             .onSuccess { state.details[key] = it }
             .onFailure { state.detailFailures[key] = true }
     }
+    // A title left in focus plays its trailer over the board: it loads
+    // unseen first, and shows only once it plays, not before PREVIEW_AT_MS.
+    val preview = LocalTrailerPreview.current
     LaunchedEffect(focusedEntry?.key, focusedDetails?.trailers?.firstOrNull()?.url) {
         val item = focusedEntry ?: return@LaunchedEffect
         val trailer = focusedDetails?.trailers?.firstOrNull { youtubeVideoId(it.url) != null } ?: return@LaunchedEffect
         if (state.autoplayedTrailers[item.key] == true) return@LaunchedEffect
-        delay(4_000)
-        state.autoplayedTrailers[item.key] = true
-        onTrailer(trailer.url, trailer.name)
+        val focusedAt = SystemClock.uptimeMillis()
+        delay(PREVIEW_LOAD_AFTER_MS)
+        val request = preview.load(trailer.url, showAt = focusedAt + PREVIEW_AT_MS) {
+            state.autoplayedTrailers[item.key] = true
+        }
+        try {
+            awaitCancellation()
+        } finally {
+            preview.cancel(request)
+        }
     }
 
     // Warm the next screen's artwork and a small first batch of ratings while
