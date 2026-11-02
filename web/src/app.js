@@ -711,8 +711,14 @@ async function boot() {
     import.meta.env.VITE_VEILID_BOOTSTRAP ||
     localStorage.getItem("rvah.veilid.bootstrap") ||
     "";
-  current = await loadDeviceProfile();
+  const stored = await loadDeviceProfile();
+  // The profile buttons work as soon as WASM is up, so a profile created or
+  // imported while storage was still loading wins; adopting `stored` here
+  // would silently drop it.
   if (current) {
+    // Nothing to do: that flow already persisted and rendered it.
+  } else if (stored) {
+    current = stored;
     try {
       await refreshSummary();
       message("Device profile unlocked from browser-protected storage.", "success");
