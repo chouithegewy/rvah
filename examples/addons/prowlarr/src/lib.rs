@@ -1,8 +1,8 @@
 //! Prowlarr Sources add-on for RVAH (ABI v0.1 wasm guest).
 //!
 //! Finds releases of a film or an episode through your own Prowlarr
-//! (`GET /api/v1/search`), searching by IMDb id and falling back to the
-//! title. For an episode it asks for the whole season, keeping that
+//! (`GET /api/v1/search`), searching by IMDb id (which only some indexers
+//! can) and by title (keeping only releases that name the title). For an episode it asks for the whole season, keeping that
 //! episode's releases and season packs, since a debrid add-on can play an
 //! episode out of a pack. Only torrents with an info hash are kept, best
 //! resolution first, then most seeders. Which indexers Prowlarr searches is
@@ -80,6 +80,10 @@ mod tests {
         format!("{URL}/api/v1/search?query={query}&type={kind}&categories={categories}&limit=75")
     }
 
+    fn title_url() -> String {
+        search_url("The%20Matrix%201999", "search", 2000)
+    }
+
     fn names(releases: &[rvah_addon_sdk::Release]) -> Vec<&str> {
         releases.iter().map(|r| r.name.as_str()).collect()
     }
@@ -106,6 +110,7 @@ mod tests {
                 nzb,
             ]),
         );
+        host.route(&title_url(), 200, &json!([]));
         let releases = prowlarr::sources(&host, &movie()).unwrap();
         assert_eq!(
             names(&releases),
@@ -144,6 +149,11 @@ mod tests {
                 found("Acme.Corp.S02.1080p", Some(&"6".repeat(40)), 70),
             ]),
         );
+        host.route(
+            &search_url("Acme%20Corp%20S01", "search", 5000),
+            200,
+            &json!([]),
+        );
         let releases = prowlarr::sources(&host, &episode()).unwrap();
         assert_eq!(
             names(&releases),
@@ -157,22 +167,96 @@ mod tests {
     }
 
     #[test]
-    fn nothing_by_id_falls_back_to_the_title() {
+    fn a_film_is_also_searched_by_title_for_indexers_that_cannot_search_by_id() {
+        let mut host = host();
+        host.route(
+            &search_url("%7BImdbId%3Att0133093%7D", "movie", 2000),
+            200,
+            &json!([found(
+                "The Matrix (1999) [1080p] [YTS]",
+                Some(&"a".repeat(40)),
+                50
+            )]),
+        );
+        host.route(
+            &title_url(),
+            200,
+            &json!([
+                found("The.Matrix.1999.2160p.BluRay", Some(&"b".repeat(40)), 30),
+                // The id search found this one already.
+                found("The.Matrix.1999.1080p.YTS", Some(&"A".repeat(40)), 50),
+                found("The Matrix 1080p BluRay", Some(&"c".repeat(40)), 20),
+                // Other films the title search finds.
+                found("The.Matrix.Reloaded.2003.1080p", Some(&"d".repeat(40)), 90),
+                found(
+                    "The.Matrix.Resurrections.2021.2160p",
+                    Some(&"e".repeat(40)),
+                    90
+                ),
+                found("The.Animatrix.2003.1080p", Some(&"f".repeat(40)), 90),
+            ]),
+        );
+        let releases = prowlarr::sources(&host, &movie()).unwrap();
+        assert_eq!(
+            names(&releases),
+            [
+                "The.Matrix.1999.2160p.BluRay",
+                "The Matrix (1999) [1080p] [YTS]",
+                "The Matrix 1080p BluRay",
+            ]
+        );
+        assert_eq!(host.urls().len(), 2);
+        // Each answer is read only so far.
+        let sent = host.requests();
+        assert_eq!(sent[0].max_bytes, Some(prowlarr::ID_ANSWER_BYTES));
+        assert_eq!(sent[1].max_bytes, Some(prowlarr::TITLE_ANSWER_BYTES));
+    }
+
+    #[test]
+    fn a_long_title_search_keeps_the_results_that_arrived_whole() {
         let mut host = host();
         host.route(
             &search_url("%7BImdbId%3Att0133093%7D", "movie", 2000),
             200,
             &json!([]),
         );
-        host.route(
-            &search_url("The%20Matrix%201999", "search", 2000),
-            200,
-            &json!([found("The Matrix 1999 1080p", Some(&"f".repeat(40)), 1)]),
-        );
+        // Each about 4 KB, as the tracker list makes a real one.
+        let results: Vec<Value> = (0..200u32)
+            .map(|n| {
+                let mut result = found(
+                    &format!("The.Matrix.1999.1080p.GROUP{n}"),
+                    Some(&format!("{n:040x}")),
+                    n,
+                );
+                result["magnetUrl"] = json!(format!(
+                    "magnet:?xt=urn:btih:{n:040x}{}",
+                    "&tr=udp%3A%2F%2Ftracker.example.org%3A1337%2Fannounce".repeat(70)
+                ));
+                result
+            })
+            .collect();
+        // `[` or `,`, then the result: whole if it ends within the cut.
+        let fits = {
+            let mut length = 0;
+            results
+                .iter()
+                .take_while(|r| {
+                    length += 1 + serde_json::to_vec(r).unwrap().len();
+                    length <= prowlarr::TITLE_ANSWER_BYTES as usize
+                })
+                .count()
+        };
+        assert!(fits > 10 && fits < 200, "{fits} fit");
+        host.route(&title_url(), 200, &json!(results));
         let releases = prowlarr::sources(&host, &movie()).unwrap();
-        assert_eq!(names(&releases), ["The Matrix 1999 1080p"]);
+        // Those that fit, the most seeders first.
+        assert_eq!(releases.len(), fits);
+        assert_eq!(releases[0].seeders, Some(fits as u32 - 1));
+    }
 
-        let mut host = self::host();
+    #[test]
+    fn an_episode_with_nothing_found_is_empty() {
+        let mut host = host();
         host.route(
             &search_url("%7BImdbId%3Att0944947%7D%7BSeason%3A1%7D", "tvsearch", 5000),
             200,
@@ -203,6 +287,7 @@ mod tests {
             200,
             &json!([magnet, proxied]),
         );
+        host.route(&title_url(), 200, &json!([]));
         let releases = prowlarr::sources(&host, &movie()).unwrap();
         assert_eq!(names(&releases), ["The.Matrix.1999.1080p"]);
         assert_eq!(releases[0].info_hash, "A".repeat(40));
@@ -244,6 +329,7 @@ mod tests {
             200,
             &json!([found("The.Matrix.1999.1080p", Some(&"c".repeat(40)), 5)]),
         );
+        host.route(&title_url(), 200, &json!([]));
         let op = json!({ "op": "sources", "request": { "kind": "movie", "imdb_id": "tt0133093", "title": "The Matrix", "year": 1999 } });
         let out = serde_json::to_value(dispatch(&serde_json::to_vec(&op).unwrap(), &host).unwrap())
             .unwrap();

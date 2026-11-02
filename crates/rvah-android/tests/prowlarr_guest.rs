@@ -1,7 +1,9 @@
 //! The real Prowlarr wasm guest under Wasmi and the bridged host, as on
 //! Android, with the default fuel and time limits, against a scripted
-//! Prowlarr answering a full page (75 results) for an episode. Needs the
-//! guest built first (with any PROWLARR_URL), so it is ignored by default:
+//! Prowlarr: a full page (75 results) for an episode, and a title search
+//! for a film as long as a popular one's (300 results, a megabyte). Needs
+//! the guest built first (with any PROWLARR_URL), so it is ignored by
+//! default:
 //!
 //! ```sh
 //! PROWLARR_URL=https://prowlarr.example.com examples/addons/prowlarr/build.sh
@@ -22,12 +24,29 @@ use serde_json::json;
 
 struct FakeProwlarr {
     log: Mutex<Vec<HttpRequest>>,
+    answer: fn(&HttpRequest) -> Vec<serde_json::Value>,
 }
 
 impl Transport for FakeProwlarr {
     fn execute(&self, req: &HttpRequest) -> Result<HttpResponse, NetError> {
         self.log.lock().unwrap().push(req.clone());
-        let results: Vec<_> = (0..75)
+        let mut body = serde_json::to_vec(&(self.answer)(req)).unwrap();
+        // As rvah-net reads it: no further than asked.
+        let cap = req.max_bytes.map_or(usize::MAX, |n| n as usize);
+        let truncated = body.len() > cap;
+        body.truncate(cap);
+        Ok(HttpResponse {
+            status: 200,
+            truncated,
+            headers: Default::default(),
+            body,
+        })
+    }
+}
+
+/// A full page of an episode's season, for any search.
+fn season_page(_: &HttpRequest) -> Vec<serde_json::Value> {
+    (0..75)
             .map(|n| {
                 let episode = n % 10 + 1;
                 json!({
@@ -48,14 +67,39 @@ impl Transport for FakeProwlarr {
                     "protocol": "torrent", "fileName": format!("Acme.Corp.S01E{episode:02}.torrent")
                 })
             })
-            .collect();
-        Ok(HttpResponse {
-            status: 200,
-            truncated: false,
-            headers: Default::default(),
-            body: serde_json::to_vec(&results).unwrap(),
+            .collect()
+}
+
+/// A popular film, as public indexers answer for one: 300 results of
+/// about 3.5 KB each (their magnet links carry long tracker lists), by id
+/// as by title, so both answers are cut.
+fn popular_film(req: &HttpRequest) -> Vec<serde_json::Value> {
+    let by_id = req.url.contains("ImdbId");
+    let trackers = "&tr=udp%3A%2F%2Ftracker.example.org%3A1337%2Fannounce".repeat(18);
+    (0..300)
+        .map(|n| {
+            let hash = format!("{:040x}", n + if by_id { 10_000 } else { 0 });
+            json!({
+                "guid": format!("magnet:?xt=urn:btih:{hash}&dn=The.Film.2008.1080p.BluRay.x264-GROUP{n}{trackers}"),
+                "age": 12, "ageHours": 290.5, "ageMinutes": 17430.2, "size": 2_147_483_648u64 + n,
+                "files": 1, "grabs": 300, "indexerId": 3, "indexer": "Example Indexer",
+                "title": format!("The.Film.2008.1080p.BluRay.x264-GROUP{n}"),
+                "sortTitle": format!("the film 2008 1080p bluray x264 group{n}"),
+                "imdbId": 0, "tmdbId": 0, "tvdbId": 0, "tvMazeId": 0,
+                "publishDate": "2026-09-28T12:34:56Z",
+                "downloadUrl": format!("https://prowlarr.example.com/3/download?apikey=x&link=aHR0cHM6Ly9leGFtcGxlLmNvbS9maWxlLnRvcnJlbnQ{n}&file=The.Film"),
+                "magnetUrl": format!("magnet:?xt=urn:btih:{hash}&dn=The.Film.2008.1080p.BluRay.x264-GROUP{n}{trackers}"),
+                "infoUrl": format!("https://indexer.example/details/{n}"),
+                "indexerFlags": [],
+                "categories": [
+                    { "id": 2000, "name": "Movies", "subCategories": [{ "id": 2040, "name": "Movies/HD", "subCategories": [] }] },
+                    { "id": 100_042, "name": "Movies/HD", "subCategories": [] }
+                ],
+                "infoHash": hash, "seeders": n, "leechers": 4,
+                "protocol": "torrent", "fileName": "The.Film.2008.1080p.torrent"
+            })
         })
-    }
+        .collect()
 }
 
 struct Shared(Arc<FakeProwlarr>);
@@ -65,9 +109,16 @@ impl Transport for Shared {
     }
 }
 
-#[test]
-#[ignore = "needs examples/addons/prowlarr/build.sh"]
-fn prowlarr_guest_finds_an_episode_in_a_full_page() {
+/// The installed guest, its core and the Prowlarr it talks to.
+fn guest(
+    answer: fn(&HttpRequest) -> Vec<serde_json::Value>,
+    limits: WasmiLimits,
+) -> (
+    AppCore<rvah_player::MockPlayer>,
+    String,
+    Arc<FakeProwlarr>,
+    tempfile::TempDir,
+) {
     let tmp = tempfile::tempdir().unwrap();
     let dist = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/addons/prowlarr/dist");
@@ -90,12 +141,10 @@ fn prowlarr_guest_finds_an_episode_in_a_full_page() {
         .unwrap();
     let prowlarr = Arc::new(FakeProwlarr {
         log: Mutex::new(Vec::new()),
+        answer,
     });
-    let runtime = WasmiRuntime::load(
-        &std::fs::read(dist.join("module.wasm")).unwrap(),
-        WasmiLimits::default(),
-    )
-    .unwrap();
+    let runtime =
+        WasmiRuntime::load(&std::fs::read(dist.join("module.wasm")).unwrap(), limits).unwrap();
     let mut core = AppCore::new(
         manager,
         Arc::clone(&db),
@@ -117,6 +166,13 @@ fn prowlarr_guest_finds_an_episode_in_a_full_page() {
         )),
     );
 
+    (core, id, prowlarr, tmp)
+}
+
+#[test]
+#[ignore = "needs examples/addons/prowlarr/build.sh"]
+fn prowlarr_guest_finds_an_episode_in_a_full_page() {
+    let (mut core, id, prowlarr, _tmp) = guest(season_page, WasmiLimits::default());
     let releases = core
         .sources(
             &id,
@@ -141,4 +197,34 @@ fn prowlarr_guest_finds_an_episode_in_a_full_page() {
         sent.headers["x-api-key"],
         "0123456789abcdef0123456789abcdef"
     );
+}
+
+#[test]
+#[ignore = "needs examples/addons/prowlarr/build.sh"]
+fn prowlarr_guest_reads_a_popular_films_title_search_within_its_fuel() {
+    // Three quarters of the fuel a call gets, so there is room to spare
+    // (it takes about two thirds).
+    let limits = WasmiLimits {
+        fuel: WasmiLimits::default().fuel * 3 / 4,
+        ..WasmiLimits::default()
+    };
+    let (mut core, id, prowlarr, _tmp) = guest(popular_film, limits);
+    let releases = core
+        .sources(
+            &id,
+            SourceRequest {
+                kind: SourceKind::Movie,
+                imdb_id: Some("tt0468569".into()),
+                title: "The Film".into(),
+                year: Some(2008),
+                season: None,
+                episode: None,
+            },
+        )
+        .unwrap();
+    // As many whole results as the cuts leave: some 9 by id, 27 by title.
+    assert!((30..=40).contains(&releases.len()), "{}", releases.len());
+    let log = prowlarr.log.lock().unwrap();
+    assert_eq!(log.len(), 2);
+    assert!(log.iter().all(|sent| sent.max_bytes.is_some()));
 }
