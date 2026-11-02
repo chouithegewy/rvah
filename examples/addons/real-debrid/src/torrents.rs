@@ -93,6 +93,8 @@ fn send_raw(
     Ok(resp.body)
 }
 
+const NOT_CACHED: &str = "not cached on Real-Debrid; pick another release";
+
 const REFUSED: &str =
     "Real-Debrid won't serve this release (it is flagged as infringing); pick another";
 
@@ -112,7 +114,8 @@ fn info(host: &dyn Host, id: &str) -> Result<TorrentInfo, AddonError> {
     send(host, "GET", &format!("/torrents/info/{id}"), None)
 }
 
-fn not_ready(host: &dyn Host, id: &str, reason: String) -> Result<ResolveResult, AddonError> {
+/// Take the torrent added as `id` out of the account again, and answer `result`.
+fn give_up(host: &dyn Host, id: &str, result: ResolveResult) -> Result<ResolveResult, AddonError> {
     // Best effort: a leftover torrent in the account is harmless.
     if let Err(e) = send_raw(host, "DELETE", &format!("/torrents/delete/{id}"), None) {
         host::log(
@@ -120,7 +123,7 @@ fn not_ready(host: &dyn Host, id: &str, reason: String) -> Result<ResolveResult,
             &format!("could not delete torrent {id}: {}", e.message),
         );
     }
-    Ok(ResolveResult::Unavailable { reason })
+    Ok(result)
 }
 
 fn is_hash(hash: &str) -> bool {
@@ -207,11 +210,11 @@ pub fn resolve_release(
         Some(&[("magnet", &magnet)]),
     ) {
         Ok(added) => added,
-        Err(e) if is_refused(&e) => return Ok(ResolveResult::Unavailable { reason: e.message }),
+        Err(e) if is_refused(&e) => return Ok(ResolveResult::refused(e.message)),
         Err(e) => return Err(e),
     };
     match play_added(host, &added.id, season, episode) {
-        Err(e) if is_refused(&e) => not_ready(host, &added.id, e.message),
+        Err(e) if is_refused(&e) => give_up(host, &added.id, ResolveResult::refused(e.message)),
         other => other,
     }
 }
@@ -230,20 +233,15 @@ fn play_added(
         "downloaded" => return play(host, &torrent),
         // Known at once: Real-Debrid has its file list.
         "waiting_files_selection" => {}
-        _ => {
-            return not_ready(
-                host,
-                &added.id,
-                "not cached on Real-Debrid; pick another release".into(),
-            )
-        }
+        _ => return give_up(host, &added.id, ResolveResult::unavailable(NOT_CACHED)),
     }
     let Some(file) = pick_file(&torrent.files, season, episode) else {
         let what = match (season, episode) {
             (Some(s), Some(e)) => format!("no file for S{s:02}E{e:02} in this release"),
             _ => "no video file in this release".to_string(),
         };
-        return not_ready(host, &added.id, what);
+        // Not the service's doing: another episode of this release may play.
+        return give_up(host, &added.id, ResolveResult::unavailable(what));
     };
     send_raw(
         host,
@@ -261,11 +259,7 @@ fn play_added(
             _ => break,
         }
     }
-    not_ready(
-        host,
-        &added.id,
-        "not cached on Real-Debrid; pick another release".into(),
-    )
+    give_up(host, &added.id, ResolveResult::unavailable(NOT_CACHED))
 }
 
 fn play(host: &dyn Host, torrent: &TorrentInfo) -> Result<ResolveResult, AddonError> {

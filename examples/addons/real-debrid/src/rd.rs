@@ -250,9 +250,9 @@ pub fn resolve(host: &dyn Host, item_id: &str) -> Result<ResolveResult, AddonErr
             break;
         }
     }
-    Ok(ResolveResult::Unavailable {
-        reason: format!("{item_id} not found in the Real-Debrid downloads history"),
-    })
+    Ok(ResolveResult::unavailable(format!(
+        "{item_id} not found in the Real-Debrid downloads history"
+    )))
 }
 
 fn linked(host: &dyn Host) -> Result<bool, AddonError> {
