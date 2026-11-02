@@ -33,6 +33,10 @@ pub enum AndroidCoreError {
     Addon { reason: String },
     #[error("playback: {reason}")]
     Playback { reason: String },
+    /// The debrid add-on cannot play this release: not cached, or
+    /// `refused` outright. Another release may well play.
+    #[error("unavailable: {reason}")]
+    Unavailable { reason: String, refused: bool },
     /// The add-on needs an account: the TV offers Link account here.
     #[error("sign-in required: {reason}")]
     SignInRequired { reason: String },
@@ -1061,6 +1065,19 @@ impl AndroidCore {
             .map_err(addon_error)
     }
 
+    /// Releases the debrid add-on `debrid_id` refused lately, as info hash
+    /// → its reason: a sources list marks them and offers others first.
+    pub fn refused_releases(
+        &self,
+        debrid_id: String,
+    ) -> Result<std::collections::HashMap<String, String>, AndroidCoreError> {
+        self.core()
+            .refused_releases(&debrid_id)
+            .map_err(|e| AndroidCoreError::Storage {
+                reason: e.to_string(),
+            })
+    }
+
     /// Play `release` through the `debrid` add-on `debrid_id`, keeping
     /// progress under the title it is a release of.
     #[allow(clippy::too_many_arguments)]
@@ -1212,9 +1229,22 @@ impl AndroidCore {
 }
 
 fn playback_error(error: rvah_core::CoreError) -> AndroidCoreError {
+    if let rvah_core::CoreError::Unavailable { reason, refused } = error {
+        return AndroidCoreError::Unavailable { reason, refused };
+    }
     sign_in_required(&error).unwrap_or_else(|| AndroidCoreError::Playback {
-        reason: error.to_string(),
+        reason: shown(&error),
     })
+}
+
+/// What the TV says about `error`: an add-on's own words when it wrote
+/// them for the user ("Real-Debrid won't serve this release…"), not the
+/// core's classification around them ("add-on error: NotFound: …").
+fn shown(error: &rvah_core::CoreError) -> String {
+    match error {
+        rvah_core::CoreError::Provider(e) if e.user_visible => e.message.clone(),
+        other => other.to_string(),
+    }
 }
 
 /// An add-on's `Auth` failure, which a token refresh did not fix.
@@ -1264,7 +1294,7 @@ fn logcat(line: &str) {
 
 fn addon_error(error: rvah_core::CoreError) -> AndroidCoreError {
     sign_in_required(&error).unwrap_or_else(|| AndroidCoreError::Addon {
-        reason: error.to_string(),
+        reason: shown(&error),
     })
 }
 
@@ -1567,6 +1597,49 @@ mod tests {
             playback_error(offline),
             AndroidCoreError::Playback { .. }
         ));
+    }
+
+    #[test]
+    fn messages_are_the_add_ons_own_words_when_meant_for_the_user() {
+        use rvah_addon_sdk::{AddonError, AddonErrorCode};
+        use rvah_core::CoreError;
+
+        let busy = AddonError::new(AddonErrorCode::Quota, "Real-Debrid is busy").user_visible();
+        for mapped in [
+            playback_error(CoreError::Provider(busy.clone())),
+            addon_error(CoreError::Provider(busy)),
+        ] {
+            match mapped {
+                AndroidCoreError::Playback { reason } | AndroidCoreError::Addon { reason } => {
+                    assert_eq!(reason, "Real-Debrid is busy")
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        // Internal wording keeps its context, for diagnostics.
+        match addon_error(CoreError::Provider(AddonError::new(
+            AddonErrorCode::Internal,
+            "bad JSON",
+        ))) {
+            AndroidCoreError::Addon { reason } => {
+                assert_eq!(reason, "add-on error: Internal: bad JSON")
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        // A release that cannot play says so in its own variant, so the TV
+        // can move on to the next release.
+        let refused = CoreError::Unavailable {
+            reason: "Real-Debrid won't serve this release".into(),
+            refused: true,
+        };
+        match playback_error(refused) {
+            AndroidCoreError::Unavailable { reason, refused } => {
+                assert_eq!(reason, "Real-Debrid won't serve this release");
+                assert!(refused);
+            }
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
     }
 
     #[test]

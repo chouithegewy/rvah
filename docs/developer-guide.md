@@ -21,6 +21,13 @@ An add-on implements up to seven operations (`rvah-addon-sdk::AddonProvider`):
 Pages contain `DirectoryItem`s (navigation) and `MediaItem`s (playable).
 Pagination is cursor-based: return `cursor_next` until the last page.
 
+`Unavailable` carries a `reason` written for the user. Answer
+`ResolveResult::unavailable(reason)` when the item may play later (a
+release not cached yet), and `ResolveResult::refused(reason)` when the
+service will not serve it at all (Real-Debrid's HTTP 451 for a blocked
+release). For `resolve_release`, hosts remember refused releases for 30
+days, list them last, and skip them when moving on to another release.
+
 Host services come through the `HostApi` context handed to every call:
 `http_fetch` (allowlisted domains only), `setting_get`, `secret_get`
 (declared secrets only), `storage_get/set/delete` (quota'd), `log`

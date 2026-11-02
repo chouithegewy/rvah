@@ -232,7 +232,11 @@ mod tests {
         assert!(matches!(result, ResolveResult::Playables(_)));
 
         let result = rd::resolve(&host, "nope").unwrap();
-        let ResolveResult::Unavailable { reason } = result else {
+        let ResolveResult::Unavailable {
+            reason,
+            refused: false,
+        } = result
+        else {
             panic!("expected unavailable, got {result:?}");
         };
         assert!(reason.contains("nope"));
@@ -689,7 +693,11 @@ mod tests {
         // Not cached: Real-Debrid has to fetch even the file list.
         let host = release_host(vec![torrent("magnet_conversion", json!([]), json!([]))]);
         let result = torrents::resolve_release(&host, &chosen("Film"), None, None).unwrap();
-        let ResolveResult::Unavailable { reason } = result else {
+        let ResolveResult::Unavailable {
+            reason,
+            refused: false,
+        } = result
+        else {
             panic!("expected unavailable");
         };
         assert!(reason.contains("not cached"));
@@ -715,7 +723,11 @@ mod tests {
         let host = release_host(vec![torrent("waiting_files_selection", files, json!([]))]);
         let result =
             torrents::resolve_release(&host, &chosen("Show.S01"), Some(1), Some(5)).unwrap();
-        let ResolveResult::Unavailable { reason } = result else {
+        let ResolveResult::Unavailable {
+            reason,
+            refused: false,
+        } = result
+        else {
             panic!("expected unavailable");
         };
         assert_eq!(reason, "no file for S01E05 in this release");
@@ -770,8 +782,12 @@ mod tests {
             json!({ "error": "infringing_file", "error_code": 35 }),
         );
         let result = torrents::resolve_release(&host, &chosen("Film"), None, None).unwrap();
-        let ResolveResult::Unavailable { reason } = result else {
-            panic!("expected unavailable, got {result:?}");
+        let ResolveResult::Unavailable {
+            reason,
+            refused: true,
+        } = result
+        else {
+            panic!("expected a refusal, got {result:?}");
         };
         assert!(reason.contains("won't serve this release"), "{reason}");
         assert_eq!(calls(&host).len(), 1);
@@ -789,7 +805,7 @@ mod tests {
         );
         let result = torrents::resolve_release(&host, &chosen("Film"), None, None).unwrap();
         assert!(
-            matches!(result, ResolveResult::Unavailable { .. }),
+            matches!(result, ResolveResult::Unavailable { refused: true, .. }),
             "{result:?}"
         );
         assert_eq!(calls(&host).last().unwrap(), "DELETE /torrents/delete/T1");

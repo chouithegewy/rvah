@@ -185,6 +185,7 @@ impl Database {
             ] {
                 tx.execute(&format!("DELETE FROM {table} WHERE addon_id = ?1"), [id])?;
             }
+            tx.execute("DELETE FROM refused_releases WHERE debrid_id = ?1", [id])?;
         }
         tx.commit()?;
         Ok(())
@@ -478,6 +479,54 @@ impl Database {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    // ---- releases a debrid service refuses ----
+
+    /// Remember that `debrid_id` refuses the release `info_hash`, and why.
+    pub fn record_refused_release(
+        &self,
+        debrid_id: &str,
+        info_hash: &str,
+        reason: &str,
+        refused_at: u64,
+    ) -> Result<(), DataError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO refused_releases (debrid_id, info_hash, reason, refused_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(debrid_id, info_hash) DO UPDATE SET reason = ?3, refused_at = ?4",
+            params![debrid_id, info_hash, reason, refused_at as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Forget a refusal: the release played after all.
+    pub fn clear_refused_release(&self, debrid_id: &str, info_hash: &str) -> Result<(), DataError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM refused_releases WHERE debrid_id = ?1 AND info_hash = ?2",
+            params![debrid_id, info_hash],
+        )?;
+        Ok(())
+    }
+
+    /// The releases `debrid_id` refused at or after `since`, as
+    /// (info hash, reason); older refusals are dropped.
+    pub fn refused_releases(
+        &self,
+        debrid_id: &str,
+        since: u64,
+    ) -> Result<Vec<(String, String)>, DataError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM refused_releases WHERE refused_at < ?1",
+            params![since as i64],
+        )?;
+        let mut stmt =
+            conn.prepare("SELECT info_hash, reason FROM refused_releases WHERE debrid_id = ?1")?;
+        let rows = stmt.query_map([debrid_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     // ---- diagnostics (FR-103) ----
 
     pub fn log_event(&self, ev: &DiagnosticEvent) -> Result<(), DataError> {
@@ -554,23 +603,28 @@ mod tests {
         );
     }
 
+    fn latest() -> i64 {
+        MIGRATIONS.last().unwrap().version
+    }
+
     #[test]
     fn migrations_apply_fresh() {
         let db = db();
-        assert_eq!(db.schema_version().unwrap(), 1);
+        assert_eq!(db.schema_version().unwrap(), latest());
     }
 
     #[test]
     fn failed_migration_rolls_back() {
         let db = db();
+        let next = latest() + 1;
         let bad = [Migration {
-            version: 2,
+            version: next,
             sql: "CREATE TABLE half_done (id INTEGER); THIS IS NOT SQL;",
         }];
         let err = db.migrate_with(&bad).unwrap_err();
-        assert!(matches!(err, DataError::Migration { version: 2, .. }));
+        assert!(matches!(err, DataError::Migration { version, .. } if version == next));
         // Version unchanged and partial table absent.
-        assert_eq!(db.schema_version().unwrap(), 1);
+        assert_eq!(db.schema_version().unwrap(), latest());
         let conn = db.conn.lock().unwrap();
         let exists: i64 = conn
             .query_row(
@@ -583,12 +637,38 @@ mod tests {
         drop(conn);
         // A subsequent good migration still applies.
         let good = [Migration {
-            version: 2,
+            version: next,
             sql: "CREATE TABLE ok_table (id INTEGER);",
         }];
         db.migrate_with(&good).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2);
-        let _ = MIGRATIONS; // silence unused in cfg(test) path
+        assert_eq!(db.schema_version().unwrap(), next);
+    }
+
+    #[test]
+    fn refused_releases_are_kept_per_service_and_expire() {
+        let db = db();
+        db.record_refused_release("rd", "aa", "flagged", 100)
+            .unwrap();
+        db.record_refused_release("rd", "bb", "flagged", 10)
+            .unwrap();
+        db.record_refused_release("other", "aa", "nope", 100)
+            .unwrap();
+        // Recording again updates rather than duplicating.
+        db.record_refused_release("rd", "aa", "flagged again", 120)
+            .unwrap();
+
+        // "bb" is older than the cut-off, so it goes.
+        assert_eq!(
+            db.refused_releases("rd", 50).unwrap(),
+            vec![("aa".to_string(), "flagged again".to_string())]
+        );
+        db.clear_refused_release("rd", "aa").unwrap();
+        assert!(db.refused_releases("rd", 0).unwrap().is_empty());
+        assert_eq!(db.refused_releases("other", 0).unwrap().len(), 1);
+
+        // Uninstalling with purge forgets the service's refusals.
+        db.remove_addon("other", true).unwrap();
+        assert!(db.refused_releases("other", 0).unwrap().is_empty());
     }
 
     #[test]

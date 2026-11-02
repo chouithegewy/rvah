@@ -520,7 +520,37 @@ impl<B: PlayerBackend> AppCore<B> {
                 episode,
             },
         )?;
-        self.prepare_resolved(resp, debrid_id, title, capabilities)
+        let hash =
+            normalize_info_hash(&release.info_hash).unwrap_or_else(|| release.info_hash.clone());
+        // Bookkeeping only: a failure to record must not stop playback.
+        if let AddonResponse::Resolve(ResolveResult::Unavailable {
+            reason,
+            refused: true,
+        }) = &resp
+        {
+            let _ = self
+                .db
+                .record_refused_release(debrid_id, &hash, reason, unix_now());
+        }
+        let prepared = self.prepare_resolved(resp, debrid_id, title, capabilities)?;
+        // Refused once, played now: the service changed its mind.
+        let _ = self.db.clear_refused_release(debrid_id, &hash);
+        Ok(prepared)
+    }
+
+    /// Releases `debrid_id` refused within [`REFUSALS_KEPT_SECS`], as info
+    /// hash → the service's reason, so a list can mark them and offer
+    /// others first.
+    pub fn refused_releases(
+        &self,
+        debrid_id: &str,
+    ) -> Result<std::collections::HashMap<String, String>, CoreError> {
+        let since = unix_now().saturating_sub(REFUSALS_KEPT_SECS);
+        Ok(self
+            .db
+            .refused_releases(debrid_id, since)?
+            .into_iter()
+            .collect())
     }
 
     /// A playback session for a resolve answer from the add-on `resolver`,
@@ -549,10 +579,8 @@ impl<B: PlayerBackend> AppCore<B> {
                     AddonError::new(AddonErrorCode::Auth, provider_hint).user_visible(),
                 ))
             }
-            ResolveResult::Unavailable { reason } => {
-                return Err(CoreError::Provider(
-                    AddonError::new(AddonErrorCode::NotFound, reason).user_visible(),
-                ))
+            ResolveResult::Unavailable { reason, refused } => {
+                return Err(CoreError::Unavailable { reason, refused })
             }
         };
 
@@ -924,6 +952,10 @@ fn check_declared(manifest: &Manifest, credentials: &Credentials) -> Result<(), 
         None => Ok(()),
     }
 }
+
+/// How long a debrid service's refusal is remembered: services change
+/// their minds, so a refused release is tried again after a month.
+pub const REFUSALS_KEPT_SECS: u64 = 30 * 24 * 60 * 60;
 
 pub(crate) fn unix_now() -> u64 {
     std::time::SystemTime::now()

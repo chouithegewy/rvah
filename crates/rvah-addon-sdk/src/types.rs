@@ -228,8 +228,36 @@ pub struct PlayableSource {
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ResolveResult {
     Playables(Vec<PlayableSource>),
-    AuthRequired { provider_hint: String },
-    Unavailable { reason: String },
+    AuthRequired {
+        provider_hint: String,
+    },
+    Unavailable {
+        reason: String,
+        /// The service will not serve this at all (a debrid service that
+        /// blocks a release, say), as opposed to not having it ready yet:
+        /// asking again later will not help. Hosts remember refused
+        /// releases and stop offering them first.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        refused: bool,
+    },
+}
+
+impl ResolveResult {
+    /// Not ready now; asking again later may work.
+    pub fn unavailable(reason: impl Into<String>) -> Self {
+        ResolveResult::Unavailable {
+            reason: reason.into(),
+            refused: false,
+        }
+    }
+
+    /// Refused outright; asking again will not help.
+    pub fn refused(reason: impl Into<String>) -> Self {
+        ResolveResult::Unavailable {
+            reason: reason.into(),
+            refused: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -468,6 +496,29 @@ mod tests {
             cursor_next: Some("page-2".into()),
             total_hint: Some(42),
         }
+    }
+
+    #[test]
+    fn refused_is_optional_on_the_wire() {
+        // An add-on built before `refused` existed still parses, as not refused.
+        let old: ResolveResult =
+            serde_json::from_str(r#"{"kind":"unavailable","value":{"reason":"not cached"}}"#)
+                .unwrap();
+        assert_eq!(old, ResolveResult::unavailable("not cached"));
+        // A plain unavailable answer looks exactly as it did before.
+        assert_eq!(
+            serde_json::to_string(&ResolveResult::unavailable("not cached")).unwrap(),
+            r#"{"kind":"unavailable","value":{"reason":"not cached"}}"#
+        );
+        let refused = serde_json::to_string(&ResolveResult::refused("blocked")).unwrap();
+        assert_eq!(
+            refused,
+            r#"{"kind":"unavailable","value":{"reason":"blocked","refused":true}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ResolveResult>(&refused).unwrap(),
+            ResolveResult::refused("blocked")
+        );
     }
 
     #[test]

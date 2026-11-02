@@ -121,9 +121,9 @@ fn dispatch(input: &[u8], host: &dyn Host) -> Result<Response, AddonError> {
         }
         Op::Resolve { item_id, source_id } => {
             if source_id.is_some() || !entries.iter().any(|entry| entry.id == item_id) {
-                return Ok(Response::Resolve(ResolveResult::Unavailable {
-                    reason: "Unknown Veilid media ID or source".into(),
-                }));
+                return Ok(Response::Resolve(ResolveResult::unavailable(
+                    "Unknown Veilid media ID or source",
+                )));
             }
             Ok(Response::Resolve(ResolveResult::Playables(vec![
                 PlayableSource {

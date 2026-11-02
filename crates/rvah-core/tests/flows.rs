@@ -1089,9 +1089,7 @@ fn a_release_that_is_not_ready_says_so() {
         DEBRID_ID,
         &["debrid"],
         Arc::new(rvah_testkit::DebridProvider::new(
-            rvah_addon_sdk::ResolveResult::Unavailable {
-                reason: "not cached on Real-Debrid".into(),
-            },
+            rvah_addon_sdk::ResolveResult::unavailable("not cached on Real-Debrid"),
         )),
         vec![Capability::Debrid],
     );
@@ -1107,9 +1105,63 @@ fn a_release_that_is_not_ready_says_so() {
         )
         .unwrap_err();
     assert!(
-        matches!(&err, CoreError::Provider(e) if e.code == AddonErrorCode::NotFound && e.user_visible && e.message.contains("not cached")),
+        matches!(&err, CoreError::Unavailable { reason, refused: false } if reason.contains("not cached")),
         "{err:?}"
     );
+    // Shown as the add-on wrote it, and not remembered: it may be cached later.
+    assert_eq!(err.to_string(), "not cached on Real-Debrid");
+    assert!(w.core.refused_releases(DEBRID_ID).unwrap().is_empty());
+}
+
+#[test]
+fn a_refused_release_is_remembered_until_it_plays() {
+    let hash = "e".repeat(40);
+    let refusing = Arc::new(rvah_testkit::DebridProvider::new(
+        rvah_addon_sdk::ResolveResult::refused("flagged as infringing"),
+    ));
+    let mut w = World::new();
+    w.add_addon(
+        DEBRID_ID,
+        &["debrid"],
+        Arc::clone(&refusing) as Arc<dyn AddonProvider + Send + Sync>,
+        vec![Capability::Debrid],
+    );
+    let play = |w: &mut World, hash: &str| {
+        w.core.prepare_release(
+            DEBRID_ID,
+            // Upper case: the core keeps hashes in lower case either way.
+            &release("Film.2026.1080p", &hash.to_ascii_uppercase()),
+            None,
+            None,
+            ("org.themoviedb.discover", "movie:1"),
+            rvah_core::PlaybackCapabilities::media3(),
+        )
+    };
+    let err = play(&mut w, &hash).unwrap_err();
+    assert!(
+        matches!(&err, CoreError::Unavailable { refused: true, .. }),
+        "{err:?}"
+    );
+    assert_eq!(
+        w.core
+            .refused_releases(DEBRID_ID)
+            .unwrap()
+            .get(&hash)
+            .map(String::as_str),
+        Some("flagged as infringing")
+    );
+    assert!(w
+        .core
+        .refused_releases("some.other.debrid")
+        .unwrap()
+        .is_empty());
+
+    // The service relents: the release plays, and the refusal is forgotten.
+    refusing.answer(rvah_addon_sdk::ResolveResult::Playables(vec![
+        rvah_testkit::mp4_source("https://cdn.example.com/film.mp4"),
+    ]));
+    play(&mut w, &hash).unwrap();
+    assert!(w.core.refused_releases(DEBRID_ID).unwrap().is_empty());
 }
 
 #[test]

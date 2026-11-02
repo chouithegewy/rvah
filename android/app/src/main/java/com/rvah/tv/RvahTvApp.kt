@@ -396,6 +396,7 @@ private fun AppNavigation(
                     core = core,
                     state = state,
                     source = source,
+                    debrid = debrid,
                     onPlay = { release ->
                         screen = Screen.Player(
                             addonId = state.target.titleAddonId,
@@ -425,27 +426,21 @@ private fun AppNavigation(
         is Screen.Player -> PlayerScreen(
             owner = owner,
             target = current,
-            prepare = {
+            prepare = { progress ->
                 val pick = current.release
                 if (pick == null) {
                     core.preparePlayback(current.addonId, current.itemId, current.title)
                 } else {
-                    core.prepareRelease(
-                        pick.debridId,
-                        pick.release,
-                        pick.target.query.season,
-                        pick.target.query.episode,
-                        pick.target.titleAddonId,
-                        pick.target.titleItemId,
-                        current.title,
-                    )
+                    // A release that cannot play hands over to the next one listed.
+                    prepareFirstPlayable(core, pick, sources, current.title, progress)
                 }
             },
-            // A release that cannot play (not cached, say) goes back to the
-            // list, marked, so another can be picked.
+            // When no release plays, back to the list, each one tried marked.
             onPrepareFailed = current.release?.let { pick ->
                 { message: String ->
-                    sources?.tried?.set(pick.release.infoHash, message)
+                    sources?.let { state ->
+                        if (pick.release.infoHash !in state.tried) state.failed(pick.release, message)
+                    }
                     screen = current.returnTo
                 }
             },
@@ -454,7 +449,9 @@ private fun AppNavigation(
                 ?.takeIf { addons.any { it.status == "enabled" && "subtitles" in it.capabilities } }
                 ?.let { pick ->
                     OnlineSubtitles {
-                        core.subtitles(pick.target.query, pick.release.name, listOf(PREFERRED_LANGUAGE))
+                        // Named after the release that plays, which may not be the one chosen.
+                        val name = (sources?.playing ?: pick.release).name
+                        core.subtitles(pick.target.query, name, listOf(PREFERRED_LANGUAGE))
                             .map { it.toSubtitleSpec() }
                     }
                 },
@@ -753,8 +750,8 @@ private fun SearchScreen(
 private fun PlayerScreen(
     owner: RvahPlayerOwner,
     target: Screen.Player,
-    /** Resolve what to play (on an IO thread). */
-    prepare: () -> NativePreparedPlayback,
+    /** Resolve what to play (on an IO thread), saying what it is doing meanwhile. */
+    prepare: (progress: (String) -> Unit) -> NativePreparedPlayback,
     /** When set, a failure to prepare goes here instead of the player's status. */
     onPrepareFailed: ((String) -> Unit)?,
     /** Finds subtitles online for what plays, when an add-on can. */
@@ -762,10 +759,11 @@ private fun PlayerScreen(
     onExit: () -> Unit,
 ) {
     var started by remember(target) { mutableStateOf(false) }
+    var resolving by remember(target) { mutableStateOf("Resolving video…") }
     // A web source plays in the web player, not Media3.
     var web by remember(target) { mutableStateOf<NativePreparedPlayback?>(null) }
     LaunchedEffect(target) {
-        onIo { prepare() }.onSuccess {
+        onIo { prepare { resolving = it } }.onSuccess {
             started = true
             if (it.isWeb) {
                 web = it
@@ -882,7 +880,7 @@ private fun PlayerScreen(
             val failure = ui.failure
             val status = when {
                 failure != null -> failure
-                !started -> "Resolving video…"
+                !started -> resolving
                 else -> ui.status
             }
             if (status.isNotEmpty()) Text(status, color = if (failure != null) ErrorText else Secondary)

@@ -7,6 +7,7 @@ fun Throwable.userMessage(): String = when (this) {
     is AndroidCoreException.Storage -> reason
     is AndroidCoreException.Addon -> reason
     is AndroidCoreException.Playback -> reason
+    is AndroidCoreException.Unavailable -> reason
     is AndroidCoreException.SignInRequired -> reason
     else -> message ?: javaClass.simpleName
 }
