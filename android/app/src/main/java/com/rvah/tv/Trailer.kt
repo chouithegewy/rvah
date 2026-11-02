@@ -70,18 +70,8 @@ internal fun trailerEmbed(videoId: String) =
 private fun identity(packageName: String) = mapOf("Referer" to "https://$packageName/")
 
 /** How long the picture and sound take to come up, and to go at the end. */
-private const val FADE_IN_MS = 4000
+private const val FADE_IN_MS = 2500
 private const val FADE_OUT_MS = 2000
-
-/**
- * YouTube lays its own controls (title, "More videos", logo) over the first
- * seconds of playback whatever the embed options say, then hides them: the
- * picture comes up once they are gone. Should the page change so that
- * cannot be told, it waits [SHOW_AFTER_SECS] of playback; it never waits
- * past [SHOW_BY_SECS].
- */
-private const val SHOW_AFTER_SECS = 5.0
-private const val SHOW_BY_SECS = 10.0
 
 /** A trailer that has not started by now is not going to. */
 private const val GIVE_UP_MS = 15_000L
@@ -93,21 +83,15 @@ private const val PLAYER_STATE = """(function () {
     state: p && p.getPlayerState ? p.getPlayerState() : -2,
     time: p && p.getCurrentTime ? p.getCurrentTime() : 0,
     duration: p && p.getDuration ? p.getDuration() : 0,
-    error: !!document.querySelector('.ytp-error'),
-    controls: (function () {
-      var c = document.querySelector('#player-control-overlay .player-controls-content');
-      return c ? getComputedStyle(c).visibility === 'visible' : null;
-    })()
+    error: !!document.querySelector('.ytp-error')
   };
 })()"""
 
-/** [controls]: whether YouTube's own controls show; null when that can't be told. */
 private data class PlayerState(
     val state: Int,
     val time: Double,
     val duration: Double,
     val error: Boolean,
-    val controls: Boolean?,
 ) {
     val playing get() = state == 1
 
@@ -116,13 +100,6 @@ private data class PlayerState(
      * video, before YouTube puts up its end screen.
      */
     val ending get() = state == 0 || (duration > 0 && time >= duration - FADE_OUT_MS / 1000.0)
-
-    /** Playing, with nothing of YouTube's over the picture. */
-    val bare get() = playing && when (controls) {
-        false -> true
-        null -> time >= SHOW_AFTER_SECS
-        true -> time >= SHOW_BY_SECS
-    }
 }
 
 private suspend fun WebView.playerState(): PlayerState? = suspendCancellableCoroutine { done ->
@@ -135,7 +112,6 @@ private suspend fun WebView.playerState(): PlayerState? = suspendCancellableCoro
                     time = it.optDouble("time", 0.0),
                     duration = it.optDouble("duration", 0.0),
                     error = it.optBoolean("error"),
-                    controls = if (it.isNull("controls")) null else it.optBoolean("controls"),
                 )
             },
         )
@@ -143,9 +119,11 @@ private suspend fun WebView.playerState(): PlayerState? = suspendCancellableCoro
 }
 
 /**
- * A YouTube trailer, just the video: the screen stays black until it is
- * playing, then the picture and sound fade in; at the end both fade out and
- * the trailer closes itself.
+ * A YouTube trailer: black while it loads, then, as soon as it plays,
+ * picture and sound fade in together over [FADE_IN_MS] while it plays on.
+ * YouTube shows its own title and logo over the first seconds of playback
+ * whatever the embed options say, so they show through the fade. At the end
+ * both fade out and the trailer closes itself, before YouTube's end screen.
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -173,7 +151,8 @@ internal fun TrailerScreen(url: String, onExit: () -> Unit) {
     LaunchedEffect(embed) {
         val opened = SystemClock.uptimeMillis()
         while (true) {
-            delay(250)
+            // Quick to notice the start, so the fade begins with the video.
+            delay(if (shown) 250 else 100)
             val player = webView[0]?.playerState() ?: continue
             when {
                 player.error -> {
@@ -191,7 +170,8 @@ internal fun TrailerScreen(url: String, onExit: () -> Unit) {
                     onExit()
                     return@LaunchedEffect
                 }
-                !shown && player.bare -> shown = true
+                // Playing: picture and sound fade in while it plays.
+                !shown && player.playing -> shown = true
                 !shown && SystemClock.uptimeMillis() - opened > GIVE_UP_MS -> {
                     failed = true
                     return@LaunchedEffect
